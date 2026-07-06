@@ -42,6 +42,28 @@ let
     };
   };
 
+  portRangeType = lib.types.submodule {
+    options = {
+      from = lib.mkOption {
+        type = lib.types.port;
+      };
+      to = lib.mkOption {
+        type = lib.types.port;
+      };
+    };
+  };
+
+  tcpForwardRangeType = lib.types.submodule {
+    options = {
+      listen = lib.mkOption {
+        type = portRangeType;
+      };
+      upstream = lib.mkOption {
+        type = portRangeType;
+      };
+    };
+  };
+
   edgeIngressType = lib.types.submodule {
     options = {
       upstreamHost = lib.mkOption {
@@ -58,6 +80,10 @@ let
         default = { };
         type = lib.types.attrsOf tcpForwardType;
       };
+      tcpForwardRanges = lib.mkOption {
+        default = { };
+        type = lib.types.attrsOf tcpForwardRangeType;
+      };
     };
   };
 
@@ -70,6 +96,7 @@ let
       inherit upstreamHost internalIngressPort;
       routes = { };
       tcpForwards = { };
+      tcpForwardRanges = { };
     };
 in
 {
@@ -78,6 +105,8 @@ in
     generatedServiceType
     ingressRouteType
     mkDefaultEdgeIngress
+    portRangeType
+    tcpForwardRangeType
     tcpForwardType
     ;
 }

@@ -8,9 +8,28 @@ let
   cfg = vps.services.edgeIngress;
   generatedTypes = import ../inventory/generated-types.nix { inherit lib; };
   tcpForwards = if cfg.upstream == null then { } else cfg.upstream.tcpForwards;
+  tcpForwardRanges = if cfg.upstream == null then { } else cfg.upstream.tcpForwardRanges;
   sanitizeName = name: lib.replaceStrings [ "." "-" "*" ] [ "_" "_" "wildcard" ] name;
 
   tcpForwardPorts = map (forward: forward.listenPort) (lib.attrValues tcpForwards);
+  tcpForwardPortRanges = map (range: range.listen) (lib.attrValues tcpForwardRanges);
+
+  expandTcpForwardRange =
+    name: range:
+    let
+      listenPorts = lib.range range.listen.from range.listen.to;
+      upstreamPorts = lib.range range.upstream.from range.upstream.to;
+    in
+    lib.zipListsWith (listenPort: upstreamPort: {
+      name = "${name}-${toString listenPort}";
+      value = { inherit listenPort upstreamPort; };
+    }) listenPorts upstreamPorts;
+
+  expandedTcpForwardRanges = lib.listToAttrs (
+    lib.flatten (lib.mapAttrsToList expandTcpForwardRange tcpForwardRanges)
+  );
+  allTcpForwards = tcpForwards // expandedTcpForwardRanges;
+  allTcpForwardPorts = map (forward: forward.listenPort) (lib.attrValues allTcpForwards);
 
   mkTcpForwardFrontend = name: forward: ''
     frontend ${sanitizeName name}
@@ -68,7 +87,12 @@ in
         }) cfg.upstream.routes;
       }
 
-      (lib.mkIf (tcpForwards != { }) {
+      (lib.mkIf (allTcpForwards != { }) {
+        assertions = lib.mapAttrsToList (name: range: {
+          assertion = (range.listen.to - range.listen.from) == (range.upstream.to - range.upstream.from);
+          message = "vps.services.edgeIngress.upstream.tcpForwardRanges.${name} must map equal-sized listen and upstream ranges.";
+        }) tcpForwardRanges;
+
         services.haproxy = {
           enable = true;
           config = ''
@@ -85,9 +109,9 @@ in
             resolvers tailscale
               parse-resolv-conf
 
-            ${lib.concatStringsSep "\n\n" (lib.mapAttrsToList mkTcpForwardFrontend tcpForwards)}
+            ${lib.concatStringsSep "\n\n" (lib.mapAttrsToList mkTcpForwardFrontend allTcpForwards)}
 
-            ${lib.concatStringsSep "\n\n" (lib.mapAttrsToList mkTcpForwardBackend tcpForwards)}
+            ${lib.concatStringsSep "\n\n" (lib.mapAttrsToList mkTcpForwardBackend allTcpForwards)}
           '';
         };
 
@@ -95,7 +119,10 @@ in
           config.environment.etc."haproxy.cfg".source
         ];
 
-        networking.firewall.allowedTCPPorts = lib.mkAfter tcpForwardPorts;
+        networking.firewall = {
+          allowedTCPPorts = lib.mkAfter tcpForwardPorts;
+          allowedTCPPortRanges = lib.mkAfter tcpForwardPortRanges;
+        };
       })
     ]
   );

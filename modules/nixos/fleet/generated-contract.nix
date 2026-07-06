@@ -63,6 +63,7 @@ in
       internalIngressPort = caddyInternalIngress.port;
       routes = generatedIngressRoutes;
       tcpForwards = { };
+      tcpForwardRanges = { };
     };
   };
 }
