@@ -22,13 +22,13 @@ in
   config = lib.mkIf (vps.enable && vps.tooling.enable) {
     environment.systemPackages = [
       (pkgs.writeShellScriptBin "vps-services" ''
-        printf '%-16s %-22s %-16s %-36s %s\n' "SERVICE" "DISPLAY" "CATEGORY" "DOMAIN" "HEALTH_UNITS"
-        printf '%-16s %-22s %-16s %-36s %s\n' "-------" "-------" "--------" "------" "------------"
+                    printf '%-16s %-22s %-16s %-36s %s\n' "SERVICE" "DISPLAY" "CATEGORY" "DOMAIN" "HEALTH_UNITS"
+                    printf '%-16s %-22s %-16s %-36s %s\n' "-------" "-------" "--------" "------" "------------"
 
-        while IFS=$'\t' read -r service display category domain units; do
-          [ -z "$service" ] && continue
-          printf '%-16s %-22s %-16s %-36s %s\n' "$service" "$display" "$category" "$domain" "$units"
-        done <<'VPS_INVENTORY'
+                    while IFS=$'\t' read -r service display category domain units; do
+                      [ -z "$service" ] && continue
+                      printf '%-16s %-22s %-16s %-36s %s\n' "$service" "$display" "$category" "$domain" "$units"
+                    done <<'VPS_INVENTORY'
         ${inventoryRows}
         VPS_INVENTORY
       '')
