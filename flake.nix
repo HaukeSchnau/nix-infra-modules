@@ -38,6 +38,16 @@
         appDeployments = ./modules/nixos/deploy/app-deployments.nix;
       };
 
+      darwinModules = {
+        wireguardProfiles = ./modules/darwin/wireguard-profiles.nix;
+        developerFonts = ./modules/darwin/developer-fonts.nix;
+        developerPaths = ./modules/darwin/developer-paths.nix;
+      };
+
+      homeManagerModules = {
+        colors = ./modules/home-manager/colors;
+      };
+
       formatter = forAllSystems (
         system:
         let

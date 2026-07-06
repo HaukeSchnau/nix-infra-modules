@@ -29,6 +29,16 @@ Available NixOS modules:
 - `nixosModules.edgeIngress`
 - `nixosModules.appDeployments`
 
+Available nix-darwin leaf modules:
+
+- `darwinModules.wireguardProfiles`
+- `darwinModules.developerFonts`
+- `darwinModules.developerPaths`
+
+Available Home Manager leaf modules:
+
+- `homeManagerModules.colors`
+
 Available helpers:
 
 - `lib.nixos.nixFlakeService`
