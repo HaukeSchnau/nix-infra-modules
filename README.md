@@ -8,6 +8,8 @@ The modules focus on a few opinionated interfaces:
 - edge-host forwarding from generated app-host contracts
 - flake-based application deployments with health checks and rollback
 - generated service inventory for health checks and documentation
+- host-local operational commands such as `vps-services` and
+  `vps-health-check`
 
 This repository intentionally contains no real hosts, secrets, domains, or
 deployment state. A private fleet repo should import these modules and own the
@@ -25,6 +27,8 @@ service placement.
 Available NixOS modules:
 
 - `nixosModules.fleet`
+- `nixosModules.generatedContract`
+- `nixosModules.fleetTooling`
 - `nixosModules.caddyIngress`
 - `nixosModules.edgeIngress`
 - `nixosModules.appDeployments`

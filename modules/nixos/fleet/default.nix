@@ -7,6 +7,7 @@
   imports = [
     ./metadata.nix
     ./generated-contract.nix
+    ./tooling.nix
     ../ingress/caddy.nix
     ../ingress/edge-ingress.nix
     ../deploy/app-deployments.nix

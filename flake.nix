@@ -33,6 +33,8 @@
       nixosModules = {
         default = self.nixosModules.fleet;
         fleet = ./modules/nixos/fleet;
+        generatedContract = ./modules/nixos/fleet/generated-contract.nix;
+        fleetTooling = ./modules/nixos/fleet/tooling.nix;
         caddyIngress = ./modules/nixos/ingress/caddy.nix;
         edgeIngress = ./modules/nixos/ingress/edge-ingress.nix;
         appDeployments = ./modules/nixos/deploy/app-deployments.nix;
