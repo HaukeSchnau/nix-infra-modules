@@ -102,6 +102,20 @@
 
           core-example = example.nixosConfigurations.core-01.config.system.build.toplevel;
           edge-example = example.nixosConfigurations.edge-01.config.system.build.toplevel;
+
+          edge-tcp-range-example =
+            let
+              haproxyConfig = pkgs.writeText "edge-example-haproxy.cfg" example.nixosConfigurations.edge-01.config.services.haproxy.config;
+            in
+            pkgs.runCommand "edge-tcp-range-example" { } ''
+              grep -q 'bind :22000' ${haproxyConfig}
+              grep -q 'server upstream core-01:32000 init-addr libc' ${haproxyConfig}
+              grep -q 'bind :22001' ${haproxyConfig}
+              grep -q 'server upstream core-01:32001 init-addr libc' ${haproxyConfig}
+              grep -q 'bind :22002' ${haproxyConfig}
+              grep -q 'server upstream core-01:32002 init-addr libc' ${haproxyConfig}
+              touch $out
+            '';
         }
       );
     };

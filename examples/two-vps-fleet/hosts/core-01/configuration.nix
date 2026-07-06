@@ -30,4 +30,15 @@
   };
 
   vps.appDeployments.webhook.enable = false;
+
+  vps.generated.edgeIngress.tcpForwardRanges.demo = {
+    listen = {
+      from = 22000;
+      to = 22002;
+    };
+    upstream = {
+      from = 32000;
+      to = 32002;
+    };
+  };
 }

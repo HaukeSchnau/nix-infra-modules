@@ -10,6 +10,12 @@ let
   tcpForwards = if cfg.upstream == null then { } else cfg.upstream.tcpForwards;
   tcpForwardRanges = if cfg.upstream == null then { } else cfg.upstream.tcpForwardRanges;
   sanitizeName = name: lib.replaceStrings [ "." "-" "*" ] [ "_" "_" "wildcard" ] name;
+  validRange = range: range.from <= range.to;
+  equalSizedRange =
+    range: (range.listen.to - range.listen.from) == (range.upstream.to - range.upstream.from);
+  validTcpForwardRanges = lib.all (
+    range: validRange range.listen && validRange range.upstream && equalSizedRange range
+  ) (lib.attrValues tcpForwardRanges);
 
   tcpForwardPorts = map (forward: forward.listenPort) (lib.attrValues tcpForwards);
   tcpForwardPortRanges = map (range: range.listen) (lib.attrValues tcpForwardRanges);
@@ -26,7 +32,9 @@ let
     }) listenPorts upstreamPorts;
 
   expandedTcpForwardRanges = lib.listToAttrs (
-    lib.flatten (lib.mapAttrsToList expandTcpForwardRange tcpForwardRanges)
+    lib.optionals validTcpForwardRanges (
+      lib.flatten (lib.mapAttrsToList expandTcpForwardRange tcpForwardRanges)
+    )
   );
   allTcpForwards = tcpForwards // expandedTcpForwardRanges;
   allTcpForwardPorts = map (forward: forward.listenPort) (lib.attrValues allTcpForwards);
@@ -66,12 +74,32 @@ in
             assertion = cfg.upstream != null;
             message = "vps.services.edgeIngress.enable requires vps.services.edgeIngress.upstream to be set.";
           }
+        ]
+        ++ lib.optionals (cfg.upstream != null) [
           {
             assertion = cfg.upstream.upstreamHost != "";
             message = "vps.services.edgeIngress.upstream.upstreamHost must not be empty.";
           }
-        ];
+        ]
+        ++ lib.flatten (
+          lib.mapAttrsToList (name: range: [
+            {
+              assertion = validRange range.listen;
+              message = "vps.services.edgeIngress.upstream.tcpForwardRanges.${name}.listen.from must be less than or equal to listen.to.";
+            }
+            {
+              assertion = validRange range.upstream;
+              message = "vps.services.edgeIngress.upstream.tcpForwardRanges.${name}.upstream.from must be less than or equal to upstream.to.";
+            }
+            {
+              assertion = equalSizedRange range;
+              message = "vps.services.edgeIngress.upstream.tcpForwardRanges.${name} must map equal-sized listen and upstream ranges.";
+            }
+          ]) tcpForwardRanges
+        );
+      }
 
+      (lib.mkIf (cfg.upstream != null) {
         vps.services.caddy.enable = true;
 
         vps.services.caddy.virtualHosts = lib.mapAttrs (_: route: {
@@ -85,14 +113,9 @@ in
             }
           '';
         }) cfg.upstream.routes;
-      }
+      })
 
       (lib.mkIf (allTcpForwards != { }) {
-        assertions = lib.mapAttrsToList (name: range: {
-          assertion = (range.listen.to - range.listen.from) == (range.upstream.to - range.upstream.from);
-          message = "vps.services.edgeIngress.upstream.tcpForwardRanges.${name} must map equal-sized listen and upstream ranges.";
-        }) tcpForwardRanges;
-
         services.haproxy = {
           enable = true;
           config = ''
