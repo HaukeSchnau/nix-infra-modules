@@ -28,9 +28,9 @@ in
         while IFS=$'\t' read -r service display category domain units; do
           [ -z "$service" ] && continue
           printf '%-16s %-22s %-16s %-36s %s\n' "$service" "$display" "$category" "$domain" "$units"
-        done <<'FLEET_INVENTORY'
+        done <<'VPS_INVENTORY'
         ${inventoryRows}
-        FLEET_INVENTORY
+        VPS_INVENTORY
       '')
 
       (pkgs.writeShellScriptBin "vps-health-check" ''
@@ -38,7 +38,7 @@ in
         units=( ${healthUnitArgs} )
 
         if [ ''${#units[@]} -eq 0 ]; then
-          echo "No health units defined for enabled fleet services."
+          echo "No health units defined for enabled VPS services."
           exit 0
         fi
 

@@ -13,6 +13,12 @@ check:
     nix flake check --all-systems
 
 scan:
-    gitleaks detect --source . --no-git --redact
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v gitleaks >/dev/null 2>&1; then
+      gitleaks detect --source . --no-git --redact
+    else
+      nix run nixpkgs#gitleaks -- detect --source . --no-git --redact
+    fi
 
 preflight: fmt quick scan
