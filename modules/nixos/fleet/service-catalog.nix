@@ -62,6 +62,12 @@ let
       ];
     };
 
+    gitMirrors = {
+      displayName = "Git Mirrors";
+      category = "Developer";
+      healthUnits = [ ];
+    };
+
     githubRunner = {
       displayName = "GitHub Runner";
       category = "Developer";

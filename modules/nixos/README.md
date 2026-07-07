@@ -6,6 +6,7 @@ The other exports are leaf modules grouped by responsibility:
 
 - `backup/`: restic backup policy
 - `ci/`: GitHub and Gitea runner leaves
+- `developer/`: developer service leaves such as Git mirrors
 - `deploy/`: app deployment and flake-service helpers
 - `fleet/`: shared metadata, generated contracts, and tooling
 - `ingress/`: Caddy app ingress and edge ingress

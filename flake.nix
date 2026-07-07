@@ -42,6 +42,7 @@
         fleetTooling = ./modules/nixos/fleet/tooling.nix;
         podmanRuntime = ./modules/nixos/runtime/podman.nix;
         serverBackup = ./modules/nixos/backup/server-backup.nix;
+        gitMirrors = ./modules/nixos/developer/git-mirrors.nix;
         githubRunner = ./modules/nixos/ci/github-runner.nix;
         giteaActionsRunner = ./modules/nixos/ci/gitea-actions-runner.nix;
         caddyIngress = ./modules/nixos/ingress/caddy.nix;
@@ -151,6 +152,28 @@
                 tokenFile = "/run/secrets/gitea-runner-token";
                 instanceName = "gitea-ci";
                 runnerName = "gitea-ci";
+              };
+            }
+          ];
+          gitMirrorsSystem = mkFleetSystem "git-mirror-01" [
+            {
+              vps.services.gitMirrors = {
+                enable = true;
+                mirrorAll = false;
+                gitea = {
+                  baseUrl = "https://git.example.net";
+                  username = "mirror";
+                  tokenFile = "/run/secrets/gitea-token";
+                };
+                github = {
+                  owner = "example-org";
+                  tokenFile = "/run/secrets/github-token";
+                };
+                repositories.demo = {
+                  gitea = "example/demo";
+                  githubName = "demo-mirror";
+                  description = "Demo mirror";
+                };
               };
             }
           ];
@@ -267,6 +290,30 @@
               }' = 'yes'
               touch $out
             '';
+
+          git-mirrors-example =
+            let
+              cfg = gitMirrorsSystem.config;
+              service = cfg.systemd.services.git-mirrors-sync;
+              timer = cfg.systemd.timers.git-mirrors-sync;
+              script = builtins.unsafeDiscardStringContext (
+                builtins.elemAt (lib.splitString " " service.serviceConfig.ExecStart) 1
+              );
+              healthUnits = cfg.vps.services.gitMirrors.metadata.health.units;
+            in
+            pkgs.runCommand "git-mirrors-example"
+              {
+                nativeBuildInputs = [ pkgs.python3 ];
+              }
+              ''
+                test '${service.environment.GIT_MIRRORS_GITEA_TOKEN_FILE}' = '/run/secrets/gitea-token'
+                test '${service.environment.GIT_MIRRORS_GITHUB_TOKEN_FILE}' = '/run/secrets/github-token'
+                test '${service.serviceConfig.User}' = 'git-mirrors'
+                test '${timer.timerConfig.OnUnitActiveSec}' = '15min'
+                test '${if builtins.elem "git-mirrors-sync.timer" healthUnits then "yes" else "no"}' = 'yes'
+                python3 -m py_compile ${script}
+                touch $out
+              '';
 
           server-backup-example =
             let

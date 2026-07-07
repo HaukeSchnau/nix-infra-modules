@@ -44,6 +44,7 @@ nix-infra-modules ../nix-infra-modules` for fast local iteration.
 | `nixosModules.fleetTooling` | NixOS | `vps-services` and `vps-health-check` commands | [fleet](docs/modules/fleet.md) |
 | `nixosModules.podmanRuntime` | NixOS | Shared root Podman runtime, proxy network, and host capabilities | [podman runtime](docs/modules/podman-runtime.md), `podman-runtime-example` |
 | `nixosModules.serverBackup` | NixOS | Restic backup policy with file-path secret interface | [server backup](docs/modules/server-backup.md), `server-backup-example` |
+| `nixosModules.gitMirrors` | NixOS | Periodic Gitea-to-GitHub repository mirrors | [git mirrors](docs/modules/git-mirrors.md), `git-mirrors-example` |
 | `nixosModules.githubRunner` | NixOS | GitHub Actions runner leaf module | [runners](docs/modules/runners.md), `github-runner-example` |
 | `nixosModules.giteaActionsRunner` | NixOS | Gitea Actions runner leaf module | [runners](docs/modules/runners.md), `gitea-runner-example` |
 | `nixosModules.caddyIngress` | NixOS | Tailnet-first Caddy virtual hosts and internal ingress | [ingress](docs/modules/ingress.md) |
