@@ -10,6 +10,7 @@ The modules focus on a few opinionated interfaces:
 - generated service inventory for health checks and documentation
 - host-local operational commands such as `vps-services` and
   `vps-health-check`
+- Home Manager workspace repository reconciliation with JJ-colocated clones
 
 This repository intentionally contains no real hosts, secrets, domains, or
 deployment state. A private fleet repo should import these modules and own the
@@ -49,6 +50,7 @@ Available nix-darwin leaf modules:
 Available Home Manager leaf modules:
 
 - `homeManagerModules.colors`
+- `homeManagerModules.workspaceRepos`
 
 Available helpers:
 

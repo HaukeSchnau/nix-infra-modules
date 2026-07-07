@@ -3,12 +3,17 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    home-manager = {
+      url = "github:nix-community/home-manager/master";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
     {
       self,
       nixpkgs,
+      home-manager,
     }:
     let
       lib = nixpkgs.lib;
@@ -51,6 +56,7 @@
 
       homeManagerModules = {
         colors = ./modules/home-manager/colors;
+        workspaceRepos = ./modules/home-manager/workspace-repos;
       };
 
       formatter = forAllSystems (
@@ -131,6 +137,32 @@
               grep -q 'server upstream core-01:32002 init-addr libc' ${haproxyConfig}
               touch $out
             '';
+
+          workspace-repos-home =
+            (home-manager.lib.homeManagerConfiguration {
+              inherit pkgs;
+              modules = [
+                self.homeManagerModules.workspaceRepos
+                {
+                  home = {
+                    username = "example";
+                    homeDirectory = "/home/example";
+                    stateVersion = "25.05";
+                  };
+                  workspaceRepos.activationSync.enable = false;
+                }
+              ];
+            }).activationPackage;
+
+          workspace-repos-python =
+            pkgs.runCommand "workspace-repos-python"
+              {
+                nativeBuildInputs = [ pkgs.python3 ];
+              }
+              ''
+                python3 -m py_compile ${./modules/home-manager/workspace-repos/workspace-repos.py}
+                touch $out
+              '';
         }
       );
     };
