@@ -177,6 +177,16 @@
               };
             }
           ];
+          caddyInternalIngressSystem = mkFleetSystem "internal-ingress-01" [
+            {
+              vps.services.caddy = {
+                enable = true;
+                publicVirtualHosts.enable = false;
+                internalIngress.enable = true;
+                virtualHosts."app.example.net".upstream = "127.0.0.1:8080";
+              };
+            }
+          ];
         in
         {
           format =
@@ -222,6 +232,21 @@
               test '${if builtins.elem "demo.example.net" routeNames then "yes" else "no"}' = 'yes'
               test '${toString contract.tcpForwardRanges.demo.listen.from}' = '22000'
               test '${toString contract.tcpForwardRanges.demo.upstream.to}' = '32002'
+              touch $out
+            '';
+
+          caddy-internal-ingress-example =
+            let
+              publicVirtualHostNames = lib.attrNames caddyInternalIngressSystem.config.services.caddy.virtualHosts;
+              routeNames = lib.attrNames caddyInternalIngressSystem.config.vps.services.caddy.virtualHosts;
+              extraConfig = caddyInternalIngressSystem.config.services.caddy.extraConfig;
+              extraConfigFile = pkgs.writeText "caddy-extra-config" extraConfig;
+            in
+            pkgs.runCommand "caddy-internal-ingress-example" { } ''
+              test '${toString (builtins.length publicVirtualHostNames)}' = '0'
+              test '${if builtins.elem "app.example.net" routeNames then "yes" else "no"}' = 'yes'
+              grep -q ':8080 {' ${extraConfigFile}
+              grep -q 'host app.example.net' ${extraConfigFile}
               touch $out
             '';
 

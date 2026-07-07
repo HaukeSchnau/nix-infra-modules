@@ -60,6 +60,17 @@ in
       description = "Host interfaces to bind generated HTTPS virtual hosts to.";
     };
 
+    publicVirtualHosts.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Whether to emit configured virtual hosts as public Caddy site blocks.
+
+        Disable this on app hosts whose routes are served only through the
+        tailnet internal ingress and terminated by a separate public edge host.
+      '';
+    };
+
     tailscaleSourceRanges = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
@@ -191,7 +202,7 @@ in
         hostName = route.hostName;
         inherit (cfg) listenAddresses;
         extraConfig = mkRouteConfig route.hostName route;
-      }) cfg.virtualHosts;
+      }) (lib.optionalAttrs cfg.publicVirtualHosts.enable cfg.virtualHosts);
 
       extraConfig = lib.concatStringsSep "\n\n" (
         (lib.mapAttrsToList (_: site: ''

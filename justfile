@@ -9,6 +9,7 @@ quick:
     nix eval .#checks.x86_64-linux.edge-example.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.fleet-generated-services-example.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.edge-contract-example.drvPath >/dev/null
+    nix eval .#checks.x86_64-linux.caddy-internal-ingress-example.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.edge-tcp-range-example.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.podman-runtime-example.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.github-runner-example.drvPath >/dev/null
