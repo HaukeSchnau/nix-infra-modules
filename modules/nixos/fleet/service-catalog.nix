@@ -52,6 +52,18 @@ let
       category = "Applications";
       healthUnits = [ ];
     };
+
+    githubRunner = {
+      displayName = "GitHub Runner";
+      category = "Developer";
+      healthUnits = [ ];
+    };
+
+    giteaActionsRunner = {
+      displayName = "Gitea Actions Runner";
+      category = "Developer";
+      healthUnits = [ ];
+    };
   };
 in
 {

@@ -35,6 +35,8 @@
         fleet = ./modules/nixos/fleet;
         generatedContract = ./modules/nixos/fleet/generated-contract.nix;
         fleetTooling = ./modules/nixos/fleet/tooling.nix;
+        githubRunner = ./modules/nixos/ci/github-runner.nix;
+        giteaActionsRunner = ./modules/nixos/ci/gitea-actions-runner.nix;
         caddyIngress = ./modules/nixos/ingress/caddy.nix;
         edgeIngress = ./modules/nixos/ingress/edge-ingress.nix;
         appDeployments = ./modules/nixos/deploy/app-deployments.nix;
