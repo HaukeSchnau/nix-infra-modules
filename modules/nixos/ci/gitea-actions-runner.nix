@@ -16,7 +16,7 @@ in
 
     url = lib.mkOption {
       type = lib.types.str;
-      default = "https://git.example.net";
+      example = "https://git.example.net";
       description = "Base URL of the Gitea instance used for runner registration.";
     };
 

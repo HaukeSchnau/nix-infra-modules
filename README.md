@@ -29,9 +29,15 @@ Available NixOS modules:
 - `nixosModules.fleet`
 - `nixosModules.generatedContract`
 - `nixosModules.fleetTooling`
+- `nixosModules.githubRunner`
+- `nixosModules.giteaActionsRunner`
 - `nixosModules.caddyIngress`
 - `nixosModules.edgeIngress`
 - `nixosModules.appDeployments`
+
+The individual NixOS module exports are fleet leaf modules. Import
+`nixosModules.fleet` for the complete interface, or combine leaf modules with
+the shared fleet metadata/options they depend on.
 
 Available nix-darwin leaf modules:
 
