@@ -68,7 +68,7 @@ in
 
         systemd.services = {
           podman-network-proxy = {
-            description = "Create Podman network '${cfg.networkName}' for containers";
+            description = "Create Podman network '${cfg.networkName}' for VPS containers";
             wantedBy = [ "multi-user.target" ];
             after = [
               "network-online.target"
