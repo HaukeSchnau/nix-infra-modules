@@ -53,6 +53,15 @@ let
       healthUnits = [ ];
     };
 
+    podman = {
+      displayName = "Podman";
+      category = "Infrastructure";
+      healthUnits = [
+        "podman.socket"
+        "podman-network-proxy.service"
+      ];
+    };
+
     githubRunner = {
       displayName = "GitHub Runner";
       category = "Developer";

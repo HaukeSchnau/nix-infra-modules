@@ -8,6 +8,7 @@
     ./metadata.nix
     ./generated-contract.nix
     ./tooling.nix
+    ../runtime/podman.nix
     ../ci/github-runner.nix
     ../ci/gitea-actions-runner.nix
     ../ingress/caddy.nix
