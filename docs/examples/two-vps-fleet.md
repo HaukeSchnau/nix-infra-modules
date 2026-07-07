@@ -11,8 +11,9 @@ IP addresses, or secret names in this example.
 ## Walkthrough
 
 `core-01` imports `lib.nixos.nixFlakeService` to describe one fake app and then
-enables the app deployment and Caddy modules. From that normal service config,
-the fleet contract generates:
+enables the app deployment and Caddy modules. It disables public Caddy site
+blocks because `edge-01` owns public TLS. From that normal service config, the
+fleet contract generates:
 
 - `vps.generated.services` for inventory and health checks
 - `vps.generated.ingressRoutes` for local Caddy routes

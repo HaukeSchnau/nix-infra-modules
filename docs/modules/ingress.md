@@ -7,6 +7,10 @@ patterns:
 - edge hosts forwarding generated routes to an app host over a trusted network
 
 Routes are tailnet-only by default. Public exposure is explicit per route.
+When an app host is only reached through a separate public edge host, set
+`vps.services.caddy.publicVirtualHosts.enable = false` on the app host. The
+route registry and internal ingress stay available, but the app host does not
+try to manage public TLS certificates.
 
 ```nix
 vps.services.caddy.virtualHosts."admin.example.net" = {

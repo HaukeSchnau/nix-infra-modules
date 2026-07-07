@@ -20,6 +20,7 @@
     caddy = {
       enable = true;
       internalIngress.enable = true;
+      publicVirtualHosts.enable = false;
       virtualHosts."admin.example.net" = {
         upstream = "127.0.0.1:3000";
         tailscaleOnly = true;
