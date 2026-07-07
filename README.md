@@ -31,6 +31,7 @@ Available NixOS modules:
 - `nixosModules.generatedContract`
 - `nixosModules.fleetTooling`
 - `nixosModules.podmanRuntime`
+- `nixosModules.serverBackup`
 - `nixosModules.githubRunner`
 - `nixosModules.giteaActionsRunner`
 - `nixosModules.caddyIngress`

@@ -8,6 +8,7 @@ quick:
     nix eval .#checks.x86_64-linux.core-example.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.edge-example.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.edge-tcp-range-example.drvPath >/dev/null
+    nix eval .#checks.x86_64-linux.server-backup-example.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.workspace-repos-home.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.workspace-repos-python.drvPath >/dev/null
 
