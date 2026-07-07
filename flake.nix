@@ -296,9 +296,7 @@
               cfg = gitMirrorsSystem.config;
               service = cfg.systemd.services.git-mirrors-sync;
               timer = cfg.systemd.timers.git-mirrors-sync;
-              script = builtins.unsafeDiscardStringContext (
-                builtins.elemAt (lib.splitString " " service.serviceConfig.ExecStart) 1
-              );
+              script = builtins.elemAt (lib.splitString " " service.serviceConfig.ExecStart) 1;
               healthUnits = cfg.vps.services.gitMirrors.metadata.health.units;
             in
             pkgs.runCommand "git-mirrors-example"
@@ -315,6 +313,7 @@
                 test '${timer.timerConfig.OnUnitActiveSec}' = '15min'
                 test '${if builtins.elem "git-mirrors-sync.timer" healthUnits then "yes" else "no"}' = 'yes'
                 jq -e '.userAgent == "nix-infra-modules-git-mirrors"' ${service.environment.GIT_MIRRORS_CONFIG}
+                jq -e '.github.baseUrl == "https://github.com"' ${service.environment.GIT_MIRRORS_CONFIG}
                 python3 -m py_compile ${script}
                 grep -q '"User-Agent": self.user_agent' ${script}
                 ! grep -q '"User-Agent": cfg\\["userAgent"\\]' ${script}

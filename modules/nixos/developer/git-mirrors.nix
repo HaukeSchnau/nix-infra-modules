@@ -88,7 +88,7 @@ let
         githubOwnerType = cfg.github.ownerType;
       };
       github = {
-        inherit (cfg.github) apiBaseUrl;
+        inherit (cfg.github) baseUrl apiBaseUrl;
       };
       inherit (cfg) mirrorAll excludeRepositories;
       inherit repositories;
@@ -153,8 +153,8 @@ let
         return "private" if repo.get("private", True) else "public"
 
 
-    def github_url(path):
-        return f"https://github.com/{path}.git"
+    def github_url(base_url, path):
+        return f"{base_url.rstrip('/')}/{path}.git"
 
 
     def credential_line(url, username, password):
@@ -381,7 +381,7 @@ let
     def sync_repository(repo, cfg, credential_file):
         name = repo["name"]
         source_url = repo_url(cfg["gitea"]["baseUrl"], repo["giteaPath"])
-        destination_url = github_url(repo["githubPath"])
+        destination_url = github_url(cfg["github"]["baseUrl"], repo["githubPath"])
         mirror_dir = os.path.join(STATE_DIR, "repositories", f"{name}.git")
 
         print(f"mirror/{name}: syncing {repo['giteaPath']} -> {repo['githubPath']}", flush=True)
@@ -433,7 +433,7 @@ let
             try:
                 with open(credential_file, "w", encoding="utf-8") as handle:
                     handle.write(credential_line(cfg["gitea"]["baseUrl"], cfg["gitea"]["username"], gitea_token))
-                    handle.write(credential_line("https://github.com", "x-access-token", github_token))
+                    handle.write(credential_line(cfg["github"]["baseUrl"], "x-access-token", github_token))
                 os.chmod(credential_file, 0o600)
 
                 gitea = Gitea(cfg["gitea"]["baseUrl"], cfg["gitea"]["apiBaseUrl"], gitea_token, cfg["userAgent"])
@@ -496,7 +496,7 @@ in
     };
 
     stateDir = lib.mkOption {
-      type = lib.types.str;
+      type = lib.types.path;
       default = "/var/lib/git-mirrors";
       description = "Persistent bare repository cache directory.";
     };
@@ -547,6 +547,12 @@ in
     };
 
     github = {
+      baseUrl = lib.mkOption {
+        type = lib.types.str;
+        default = "https://github.com";
+        description = "GitHub web and Git remote base URL.";
+      };
+
       owner = lib.mkOption {
         type = lib.types.str;
         default = "example-org";
