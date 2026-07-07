@@ -303,7 +303,10 @@
             in
             pkgs.runCommand "git-mirrors-example"
               {
-                nativeBuildInputs = [ pkgs.python3 ];
+                nativeBuildInputs = [
+                  pkgs.jq
+                  pkgs.python3
+                ];
               }
               ''
                 test '${service.environment.GIT_MIRRORS_GITEA_TOKEN_FILE}' = '/run/secrets/gitea-token'
@@ -311,7 +314,10 @@
                 test '${service.serviceConfig.User}' = 'git-mirrors'
                 test '${timer.timerConfig.OnUnitActiveSec}' = '15min'
                 test '${if builtins.elem "git-mirrors-sync.timer" healthUnits then "yes" else "no"}' = 'yes'
+                jq -e '.userAgent == "nix-infra-modules-git-mirrors"' ${service.environment.GIT_MIRRORS_CONFIG}
                 python3 -m py_compile ${script}
+                grep -q '"User-Agent": self.user_agent' ${script}
+                ! grep -q '"User-Agent": cfg\\["userAgent"\\]' ${script}
                 touch $out
               '';
 

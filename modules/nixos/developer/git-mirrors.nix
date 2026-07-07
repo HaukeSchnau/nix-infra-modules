@@ -168,10 +168,11 @@ let
 
 
     class Gitea:
-        def __init__(self, base_url, api_base_url, token):
+        def __init__(self, base_url, api_base_url, token, user_agent):
             self.base_url = base_url.rstrip("/")
             self.api_base_url = (api_base_url or f"{self.base_url}/api/v1").rstrip("/")
             self.token = token
+            self.user_agent = user_agent
 
         def request(self, path):
             request = urllib.request.Request(
@@ -179,7 +180,7 @@ let
                 headers={
                     "Accept": "application/json",
                     "Authorization": f"token {self.token}",
-                    "User-Agent": cfg["userAgent"],
+                    "User-Agent": self.user_agent,
                 },
                 method="GET",
             )
@@ -212,16 +213,17 @@ let
 
 
     class GitHub:
-        def __init__(self, api_base_url, token):
+        def __init__(self, api_base_url, token, user_agent):
             self.api_base_url = api_base_url.rstrip("/")
             self.token = token
+            self.user_agent = user_agent
 
         def request(self, method, path, payload=None, allow_not_found=False):
             body = None
             headers = {
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {self.token}",
-                "User-Agent": cfg["userAgent"],
+                "User-Agent": self.user_agent,
                 "X-GitHub-Api-Version": "2022-11-28",
             }
             if payload is not None:
@@ -434,8 +436,8 @@ let
                     handle.write(credential_line("https://github.com", "x-access-token", github_token))
                 os.chmod(credential_file, 0o600)
 
-                gitea = Gitea(cfg["gitea"]["baseUrl"], cfg["gitea"]["apiBaseUrl"], gitea_token)
-                github = GitHub(cfg["github"]["apiBaseUrl"], github_token)
+                gitea = Gitea(cfg["gitea"]["baseUrl"], cfg["gitea"]["apiBaseUrl"], gitea_token, cfg["userAgent"])
+                github = GitHub(cfg["github"]["apiBaseUrl"], github_token, cfg["userAgent"])
                 repositories = resolve_repositories(cfg, gitea)
                 failures = []
                 for repo in repositories:
