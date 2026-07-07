@@ -7,7 +7,12 @@ quick:
     nix eval .#checks.x86_64-linux.format.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.core-example.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.edge-example.drvPath >/dev/null
+    nix eval .#checks.x86_64-linux.fleet-generated-services-example.drvPath >/dev/null
+    nix eval .#checks.x86_64-linux.edge-contract-example.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.edge-tcp-range-example.drvPath >/dev/null
+    nix eval .#checks.x86_64-linux.podman-runtime-example.drvPath >/dev/null
+    nix eval .#checks.x86_64-linux.github-runner-example.drvPath >/dev/null
+    nix eval .#checks.x86_64-linux.gitea-runner-example.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.server-backup-example.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.workspace-repos-home.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.workspace-repos-python.drvPath >/dev/null
@@ -24,4 +29,21 @@ scan:
       nix run nixpkgs#gitleaks -- detect --source . --no-git --redact
     fi
 
-preflight: fmt quick scan
+sanitize:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if rg -n --hidden --glob '!.git/**' --glob '!justfile' \
+      -e 'schnau\.dev' \
+      -e 'HaukeSchnau' \
+      -e 'haukeschnau' \
+      -e 'openclaw' \
+      -e 'paperless' \
+      -e 'tailscale_authkey' \
+      -e 'TODO_PRIVATE' \
+      -e 'srv-[0-9]' \
+      .; then
+      echo "Potential private term found in public repository" >&2
+      exit 1
+    fi
+
+preflight: fmt quick scan sanitize

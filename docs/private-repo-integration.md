@@ -20,9 +20,9 @@ darwin-rebuild switch --flake . --override-input nix-infra-modules ../nix-infra-
 Private repos can wrap those commands in host-aware recipes; for example:
 
 ```sh
-just validate-local-modules-drvs edge-runtime srv-2
-just apply-host-dev srv-2
-just verify-host srv-2
+just validate-local-modules-drvs edge-runtime edge-01
+just apply-host-dev edge-01
+just verify-host edge-01
 ```
 
 The private repo should own:

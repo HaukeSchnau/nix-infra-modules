@@ -49,7 +49,7 @@ let
   mkTcpForwardBackend = name: forward: ''
     backend ${sanitizeName name}_backend
       mode tcp
-      # Bare hostnames such as "srv-1" resolve via libc search domains on the
+      # Short upstream hostnames can resolve via libc search domains on the
       # host, but HAProxy's runtime DNS resolvers do not apply those suffixes.
       # Resolve once at load time and keep the stable Tailscale address.
       server upstream ${cfg.upstream.upstreamHost}:${toString forward.upstreamPort} init-addr libc

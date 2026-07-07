@@ -107,6 +107,53 @@
             modules = self.nixosModules;
             nixosLib = self.lib.nixos;
           };
+          mkFleetSystem =
+            name: extraModules:
+            lib.nixosSystem {
+              inherit system;
+              modules = [
+                self.nixosModules.fleet
+                {
+                  networking.hostName = name;
+                  boot.isContainer = true;
+                  system.stateVersion = "25.05";
+                  vps = {
+                    enable = true;
+                    baseDomain = "example.net";
+                    caddy.acmeEmail = "admin@example.net";
+                  };
+                }
+              ]
+              ++ extraModules;
+            };
+          podmanSystem = mkFleetSystem "runtime-01" [
+            {
+              vps.services.podman.enable = true;
+            }
+          ];
+          githubRunnerSystem = mkFleetSystem "github-ci-01" [
+            {
+              vps.services.githubRunner = {
+                enable = true;
+                url = "https://github.com/example-org/example-repo";
+                tokenFile = "/run/secrets/github-runner-token";
+                instanceName = "github-ci";
+                runnerName = "github-ci";
+                instanceCount = 2;
+              };
+            }
+          ];
+          giteaRunnerSystem = mkFleetSystem "gitea-ci-01" [
+            {
+              vps.services.giteaActionsRunner = {
+                enable = true;
+                url = "https://git.example.net";
+                tokenFile = "/run/secrets/gitea-runner-token";
+                instanceName = "gitea-ci";
+                runnerName = "gitea-ci";
+              };
+            }
+          ];
         in
         {
           format =
@@ -125,6 +172,36 @@
           core-example = example.nixosConfigurations.core-01.config.system.build.toplevel;
           edge-example = example.nixosConfigurations.edge-01.config.system.build.toplevel;
 
+          fleet-generated-services-example =
+            let
+              generatedServices = example.nixosConfigurations.core-01.config.vps.generated.services;
+              serviceNames = map (service: service.name) generatedServices;
+              healthUnits = example.nixosConfigurations.core-01.config.vps.generated.healthUnits;
+            in
+            pkgs.runCommand "fleet-generated-services-example" { } ''
+              test '${toString (builtins.length generatedServices)}' = '2'
+              test '${if builtins.elem "appDeployments" serviceNames then "yes" else "no"}' = 'yes'
+              test '${if builtins.elem "caddy" serviceNames then "yes" else "no"}' = 'yes'
+              test '${if builtins.elem "app-deployment-demo.service" healthUnits then "yes" else "no"}' = 'yes'
+              test '${if builtins.elem "caddy.service" healthUnits then "yes" else "no"}' = 'yes'
+              touch $out
+            '';
+
+          edge-contract-example =
+            let
+              contract = example.nixosConfigurations.core-01.config.vps.generated.edgeIngress;
+              routeNames = lib.attrNames contract.routes;
+            in
+            pkgs.runCommand "edge-contract-example" { } ''
+              test '${contract.upstreamHost}' = 'core-01'
+              test '${toString contract.internalIngressPort}' = '8080'
+              test '${if builtins.elem "admin.example.net" routeNames then "yes" else "no"}' = 'yes'
+              test '${if builtins.elem "demo.example.net" routeNames then "yes" else "no"}' = 'yes'
+              test '${toString contract.tcpForwardRanges.demo.listen.from}' = '22000'
+              test '${toString contract.tcpForwardRanges.demo.upstream.to}' = '32002'
+              touch $out
+            '';
+
           edge-tcp-range-example =
             let
               haproxyConfig = pkgs.writeText "edge-example-haproxy.cfg" example.nixosConfigurations.edge-01.config.services.haproxy.config;
@@ -136,6 +213,58 @@
               grep -q 'server upstream core-01:32001 init-addr libc' ${haproxyConfig}
               grep -q 'bind :22002' ${haproxyConfig}
               grep -q 'server upstream core-01:32002 init-addr libc' ${haproxyConfig}
+              touch $out
+            '';
+
+          podman-runtime-example =
+            let
+              runtime = podmanSystem.config;
+            in
+            pkgs.runCommand "podman-runtime-example" { } ''
+              test '${if runtime.virtualisation.podman.enable then "yes" else "no"}' = 'yes'
+              test '${if runtime.virtualisation.podman.dockerCompat then "yes" else "no"}' = 'yes'
+              test '${runtime.virtualisation.oci-containers.backend}' = 'podman'
+              test '${if runtime.vps.hostCapabilities.containerNetworking.enable then "yes" else "no"}' = 'yes'
+              test '${runtime.systemd.services.podman-network-proxy.description}' = "Create Podman network 'proxy' for VPS containers"
+              test '${runtime.systemd.timers."runtime-01-podman-prune".timerConfig.OnCalendar}' = 'daily'
+              touch $out
+            '';
+
+          github-runner-example =
+            let
+              runners = githubRunnerSystem.config.services.github-runners;
+              healthUnits = githubRunnerSystem.config.vps.services.githubRunner.metadata.health.units;
+            in
+            pkgs.runCommand "github-runner-example" { } ''
+              test '${runners."github-ci".url}' = 'https://github.com/example-org/example-repo'
+              test '${runners."github-ci".name}' = 'github-ci'
+              test '${runners."github-ci-2".name}' = 'github-ci-2'
+              test '${toString runners."github-ci".tokenFile}' = '/run/secrets/github-runner-token'
+              test '${runners."github-ci".serviceOverrides.MemoryMax}' = '5.5G'
+              test '${
+                if builtins.elem "github-runner-github-ci.service" healthUnits then "yes" else "no"
+              }' = 'yes'
+              test '${
+                if builtins.elem "github-runner-github-ci-2.service" healthUnits then "yes" else "no"
+              }' = 'yes'
+              touch $out
+            '';
+
+          gitea-runner-example =
+            let
+              runner = giteaRunnerSystem.config.services.gitea-actions-runner.instances."gitea-ci";
+              unit = giteaRunnerSystem.config.systemd.services."gitea-runner-gitea\\x2dci";
+              healthUnits = giteaRunnerSystem.config.vps.services.giteaActionsRunner.metadata.health.units;
+            in
+            pkgs.runCommand "gitea-runner-example" { } ''
+              test '${runner.url}' = 'https://git.example.net'
+              test '${runner.name}' = 'gitea-ci'
+              test '${toString runner.tokenFile}' = '/run/secrets/gitea-runner-token'
+              test '${unit.environment.DOCKER_HOST}' = 'unix:///run/docker.sock'
+              test '${unit.serviceConfig.MemoryMax}' = '4G'
+              test '${
+                if builtins.elem "gitea-runner-gitea\\x2dci.service" healthUnits then "yes" else "no"
+              }' = 'yes'
               touch $out
             '';
 
