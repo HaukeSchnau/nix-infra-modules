@@ -582,9 +582,14 @@ def command_fetch(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 0 if failures == 0 else 1
 
 
-def command_doctor(_args: argparse.Namespace, config: dict[str, Any]) -> int:
+def command_doctor(args: argparse.Namespace, config: dict[str, Any]) -> int:
     failures = 0
-    for repo in configured_repos(config["inventory"]):
+    repos = merged_discovered_repos(
+        config["inventory"],
+        include_local=False,
+        include_gitlab=args.discover_gitlab_groups,
+    )
+    for repo in repos:
         destination = expand_home_path(repo.path)
         problems: list[str] = []
         if not destination.exists():
@@ -651,6 +656,7 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.set_defaults(func=command_fetch)
 
     doctor = subparsers.add_parser("doctor", help="Check managed repository state.")
+    doctor.add_argument("--discover-gitlab-groups", action="store_true")
     doctor.set_defaults(func=command_doctor)
 
     capture = subparsers.add_parser("capture", help="Discover repos and optionally write inventory.")

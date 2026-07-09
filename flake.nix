@@ -376,20 +376,47 @@
             '';
 
           workspace-repos-home =
-            (home-manager.lib.homeManagerConfiguration {
-              inherit pkgs;
-              modules = [
-                self.homeManagerModules.workspaceRepos
-                {
-                  home = {
-                    username = "example";
-                    homeDirectory = "/home/example";
-                    stateVersion = "25.05";
-                  };
-                  workspaceRepos.activationSync.enable = false;
-                }
-              ];
-            }).activationPackage;
+            let
+              home = home-manager.lib.homeManagerConfiguration {
+                inherit pkgs;
+                modules = [
+                  self.homeManagerModules.workspaceRepos
+                  {
+                    home = {
+                      username = "example";
+                      homeDirectory = "/home/example";
+                      stateVersion = "25.05";
+                    };
+                  }
+                ];
+              };
+            in
+            pkgs.runCommand "workspace-repos-home" { } ''
+              grep -q -- '--discover-gitlab-groups' ${home.activationPackage}/activate
+              touch $out
+            '';
+
+          workspace-repos-home-no-gitlab-discovery =
+            let
+              home = home-manager.lib.homeManagerConfiguration {
+                inherit pkgs;
+                modules = [
+                  self.homeManagerModules.workspaceRepos
+                  {
+                    home = {
+                      username = "example";
+                      homeDirectory = "/home/example";
+                      stateVersion = "25.05";
+                    };
+                    workspaceRepos.activationSync.discoverGitLabGroups = false;
+                  }
+                ];
+              };
+            in
+            pkgs.runCommand "workspace-repos-home-no-gitlab-discovery" { } ''
+              ! grep -q -- '--discover-gitlab-groups' ${home.activationPackage}/activate
+              touch $out
+            '';
 
           workspace-repos-python =
             pkgs.runCommand "workspace-repos-python"

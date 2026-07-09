@@ -65,6 +65,12 @@ in
         description = "Whether activation reconciliation should fetch declared repositories.";
       };
 
+      discoverGitLabGroups = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether activation reconciliation should discover and reconcile inventory GitLab groups.";
+      };
+
       timeoutSeconds = lib.mkOption {
         type = lib.types.ints.positive;
         default = 120;
@@ -93,6 +99,9 @@ in
           --activation
           --timeout ${toString cfg.activationSync.timeoutSeconds}
         )
+        ${lib.optionalString cfg.activationSync.discoverGitLabGroups ''
+          args+=(--discover-gitlab-groups)
+        ''}
         ${lib.optionalString (!cfg.activationSync.fetch) ''
           args+=(--no-fetch)
         ''}

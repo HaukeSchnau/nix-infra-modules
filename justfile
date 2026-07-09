@@ -17,6 +17,7 @@ quick:
     nix build --no-link .#checks.x86_64-linux.git-mirrors-example
     nix eval .#checks.x86_64-linux.server-backup-example.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.workspace-repos-home.drvPath >/dev/null
+    nix eval .#checks.x86_64-linux.workspace-repos-home-no-gitlab-discovery.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.workspace-repos-python.drvPath >/dev/null
 
 check:

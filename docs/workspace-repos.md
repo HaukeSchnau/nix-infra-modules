@@ -29,11 +29,18 @@ if desired, a repository-local `workspaceRepos.writableInventoryPath`.
 ## Commands
 
 - `workspace-repos sync`: clone missing repositories, initialize colocated JJ
-  repositories, ensure `origin`, and fetch.
+  repositories, ensure `origin`, and fetch. Pass `--discover-gitlab-groups` to
+  expand and reconcile `gitlab_groups`.
 - `workspace-repos fetch`: fetch every configured repository.
 - `workspace-repos doctor`: report missing repositories or mismatched origins.
+  Pass `--discover-gitlab-groups` to include dynamic GitLab group repositories.
 - `workspace-repos capture --write`: discover repositories and update the
   configured writable inventory path.
+
+Home Manager activation runs `workspace-repos sync --activation` and discovers
+GitLab groups by default. Set
+`workspaceRepos.activationSync.discoverGitLabGroups = false` when activation
+should only reconcile the static `repositories` list.
 
 Use `workspace-repos capture --commit` only when the writable inventory path
 lives in a JJ repository and the only working-copy change is that inventory
