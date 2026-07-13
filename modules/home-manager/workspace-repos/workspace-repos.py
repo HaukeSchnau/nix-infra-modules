@@ -14,6 +14,7 @@ from urllib.parse import quote, urlencode, urlparse
 
 
 CONFIG_PATH = Path("~/.config/workspace-repos/config.json").expanduser()
+JJ_POLICY_ARGS = ["jj", "--config", "revsets.short-prefixes=none()"]
 DEFAULT_EXCLUDE_DIRS = {
     ".cache",
     ".cargo",
@@ -375,7 +376,7 @@ def effective_working_copy_policy(repo: Repo, path: Path) -> WorkingCopyPolicy |
 def jj_commit_ids(path: Path, revset: str, timeout: int | None) -> list[str]:
     result = run(
         [
-            "jj",
+            *JJ_POLICY_ARGS,
             "-R",
             str(path),
             "log",
@@ -396,7 +397,7 @@ def working_copy_details(
 ) -> tuple[str, bool, str, list[str]]:
     result = run(
         [
-            "jj",
+            *JJ_POLICY_ARGS,
             "-R",
             str(path),
             "log",
@@ -449,7 +450,10 @@ def reconcile_working_copy(
             f"base {relative_to_home(path)} on {policy.base}; "
             f"previous change: {change_id}"
         )
-        run(["jj", "-R", str(path), "new", policy.base], timeout=timeout)
+        run(
+            [*JJ_POLICY_ARGS, "--quiet", "-R", str(path), "new", policy.base],
+            timeout=timeout,
+        )
         return
 
     reason = None
@@ -470,7 +474,10 @@ def reconcile_working_copy(
         return
 
     print(f"base {relative_to_home(path)} on {policy.base}")
-    run(["jj", "-R", str(path), "new", policy.base], timeout=timeout)
+    run(
+        [*JJ_POLICY_ARGS, "--quiet", "-R", str(path), "new", policy.base],
+        timeout=timeout,
+    )
 
 
 def working_copy_problem(

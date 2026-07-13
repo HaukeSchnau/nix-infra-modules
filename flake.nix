@@ -567,6 +567,8 @@
                 git clone -q --bare seed remote.git
                 jj git clone --colocate --branch main "$PWD/remote.git" "$HOME/Code/example"
                 jj -R "$HOME/Code/example" new 'root()'
+                jj -R "$HOME/Code/example" config set --repo \
+                  revsets.short-prefixes '(missing..@)::'
 
                 jq -n --arg url "$PWD/remote.git" '{
                   version: 1,
@@ -585,6 +587,8 @@
 
                 python3 ${./modules/home-manager/workspace-repos/workspace-repos.py} \
                   --config config.json sync --no-fetch
+                jj -R "$HOME/Code/example" config unset --repo \
+                  revsets.short-prefixes
                 test -n "$(
                   jj -R "$HOME/Code/example" log \
                     -r 'parents(@) & main@origin' --no-graph -T commit_id
