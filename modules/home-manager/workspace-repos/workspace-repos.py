@@ -38,6 +38,7 @@ DEFAULT_EXCLUDE_DIRS = {
 @dataclass(frozen=True)
 class WorkingCopyPolicy:
     base: str
+    mode: str = "guarded"
 
 
 @dataclass(frozen=True)
@@ -165,7 +166,13 @@ def repo_from_dict(value: dict[str, Any], source: str | None = None) -> Repo:
         base = working_copy_value.get("base")
         if not isinstance(base, str) or not base:
             raise ValueError(f"repository entry has invalid working-copy base: {value!r}")
-        working_copy = WorkingCopyPolicy(base=base)
+        mode = working_copy_value.get("mode", "guarded")
+        if not isinstance(mode, str) or mode not in {
+            "guarded",
+            "snapshot-and-reset",
+        }:
+            raise ValueError(f"repository entry has invalid working-copy mode: {value!r}")
+        working_copy = WorkingCopyPolicy(base=base, mode=mode)
     return Repo(
         path=path,
         url=url,
@@ -184,6 +191,8 @@ def repo_to_dict(repo: Repo) -> dict[str, Any]:
         result["bookmark"] = repo.bookmark
     if repo.working_copy:
         result["working_copy"] = {"base": repo.working_copy.base}
+        if repo.working_copy.mode != "guarded":
+            result["working_copy"]["mode"] = repo.working_copy.mode
     return result
 
 
@@ -369,14 +378,14 @@ def working_copy_details(
             "@",
             "--no-graph",
             "-T",
-            'commit_id ++ "\\0" ++ empty ++ "\\0" ++ description',
+            'change_id ++ "\\0" ++ empty ++ "\\0" ++ description',
         ],
         timeout=timeout,
         quiet=True,
     )
-    commit_id, empty, description = result.stdout.split("\0", 2)
+    change_id, empty, description = result.stdout.split("\0", 2)
     parents = jj_commit_ids(path, "parents(@)", timeout)
-    return commit_id, empty == "true", description, parents
+    return change_id, empty == "true", description, parents
 
 
 def reconcile_working_copy(
@@ -388,8 +397,16 @@ def reconcile_working_copy(
             f"working-copy base {policy.base!r} resolved to {len(target_ids)} commits"
         )
     target_id = target_ids[0]
-    _commit_id, is_empty, description, parents = working_copy_details(path, timeout)
-    if parents == [target_id]:
+    change_id, is_empty, description, parents = working_copy_details(path, timeout)
+    if is_empty and not description.strip() and parents == [target_id]:
+        return
+
+    if policy.mode == "snapshot-and-reset":
+        print(
+            f"base {relative_to_home(path)} on {policy.base}; "
+            f"previous change: {change_id}"
+        )
+        run(["jj", "-R", str(path), "new", policy.base], timeout=timeout)
         return
 
     reason = None
@@ -419,7 +436,11 @@ def working_copy_problem(
     target_ids = jj_commit_ids(path, policy.base, timeout)
     if len(target_ids) != 1:
         return f"working-copy base {policy.base!r} resolves to {len(target_ids)} commits"
-    _commit_id, _is_empty, _description, parents = working_copy_details(path, timeout)
+    _change_id, is_empty, description, parents = working_copy_details(path, timeout)
+    if not is_empty:
+        return "working copy contains changes"
+    if description.strip():
+        return "working-copy change has a description"
     if parents != target_ids:
         return f"working copy is not based on {policy.base}"
     return None

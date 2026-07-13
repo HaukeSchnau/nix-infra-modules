@@ -21,7 +21,10 @@ if desired, a repository-local `workspaceRepos.writableInventoryPath`.
       "path": "Code/example",
       "url": "git@github.com:example/example.git",
       "bookmark": "main",
-      "working_copy": { "base": "main@origin" }
+      "working_copy": {
+        "base": "main@origin",
+        "mode": "snapshot-and-reset"
+      }
     }
   ]
 }
@@ -29,11 +32,20 @@ if desired, a repository-local `workspaceRepos.writableInventoryPath`.
 
 `working_copy.base` is opt-in per repository. After a successful fetch,
 reconciliation keeps the repository's base workspace as an empty, undescribed
-change directly above that revision. It only moves the workspace when its
-current parent is already an ancestor of the configured base. Repositories with
-working-copy changes, descriptions, merge parents, local-only commits, or
-diverged history are left untouched and reported. Dynamic GitLab repositories
-do not receive a working-copy policy unless they are also declared explicitly.
+change directly above that revision. The default `guarded` mode only moves the
+workspace when its current change is empty and undescribed and its parent is an
+ancestor of the configured base. Working-copy changes, descriptions, merge
+parents, local-only commits, and diverged history are left untouched and
+reported.
+
+Set `working_copy.mode` to `snapshot-and-reset` for a more assertive base
+workspace. JJ snapshots the current working copy, the reconciler reports its
+change ID, and then `jj new <base>` switches the workspace to a clean change
+above the configured revision. Non-empty or described prior changes and their
+ancestors remain in JJ history and can be restored with `jj edit <change-id>`.
+The workspace's files do change to the configured base, so editor buffers and
+running processes are outside this guarantee. Dynamic GitLab repositories do
+not receive a working-copy policy unless they are also declared explicitly.
 
 GitLab group entries accept an optional `host`, recursively query all subgroup
 projects through GitLab's paginated group-projects API, and preserve subgroup

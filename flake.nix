@@ -593,6 +593,46 @@
                   jj -R "$HOME/Code/example" log \
                     -r 'parents(@)' --no-graph -T 'description.first_line()'
                 )" = 'local only'
+
+                old_change="$(
+                  jj -R "$HOME/Code/example" log \
+                    -r @ --no-graph -T change_id
+                )"
+                echo preserved > "$HOME/Code/example/preserved"
+                jj -R "$HOME/Code/example" describe -m 'active work'
+                jq '.inventory.repositories[0].working_copy.mode = "snapshot-and-reset"' \
+                  config.json > aggressive-config.json
+                python3 ${./modules/home-manager/workspace-repos/workspace-repos.py} \
+                  --config aggressive-config.json sync --no-fetch > aggressive.log
+                grep -q "previous change: $old_change" aggressive.log
+                test -n "$(
+                  jj -R "$HOME/Code/example" log \
+                    -r 'parents(@) & main@origin' --no-graph -T commit_id
+                )"
+                test ! -e "$HOME/Code/example/preserved"
+
+                echo on-base > "$HOME/Code/example/on-base"
+                on_base_change="$(
+                  jj -R "$HOME/Code/example" log \
+                    -r @ --no-graph -T change_id
+                )"
+                python3 ${./modules/home-manager/workspace-repos/workspace-repos.py} \
+                  --config aggressive-config.json sync --no-fetch > on-base.log
+                grep -q "previous change: $on_base_change" on-base.log
+                test ! -e "$HOME/Code/example/on-base"
+                jj -R "$HOME/Code/example" edit "$on_base_change"
+                test "$(cat "$HOME/Code/example/on-base")" = on-base
+
+                jj -R "$HOME/Code/example" edit "$old_change"
+                test "$(cat "$HOME/Code/example/preserved")" = preserved
+                test "$(
+                  jj -R "$HOME/Code/example" log \
+                    -r @ --no-graph -T 'description.first_line()'
+                )" = 'active work'
+                test "$(
+                  jj -R "$HOME/Code/example" log \
+                    -r 'parents(@)' --no-graph -T 'description.first_line()'
+                )" = 'local only'
                 touch $out
               '';
         }
