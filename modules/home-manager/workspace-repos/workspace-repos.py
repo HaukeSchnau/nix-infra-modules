@@ -419,12 +419,13 @@ def reconcile_working_copy(
 ) -> None:
     try:
         target_ids = jj_commit_ids(path, policy.base, timeout)
-    except RuntimeError as error:
+    except RuntimeError:
         if not policy.automatic:
             raise
         eprint(
             "workspace-repos: skip automatic working-copy update for "
-            f"{relative_to_home(path)}: {error}"
+            f"{relative_to_home(path)}: working-copy base "
+            f"{policy.base!r} is unavailable"
         )
         return
     if len(target_ids) != 1:
@@ -475,7 +476,12 @@ def reconcile_working_copy(
 def working_copy_problem(
     path: Path, policy: WorkingCopyPolicy, timeout: int | None
 ) -> str | None:
-    target_ids = jj_commit_ids(path, policy.base, timeout)
+    try:
+        target_ids = jj_commit_ids(path, policy.base, timeout)
+    except RuntimeError:
+        if policy.automatic:
+            return f"working-copy base {policy.base!r} is unavailable"
+        raise
     if len(target_ids) != 1:
         return f"working-copy base {policy.base!r} resolves to {len(target_ids)} commits"
     _change_id, is_empty, description, parents = working_copy_details(path, timeout)
