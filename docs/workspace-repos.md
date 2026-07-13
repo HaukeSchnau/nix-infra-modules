@@ -48,8 +48,8 @@ running processes are outside this guarantee. Dynamic GitLab repositories do
 not receive a working-copy policy unless they are also declared explicitly.
 
 GitLab group entries accept an optional `host`, recursively query all subgroup
-projects through GitLab's paginated group-projects API, and preserve subgroup
-paths by default:
+projects through GitLab's paginated group-projects API, ignore projects whose
+repository feature is disabled, and preserve subgroup paths by default:
 
 ```json
 {

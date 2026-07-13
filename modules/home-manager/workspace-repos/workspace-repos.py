@@ -592,6 +592,8 @@ def discover_gitlab_group(
     for project in projects:
         if project.get("archived") and not include_archived:
             continue
+        if project.get("repository_access_level") == "disabled":
+            continue
         url = project.get("ssh_url_to_repo") or project.get("http_url_to_repo")
         if not url:
             continue

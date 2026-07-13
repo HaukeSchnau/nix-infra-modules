@@ -497,6 +497,10 @@
                             '{"path_with_namespace":"example/two",'
                             '"path":"two","ssh_url_to_repo":"git@example.test:example/two.git",'
                             '"default_branch":"trunk","archived":false}\n'
+                            '{"path_with_namespace":"example/metadata-only",'
+                            '"path":"metadata-only",'
+                            '"ssh_url_to_repo":"git@example.test:example/metadata-only.git",'
+                            '"repository_access_level":"disabled","archived":false}\n'
                         ),
                         stderr="",
                     )
