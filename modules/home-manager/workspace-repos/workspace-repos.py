@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import argparse
+import fcntl
 import json
 import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -67,6 +69,29 @@ def command_exists(command: str) -> bool:
     return shutil.which(command) is not None
 
 
+@contextmanager
+def sync_lock():
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    lock_root = (
+        Path(runtime_dir)
+        if runtime_dir
+        else Path(os.environ.get("XDG_CACHE_HOME", home() / ".cache"))
+    )
+    lock_path = lock_root / "workspace-repos" / "sync.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            eprint("workspace-repos: sync already in progress; skipping overlapping run")
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
 def run(
     args: list[str],
     *,
@@ -79,14 +104,18 @@ def run(
         location = f" [{cwd}]" if cwd else ""
         print("$ " + " ".join(args) + location)
 
-    result = subprocess.run(
-        args,
-        cwd=cwd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            args,
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as error:
+        duration = f" after {timeout}s" if timeout is not None else ""
+        raise RuntimeError(f"{' '.join(args)} timed out{duration}") from error
     if check and result.returncode != 0:
         message = result.stderr.strip() or result.stdout.strip()
         raise RuntimeError(f"{' '.join(args)} failed: {message}")
@@ -378,10 +407,11 @@ def gitlab_namespace_path(project: dict[str, Any], group: str) -> str:
     return path or path_with_namespace.rsplit("/", 1)[-1]
 
 
-def discover_gitlab_group(group_config: dict[str, Any]) -> list[Repo]:
+def discover_gitlab_group(
+    group_config: dict[str, Any], timeout: int | None = None
+) -> list[Repo]:
     if not command_exists("glab"):
-        eprint("workspace-repos: glab not found; skipping GitLab group discovery")
-        return []
+        raise RuntimeError("glab not found; cannot discover GitLab groups")
 
     group = group_config["group"]
     base_path = group_config["base_path"]
@@ -410,19 +440,19 @@ def discover_gitlab_group(group_config: dict[str, Any]) -> list[Repo]:
         if not include_archived:
             args.append("--archived=false")
 
-        result = run(args, check=False, quiet=True)
+        result = run(args, check=False, quiet=True, timeout=timeout)
         if result.returncode != 0:
-            eprint(
-                "workspace-repos: GitLab discovery failed for "
-                f"{group}: {result.stderr.strip() or result.stdout.strip()}"
+            message = result.stderr.strip() or result.stdout.strip()
+            raise RuntimeError(
+                f"GitLab discovery failed for {group}: {message}"
             )
-            return []
 
         try:
             page_projects = json.loads(result.stdout)
         except json.JSONDecodeError as error:
-            eprint(f"workspace-repos: could not parse glab JSON for {group}: {error}")
-            return []
+            raise RuntimeError(
+                f"could not parse GitLab discovery response for {group}: {error}"
+            ) from error
 
         if not page_projects:
             break
@@ -456,18 +486,18 @@ def discover_gitlab_group(group_config: dict[str, Any]) -> list[Repo]:
     return repos
 
 
-def discover_gitlab_groups(inventory: dict[str, Any]) -> list[Repo]:
+def discover_gitlab_groups(
+    inventory: dict[str, Any], timeout: int | None = None
+) -> list[Repo]:
     repos: list[Repo] = []
     for group_config in inventory["gitlab_groups"]:
         group = group_config.get("group")
         base_path = group_config.get("base_path")
         if not isinstance(group, str) or not group:
-            eprint(f"workspace-repos: invalid GitLab group config: {group_config!r}")
-            continue
+            raise ValueError(f"invalid GitLab group config: {group_config!r}")
         if not isinstance(base_path, str) or not base_path:
-            eprint(f"workspace-repos: invalid GitLab base path: {group_config!r}")
-            continue
-        repos.extend(discover_gitlab_group(group_config))
+            raise ValueError(f"invalid GitLab base path: {group_config!r}")
+        repos.extend(discover_gitlab_group(group_config, timeout))
     return repos
 
 
@@ -476,6 +506,7 @@ def merged_discovered_repos(
     *,
     include_local: bool,
     include_gitlab: bool,
+    timeout: int | None = None,
 ) -> list[Repo]:
     repos = [
         repo
@@ -485,7 +516,7 @@ def merged_discovered_repos(
     if include_local:
         repos.extend(discover_local_repos(inventory))
     if include_gitlab:
-        repos.extend(discover_gitlab_groups(inventory))
+        repos.extend(discover_gitlab_groups(inventory, timeout))
     return sorted(dedupe_repos(repos).values(), key=lambda repo: repo.path)
 
 
@@ -538,12 +569,20 @@ def maybe_commit_inventory(path: Path) -> None:
 
 
 def command_sync(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    with sync_lock() as acquired:
+        if not acquired:
+            return 0
+        return reconcile_all(args, config)
+
+
+def reconcile_all(args: argparse.Namespace, config: dict[str, Any]) -> int:
     inventory = config["inventory"]
     include_gitlab = args.discover_gitlab_groups
     repos = merged_discovered_repos(
         inventory,
         include_local=False,
         include_gitlab=include_gitlab,
+        timeout=args.timeout,
     )
     if args.write:
         write_inventory(config, repos)
@@ -555,11 +594,9 @@ def command_sync(args: argparse.Namespace, config: dict[str, Any]) -> int:
         except Exception as error:
             failures += 1
             eprint(f"workspace-repos: {repo.path}: {error}")
-            if not args.activation:
-                continue
     if failures:
         eprint(f"workspace-repos: {failures} repos failed")
-    return 0 if args.activation or failures == 0 else 1
+    return 0 if failures == 0 else 1
 
 
 def command_fetch(args: argparse.Namespace, config: dict[str, Any]) -> int:
@@ -588,6 +625,7 @@ def command_doctor(args: argparse.Namespace, config: dict[str, Any]) -> int:
         config["inventory"],
         include_local=False,
         include_gitlab=args.discover_gitlab_groups,
+        timeout=args.timeout,
     )
     for repo in repos:
         destination = expand_home_path(repo.path)
@@ -615,6 +653,7 @@ def command_capture(args: argparse.Namespace, config: dict[str, Any]) -> int:
         config["inventory"],
         include_local=True,
         include_gitlab=not args.skip_gitlab_groups,
+        timeout=args.timeout,
     )
     if args.write:
         output_path = write_inventory(config, repos)
@@ -643,7 +682,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     sync = subparsers.add_parser("sync", help="Clone missing repos and ensure JJ colocation.")
-    sync.add_argument("--activation", action="store_true", help="Do not fail the caller.")
     sync.add_argument("--discover-gitlab-groups", action="store_true")
     sync.add_argument("--write", action="store_true", help="Write discovered repos first.")
     sync.add_argument("--fetch", dest="fetch", action="store_true", default=True)
@@ -657,12 +695,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser("doctor", help="Check managed repository state.")
     doctor.add_argument("--discover-gitlab-groups", action="store_true")
+    doctor.add_argument("--timeout", type=int, default=120)
     doctor.set_defaults(func=command_doctor)
 
     capture = subparsers.add_parser("capture", help="Discover repos and optionally write inventory.")
     capture.add_argument("--write", action="store_true")
     capture.add_argument("--commit", action="store_true")
     capture.add_argument("--skip-gitlab-groups", action="store_true")
+    capture.add_argument("--timeout", type=int, default=120)
     capture.set_defaults(func=command_capture)
 
     return parser
@@ -672,7 +712,11 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     config = load_config(args.config.expanduser())
-    return args.func(args, config)
+    try:
+        return args.func(args, config)
+    except (RuntimeError, ValueError) as error:
+        eprint(f"workspace-repos: {error}")
+        return 1
 
 
 if __name__ == "__main__":

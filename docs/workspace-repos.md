@@ -37,10 +37,23 @@ if desired, a repository-local `workspaceRepos.writableInventoryPath`.
 - `workspace-repos capture --write`: discover repositories and update the
   configured writable inventory path.
 
-Home Manager activation runs `workspace-repos sync --activation` and discovers
-GitLab groups by default. Set
+Home Manager activation runs `workspace-repos sync` and discovers GitLab groups
+by default. A failed repository or GitLab discovery is reported, while the
+surrounding Home Manager activation continues so an unavailable remote does not
+prevent unrelated configuration changes from activating. Set
 `workspaceRepos.activationSync.discoverGitLabGroups = false` when activation
 should only reconcile the static `repositories` list.
+
+Set `workspaceRepos.scheduledSync.enable = true` to reconcile automatically on
+the schedule in `workspaceRepos.scheduledSync.period` (hourly by default). The
+module creates a persistent systemd user timer on Linux and a launchd agent on
+macOS. Overlapping activation and scheduled runs are serialized; a second run
+exits successfully after reporting that reconciliation is already in progress.
+
+Reconciliation is deliberately non-destructive. It clones missing repositories,
+adds JJ colocation, corrects `origin`, and fetches. It does not check out or
+fast-forward working copies, delete repositories that leave an inventory or
+GitLab group, or overwrite local changes.
 
 Use `workspace-repos capture --commit` only when the writable inventory path
 lives in a JJ repository and the only working-copy change is that inventory

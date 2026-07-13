@@ -387,12 +387,17 @@
                       homeDirectory = "/home/example";
                       stateVersion = "25.05";
                     };
+                    workspaceRepos.scheduledSync.enable = true;
                   }
                 ];
               };
             in
             pkgs.runCommand "workspace-repos-home" { } ''
               grep -q -- '--discover-gitlab-groups' ${home.activationPackage}/activate
+              test '${home.config.systemd.user.timers.workspace-repos-sync.Timer.OnCalendar}' = 'hourly'
+              test '${
+                if home.config.systemd.user.timers.workspace-repos-sync.Timer.Persistent then "yes" else "no"
+              }' = 'yes'
               touch $out
             '';
 
@@ -425,6 +430,40 @@
               }
               ''
                 python3 -m py_compile ${./modules/home-manager/workspace-repos/workspace-repos.py}
+                touch $out
+              '';
+
+          workspace-repos-discovery-failure =
+            pkgs.runCommand "workspace-repos-discovery-failure"
+              {
+                nativeBuildInputs = [ pkgs.python3 ];
+              }
+              ''
+                mkdir -p home bin
+                cp ${./modules/home-manager/workspace-repos/empty-inventory.json} inventory.json
+                ${pkgs.jq}/bin/jq '.gitlab_groups = [{
+                  "group": "example",
+                  "base_path": "Code",
+                  "include_archived": false,
+                  "preserve_namespace": true
+                }]' inventory.json > configured-inventory.json
+                ${pkgs.jq}/bin/jq -n --slurpfile inventory configured-inventory.json '{
+                  version: 1,
+                  inventory: $inventory[0],
+                  writable_inventory_path: "unused.json"
+                }' > config.json
+                printf '#!${pkgs.runtimeShell}\nexit 23\n' > bin/glab
+                chmod +x bin/glab
+
+                if HOME="$PWD/home" PATH="$PWD/bin:$PATH" \
+                  python3 ${./modules/home-manager/workspace-repos/workspace-repos.py} \
+                    --config config.json sync --discover-gitlab-groups --no-fetch \
+                    2> error.log
+                then
+                  echo "GitLab discovery failure unexpectedly succeeded" >&2
+                  exit 1
+                fi
+                grep -q 'GitLab discovery failed for example' error.log
                 touch $out
               '';
         }

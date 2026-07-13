@@ -19,6 +19,7 @@ quick:
     nix eval .#checks.x86_64-linux.workspace-repos-home.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.workspace-repos-home-no-gitlab-discovery.drvPath >/dev/null
     nix eval .#checks.x86_64-linux.workspace-repos-python.drvPath >/dev/null
+    nix build --no-link .#checks.x86_64-linux.workspace-repos-discovery-failure
 
 check:
     nix flake check --all-systems
