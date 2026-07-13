@@ -524,6 +524,77 @@
                 PY
                 touch $out
               '';
+
+          workspace-repos-working-copy =
+            pkgs.runCommand "workspace-repos-working-copy"
+              {
+                nativeBuildInputs = [
+                  pkgs.git
+                  pkgs.jq
+                  pkgs.jujutsu
+                  pkgs.python3
+                ];
+              }
+              ''
+                export HOME="$PWD/home"
+                export XDG_CONFIG_HOME="$PWD/config"
+                mkdir -p "$HOME" "$XDG_CONFIG_HOME"
+
+                git init -q -b main seed
+                git -C seed config user.email test@example.com
+                git -C seed config user.name Test
+                echo initial > seed/file
+                git -C seed add file
+                git -C seed commit -qm initial
+                git clone -q --bare seed remote.git
+                jj git clone --colocate --branch main "$PWD/remote.git" "$HOME/Code/example"
+                jj -R "$HOME/Code/example" new 'root()'
+
+                jq -n --arg url "$PWD/remote.git" '{
+                  version: 1,
+                  writable_inventory_path: "unused.json",
+                  inventory: {
+                    version: 1,
+                    roots: [],
+                    gitlab_groups: [],
+                    repositories: [{
+                      path: "Code/example",
+                      url: $url,
+                      bookmark: "main",
+                      working_copy: {base: "main@origin"}
+                    }]
+                  }
+                }' > config.json
+
+                python3 ${./modules/home-manager/workspace-repos/workspace-repos.py} \
+                  --config config.json sync --no-fetch
+                test -n "$(
+                  jj -R "$HOME/Code/example" log \
+                    -r 'parents(@) & main@origin' --no-graph -T commit_id
+                )"
+
+                jj -R "$HOME/Code/example" new 'root()'
+                echo dirty > "$HOME/Code/example/dirty"
+                python3 ${./modules/home-manager/workspace-repos/workspace-repos.py} \
+                  --config config.json sync --no-fetch 2> error.log
+                grep -q 'working copy contains changes' error.log
+                test -n "$(
+                  jj -R "$HOME/Code/example" log \
+                    -r 'parents(@) & root()' --no-graph -T commit_id
+                )"
+
+                jj -R "$HOME/Code/example" new 'main@origin'
+                echo local > "$HOME/Code/example/local"
+                jj -R "$HOME/Code/example" commit -m 'local only'
+                python3 ${./modules/home-manager/workspace-repos/workspace-repos.py} \
+                  --config config.json sync --no-fetch 2> local-error.log
+                grep -q 'current parent is not an ancestor' local-error.log
+                test "$(
+                  jj -R "$HOME/Code/example" log \
+                    -r 'parents(@)' --no-graph -T 'description.first_line()'
+                )" = 'local only'
+                touch $out
+              '';
         }
       );
     };

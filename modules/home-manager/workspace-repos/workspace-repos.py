@@ -36,11 +36,17 @@ DEFAULT_EXCLUDE_DIRS = {
 
 
 @dataclass(frozen=True)
+class WorkingCopyPolicy:
+    base: str
+
+
+@dataclass(frozen=True)
 class Repo:
     path: str
     url: str
     bookmark: str | None = None
     source: str | None = None
+    working_copy: WorkingCopyPolicy | None = None
 
 
 def eprint(*values: object) -> None:
@@ -151,16 +157,33 @@ def repo_from_dict(value: dict[str, Any], source: str | None = None) -> Repo:
     bookmark = value.get("bookmark")
     if bookmark is not None and not isinstance(bookmark, str):
         bookmark = None
-    return Repo(path=path, url=url, bookmark=bookmark, source=source)
+    working_copy_value = value.get("working_copy")
+    working_copy = None
+    if working_copy_value is not None:
+        if not isinstance(working_copy_value, dict):
+            raise ValueError(f"repository entry has invalid working_copy: {value!r}")
+        base = working_copy_value.get("base")
+        if not isinstance(base, str) or not base:
+            raise ValueError(f"repository entry has invalid working-copy base: {value!r}")
+        working_copy = WorkingCopyPolicy(base=base)
+    return Repo(
+        path=path,
+        url=url,
+        bookmark=bookmark,
+        source=source,
+        working_copy=working_copy,
+    )
 
 
-def repo_to_dict(repo: Repo) -> dict[str, str]:
-    result = {
+def repo_to_dict(repo: Repo) -> dict[str, Any]:
+    result: dict[str, Any] = {
         "path": repo.path,
         "url": repo.url,
     }
     if repo.bookmark:
         result["bookmark"] = repo.bookmark
+    if repo.working_copy:
+        result["working_copy"] = {"base": repo.working_copy.base}
     return result
 
 
@@ -314,6 +337,94 @@ def clone_repo(repo: Repo, destination: Path, timeout: int | None) -> None:
     run(args, timeout=timeout)
 
 
+def jj_commit_ids(path: Path, revset: str, timeout: int | None) -> list[str]:
+    result = run(
+        [
+            "jj",
+            "-R",
+            str(path),
+            "log",
+            "-r",
+            revset,
+            "--no-graph",
+            "-T",
+            'commit_id ++ "\\n"',
+        ],
+        timeout=timeout,
+        quiet=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def working_copy_details(
+    path: Path, timeout: int | None
+) -> tuple[str, bool, str, list[str]]:
+    result = run(
+        [
+            "jj",
+            "-R",
+            str(path),
+            "log",
+            "-r",
+            "@",
+            "--no-graph",
+            "-T",
+            'commit_id ++ "\\0" ++ empty ++ "\\0" ++ description',
+        ],
+        timeout=timeout,
+        quiet=True,
+    )
+    commit_id, empty, description = result.stdout.split("\0", 2)
+    parents = jj_commit_ids(path, "parents(@)", timeout)
+    return commit_id, empty == "true", description, parents
+
+
+def reconcile_working_copy(
+    path: Path, policy: WorkingCopyPolicy, timeout: int | None
+) -> None:
+    target_ids = jj_commit_ids(path, policy.base, timeout)
+    if len(target_ids) != 1:
+        raise RuntimeError(
+            f"working-copy base {policy.base!r} resolved to {len(target_ids)} commits"
+        )
+    target_id = target_ids[0]
+    _commit_id, is_empty, description, parents = working_copy_details(path, timeout)
+    if parents == [target_id]:
+        return
+
+    reason = None
+    if not is_empty:
+        reason = "working copy contains changes"
+    elif description.strip():
+        reason = "working-copy change has a description"
+    elif len(parents) != 1:
+        reason = f"working-copy change has {len(parents)} parents"
+    elif jj_commit_ids(path, f"{parents[0]} & ::{target_id}", timeout) != parents:
+        reason = "current parent is not an ancestor of the configured base"
+
+    if reason:
+        eprint(
+            "workspace-repos: skip working-copy update for "
+            f"{relative_to_home(path)}: {reason}"
+        )
+        return
+
+    print(f"base {relative_to_home(path)} on {policy.base}")
+    run(["jj", "-R", str(path), "new", policy.base], timeout=timeout)
+
+
+def working_copy_problem(
+    path: Path, policy: WorkingCopyPolicy, timeout: int | None
+) -> str | None:
+    target_ids = jj_commit_ids(path, policy.base, timeout)
+    if len(target_ids) != 1:
+        return f"working-copy base {policy.base!r} resolves to {len(target_ids)} commits"
+    _commit_id, _is_empty, _description, parents = working_copy_details(path, timeout)
+    if parents != target_ids:
+        return f"working copy is not based on {policy.base}"
+    return None
+
+
 def reconcile_repo(
     repo: Repo,
     *,
@@ -351,6 +462,9 @@ def reconcile_repo(
             ["jj", "-R", str(destination), "git", "fetch", "--remote", "origin"],
             timeout=timeout,
         )
+
+    if repo.working_copy:
+        reconcile_working_copy(destination, repo.working_copy, timeout)
 
 
 def discover_local_repos(inventory: dict[str, Any]) -> list[Repo]:
@@ -632,6 +746,15 @@ def command_doctor(args: argparse.Namespace, config: dict[str, Any]) -> int:
             current = git_origin_url(destination)
             if not git_urls_equivalent(current, repo.url):
                 problems.append(f"origin is {current or '<missing>'}")
+            if repo.working_copy and has_jj(destination):
+                try:
+                    problem = working_copy_problem(
+                        destination, repo.working_copy, args.timeout
+                    )
+                except RuntimeError as error:
+                    problem = str(error)
+                if problem:
+                    problems.append(problem)
         if problems:
             failures += 1
             print(f"[fail] {repo.path}: {', '.join(problems)}")
