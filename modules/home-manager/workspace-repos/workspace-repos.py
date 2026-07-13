@@ -39,6 +39,7 @@ DEFAULT_EXCLUDE_DIRS = {
 class WorkingCopyPolicy:
     base: str
     mode: str = "guarded"
+    automatic: bool = False
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class Repo:
     bookmark: str | None = None
     source: str | None = None
     working_copy: WorkingCopyPolicy | None = None
+    automatic_working_copy: bool = True
 
 
 def eprint(*values: object) -> None:
@@ -158,12 +160,16 @@ def repo_from_dict(value: dict[str, Any], source: str | None = None) -> Repo:
     bookmark = value.get("bookmark")
     if bookmark is not None and not isinstance(bookmark, str):
         bookmark = None
+    automatic_working_copy = "working_copy" not in value
     working_copy_value = value.get("working_copy")
     working_copy = None
-    if working_copy_value is not None:
-        if not isinstance(working_copy_value, dict):
-            raise ValueError(f"repository entry has invalid working_copy: {value!r}")
+    if working_copy_value is False:
+        automatic_working_copy = False
+    elif isinstance(working_copy_value, dict):
+        automatic_working_copy = False
         base = working_copy_value.get("base")
+        if base is None and bookmark:
+            base = f"{bookmark}@origin"
         if not isinstance(base, str) or not base:
             raise ValueError(f"repository entry has invalid working-copy base: {value!r}")
         mode = working_copy_value.get("mode", "guarded")
@@ -173,12 +179,15 @@ def repo_from_dict(value: dict[str, Any], source: str | None = None) -> Repo:
         }:
             raise ValueError(f"repository entry has invalid working-copy mode: {value!r}")
         working_copy = WorkingCopyPolicy(base=base, mode=mode)
+    elif not automatic_working_copy:
+        raise ValueError(f"repository entry has invalid working_copy: {value!r}")
     return Repo(
         path=path,
         url=url,
         bookmark=bookmark,
         source=source,
         working_copy=working_copy,
+        automatic_working_copy=automatic_working_copy,
     )
 
 
@@ -189,7 +198,9 @@ def repo_to_dict(repo: Repo) -> dict[str, Any]:
     }
     if repo.bookmark:
         result["bookmark"] = repo.bookmark
-    if repo.working_copy:
+    if not repo.automatic_working_copy and repo.working_copy is None:
+        result["working_copy"] = False
+    elif repo.working_copy:
         result["working_copy"] = {"base": repo.working_copy.base}
         if repo.working_copy.mode != "guarded":
             result["working_copy"]["mode"] = repo.working_copy.mode
@@ -346,6 +357,21 @@ def clone_repo(repo: Repo, destination: Path, timeout: int | None) -> None:
     run(args, timeout=timeout)
 
 
+def effective_working_copy_policy(repo: Repo, path: Path) -> WorkingCopyPolicy | None:
+    if repo.working_copy:
+        return repo.working_copy
+    if not repo.automatic_working_copy:
+        return None
+    bookmark = repo.bookmark or git_default_bookmark(path)
+    if not bookmark:
+        return None
+    return WorkingCopyPolicy(
+        base=f"{bookmark}@origin",
+        mode="guarded",
+        automatic=True,
+    )
+
+
 def jj_commit_ids(path: Path, revset: str, timeout: int | None) -> list[str]:
     result = run(
         [
@@ -391,11 +417,27 @@ def working_copy_details(
 def reconcile_working_copy(
     path: Path, policy: WorkingCopyPolicy, timeout: int | None
 ) -> None:
-    target_ids = jj_commit_ids(path, policy.base, timeout)
+    try:
+        target_ids = jj_commit_ids(path, policy.base, timeout)
+    except RuntimeError as error:
+        if not policy.automatic:
+            raise
+        eprint(
+            "workspace-repos: skip automatic working-copy update for "
+            f"{relative_to_home(path)}: {error}"
+        )
+        return
     if len(target_ids) != 1:
-        raise RuntimeError(
+        problem = (
             f"working-copy base {policy.base!r} resolved to {len(target_ids)} commits"
         )
+        if not policy.automatic:
+            raise RuntimeError(problem)
+        eprint(
+            "workspace-repos: skip automatic working-copy update for "
+            f"{relative_to_home(path)}: {problem}"
+        )
+        return
     target_id = target_ids[0]
     change_id, is_empty, description, parents = working_copy_details(path, timeout)
     if is_empty and not description.strip() and parents == [target_id]:
@@ -484,8 +526,14 @@ def reconcile_repo(
             timeout=timeout,
         )
 
-    if repo.working_copy:
-        reconcile_working_copy(destination, repo.working_copy, timeout)
+    working_copy = effective_working_copy_policy(repo, destination)
+    if working_copy:
+        reconcile_working_copy(destination, working_copy, timeout)
+    elif repo.automatic_working_copy:
+        eprint(
+            "workspace-repos: skip automatic working-copy update for "
+            f"{repo.path}: no default bookmark"
+        )
 
 
 def discover_local_repos(inventory: dict[str, Any]) -> list[Repo]:
@@ -769,15 +817,32 @@ def command_doctor(args: argparse.Namespace, config: dict[str, Any]) -> int:
             current = git_origin_url(destination)
             if not git_urls_equivalent(current, repo.url):
                 problems.append(f"origin is {current or '<missing>'}")
-            if repo.working_copy and has_jj(destination):
+            working_copy = (
+                effective_working_copy_policy(repo, destination)
+                if has_jj(destination)
+                else None
+            )
+            if working_copy:
                 try:
                     problem = working_copy_problem(
-                        destination, repo.working_copy, args.timeout
+                        destination, working_copy, args.timeout
                     )
                 except RuntimeError as error:
                     problem = str(error)
                 if problem:
-                    problems.append(problem)
+                    if working_copy.automatic:
+                        print(
+                            "[info] "
+                            f"{repo.path}: automatic working-copy policy skipped: "
+                            f"{problem}"
+                        )
+                    else:
+                        problems.append(problem)
+            elif repo.automatic_working_copy and has_jj(destination):
+                print(
+                    f"[info] {repo.path}: automatic working-copy policy skipped: "
+                    "no default bookmark"
+                )
         if problems:
             failures += 1
             print(f"[fail] {repo.path}: {', '.join(problems)}")

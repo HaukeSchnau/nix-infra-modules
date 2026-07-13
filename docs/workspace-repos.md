@@ -20,23 +20,35 @@ if desired, a repository-local `workspaceRepos.writableInventoryPath`.
     {
       "path": "Code/example",
       "url": "git@github.com:example/example.git",
-      "bookmark": "main",
-      "working_copy": {
-        "base": "main@origin",
-        "mode": "snapshot-and-reset"
-      }
+      "bookmark": "main"
     }
   ]
 }
 ```
 
-`working_copy.base` is opt-in per repository. After a successful fetch,
-reconciliation keeps the repository's base workspace as an empty, undescribed
-change directly above that revision. The default `guarded` mode only moves the
-workspace when its current change is empty and undescribed and its parent is an
-ancestor of the configured base. Working-copy changes, descriptions, merge
-parents, local-only commits, and diverged history are left untouched and
-reported.
+Working-copy reconciliation defaults to `guarded` for explicit and dynamic
+GitLab repositories. Its base is `<bookmark>@origin`, using the inventory
+bookmark, GitLab's reported default branch, or the existing checkout's detected
+default bookmark. It only moves the workspace when its current change is empty
+and undescribed and its parent is an ancestor of the base. Working-copy changes,
+descriptions, merge parents, local-only commits, diverged history, missing
+bookmarks, and unresolvable remote bases are left untouched and logged. These
+automatic skips are informational and do not make sync or doctor fail.
+
+Set `working_copy` to `false` to disable the automatic policy for one explicit
+repository. Use an object for a strict override:
+
+```json
+{
+  "working_copy": {
+    "base": "release@origin",
+    "mode": "guarded"
+  }
+}
+```
+
+Within an explicit object, `base` defaults to `<bookmark>@origin` and `mode`
+defaults to `guarded`. Invalid or unresolvable explicit policies remain errors.
 
 Set `working_copy.mode` to `snapshot-and-reset` for a more assertive base
 workspace. JJ snapshots the current working copy, the reconciler reports its
@@ -44,8 +56,7 @@ change ID, and then `jj new <base>` switches the workspace to a clean change
 above the configured revision. Non-empty or described prior changes and their
 ancestors remain in JJ history and can be restored with `jj edit <change-id>`.
 The workspace's files do change to the configured base, so editor buffers and
-running processes are outside this guarantee. Dynamic GitLab repositories do
-not receive a working-copy policy unless they are also declared explicitly.
+running processes are outside this guarantee.
 
 GitLab group entries accept an optional `host`, recursively query all subgroup
 projects through GitLab's paginated group-projects API, ignore projects whose
@@ -87,10 +98,10 @@ macOS. Overlapping activation and scheduled runs are serialized; a second run
 exits successfully after reporting that reconciliation is already in progress.
 
 Reconciliation is deliberately non-destructive. It clones missing repositories,
-adds JJ colocation, corrects `origin`, and fetches. Apart from the explicitly
-configured safe `working_copy.base` behavior, it does not move working copies.
-It never fast-forwards local branches, deletes repositories that leave an
-inventory or GitLab group, or overwrites local changes.
+adds JJ colocation, corrects `origin`, fetches, and applies the guarded
+working-copy policy where supported. It never fast-forwards local branches,
+deletes repositories that leave an inventory or GitLab group, or overwrites
+local changes.
 
 Use `workspace-repos capture --commit` only when the writable inventory path
 lives in a JJ repository and the only working-copy change is that inventory

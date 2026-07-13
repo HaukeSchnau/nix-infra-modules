@@ -519,6 +519,20 @@
                     "Work/Repos/subgroup/one",
                     "Work/Repos/two",
                 ]
+                assert [
+                    module.effective_working_copy_policy(repo, module.Path(".")).base
+                    for repo in repos
+                ] == ["main@origin", "trunk@origin"]
+                opted_out = module.repo_from_dict({
+                    "path": "Code/opted-out",
+                    "url": "git@example.test:example/opted-out.git",
+                    "bookmark": "main",
+                    "working_copy": False,
+                })
+                assert module.effective_working_copy_policy(
+                    opted_out, module.Path(".")
+                ) is None
+                assert module.repo_to_dict(opted_out)["working_copy"] is False
                 command = captured[0]
                 assert command[:4] == ["glab", "api", "--hostname", "example.test"]
                 assert "groups/example/projects?" in command[4]
@@ -564,8 +578,7 @@
                     repositories: [{
                       path: "Code/example",
                       url: $url,
-                      bookmark: "main",
-                      working_copy: {base: "main@origin"}
+                      bookmark: "main"
                     }]
                   }
                 }' > config.json
@@ -586,6 +599,19 @@
                   jj -R "$HOME/Code/example" log \
                     -r 'parents(@) & root()' --no-graph -T commit_id
                 )"
+                python3 ${./modules/home-manager/workspace-repos/workspace-repos.py} \
+                  --config config.json doctor > doctor.log
+                grep -q '\[info\].*automatic working-copy policy skipped: working copy contains changes' \
+                  doctor.log
+                grep -q '\[ok\]   Code/example' doctor.log
+
+                jq '.inventory.repositories[0].bookmark = "missing"' \
+                  config.json > unsupported-config.json
+                python3 ${./modules/home-manager/workspace-repos/workspace-repos.py} \
+                  --config unsupported-config.json sync --no-fetch \
+                  2> unsupported-error.log
+                grep -q 'skip automatic working-copy update.*missing@origin' \
+                  unsupported-error.log
 
                 jj -R "$HOME/Code/example" new 'main@origin'
                 echo local > "$HOME/Code/example/local"
@@ -604,7 +630,7 @@
                 )"
                 echo preserved > "$HOME/Code/example/preserved"
                 jj -R "$HOME/Code/example" describe -m 'active work'
-                jq '.inventory.repositories[0].working_copy.mode = "snapshot-and-reset"' \
+                jq '.inventory.repositories[0].working_copy = {mode: "snapshot-and-reset"}' \
                   config.json > aggressive-config.json
                 python3 ${./modules/home-manager/workspace-repos/workspace-repos.py} \
                   --config aggressive-config.json sync --no-fetch > aggressive.log
