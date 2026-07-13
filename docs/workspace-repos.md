@@ -26,6 +26,20 @@ if desired, a repository-local `workspaceRepos.writableInventoryPath`.
 }
 ```
 
+GitLab group entries accept an optional `host`, recursively query all subgroup
+projects through GitLab's paginated group-projects API, and preserve subgroup
+paths by default:
+
+```json
+{
+  "group": "example",
+  "host": "gitlab.example.com",
+  "base_path": "Work/Repos",
+  "include_archived": false,
+  "preserve_namespace": true
+}
+```
+
 ## Commands
 
 - `workspace-repos sync`: clone missing repositories, initialize colocated JJ

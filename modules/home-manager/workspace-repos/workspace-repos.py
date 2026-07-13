@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 
 CONFIG_PATH = Path("~/.config/workspace-repos/config.json").expanduser()
@@ -415,51 +415,43 @@ def discover_gitlab_group(
 
     group = group_config["group"]
     base_path = group_config["base_path"]
+    host = group_config.get("host")
     include_archived = bool(group_config.get("include_archived", False))
     preserve_namespace = bool(group_config.get("preserve_namespace", True))
 
+    query = {
+        "include_subgroups": "true",
+        "per_page": "100",
+    }
+    if not include_archived:
+        query["archived"] = "false"
+    endpoint = f"groups/{quote(group, safe='')}/projects?{urlencode(query)}"
+    args = ["glab", "api"]
+    if isinstance(host, str) and host:
+        args.extend(["--hostname", host])
+    args.extend([endpoint, "--paginate", "--output", "ndjson"])
+
+    result = run(args, check=False, quiet=True, timeout=timeout)
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(f"GitLab discovery failed for {group}: {message}")
+
     projects: list[dict[str, Any]] = []
-    per_page = 100
-    page = 1
-
-    while True:
-        args = [
-            "glab",
-            "repo",
-            "list",
-            "--group",
-            group,
-            "--include-subgroups",
-            "--output",
-            "json",
-            "--per-page",
-            str(per_page),
-            "--page",
-            str(page),
-        ]
-        if not include_archived:
-            args.append("--archived=false")
-
-        result = run(args, check=False, quiet=True, timeout=timeout)
-        if result.returncode != 0:
-            message = result.stderr.strip() or result.stdout.strip()
-            raise RuntimeError(
-                f"GitLab discovery failed for {group}: {message}"
-            )
-
+    for line_number, line in enumerate(result.stdout.splitlines(), start=1):
+        if not line.strip():
+            continue
         try:
-            page_projects = json.loads(result.stdout)
+            project = json.loads(line)
         except json.JSONDecodeError as error:
             raise RuntimeError(
-                f"could not parse GitLab discovery response for {group}: {error}"
+                "could not parse GitLab discovery response for "
+                f"{group} at line {line_number}: {error}"
             ) from error
-
-        if not page_projects:
-            break
-        projects.extend(page_projects)
-        if len(page_projects) < per_page:
-            break
-        page += 1
+        if not isinstance(project, dict):
+            raise RuntimeError(
+                f"invalid GitLab discovery result for {group} at line {line_number}"
+            )
+        projects.append(project)
 
     repos: list[Repo] = []
     for project in projects:

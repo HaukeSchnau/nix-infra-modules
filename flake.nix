@@ -466,6 +466,64 @@
                 grep -q 'GitLab discovery failed for example' error.log
                 touch $out
               '';
+
+          workspace-repos-gitlab-discovery =
+            pkgs.runCommand "workspace-repos-gitlab-discovery"
+              {
+                nativeBuildInputs = [ pkgs.python3 ];
+              }
+              ''
+                python3 - <<'PY'
+                import importlib.util
+                import subprocess
+
+                spec = importlib.util.spec_from_file_location(
+                    "workspace_repos",
+                    "${./modules/home-manager/workspace-repos/workspace-repos.py}",
+                )
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+
+                captured = []
+                def fake_run(args, **kwargs):
+                    captured.append(args)
+                    return subprocess.CompletedProcess(
+                        args,
+                        0,
+                        stdout=(
+                            '{"path_with_namespace":"example/subgroup/one",'
+                            '"path":"one","ssh_url_to_repo":"git@example.test:example/subgroup/one.git",'
+                            '"default_branch":"main","archived":false}\n'
+                            '{"path_with_namespace":"example/two",'
+                            '"path":"two","ssh_url_to_repo":"git@example.test:example/two.git",'
+                            '"default_branch":"trunk","archived":false}\n'
+                        ),
+                        stderr="",
+                    )
+
+                module.run = fake_run
+                module.command_exists = lambda _command: True
+                repos = module.discover_gitlab_group({
+                    "group": "example",
+                    "host": "example.test",
+                    "base_path": "Work/Repos",
+                    "include_archived": False,
+                    "preserve_namespace": True,
+                })
+
+                assert [repo.path for repo in repos] == [
+                    "Work/Repos/subgroup/one",
+                    "Work/Repos/two",
+                ]
+                command = captured[0]
+                assert command[:4] == ["glab", "api", "--hostname", "example.test"]
+                assert "groups/example/projects?" in command[4]
+                assert "include_subgroups=true" in command[4]
+                assert "archived=false" in command[4]
+                assert command[-3:] == ["--paginate", "--output", "ndjson"]
+                PY
+                touch $out
+              '';
         }
       );
     };
