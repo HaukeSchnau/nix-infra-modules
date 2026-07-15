@@ -61,6 +61,7 @@ Available helpers:
 - `lib.nixos.nixFlakeService`
 - `lib.nixos.generatedInventory`
 - `lib.nixos.generatedTypes`
+- `lib.nixos.serviceMetadata`
 
 ## Example
 
