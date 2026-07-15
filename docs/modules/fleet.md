@@ -6,12 +6,13 @@ leaves.
 `nixosModules.fleet` imports the complete NixOS interface. Individual exports
 such as `nixosModules.caddyIngress` and `nixosModules.podmanRuntime` are leaf
 modules; they are useful when a private repo wants a smaller import surface but
-may still depend on the shared `vps` metadata options.
+each imports its actual foundation and service dependencies, so it evaluates as
+a truthful standalone leaf.
 
 ## Public Owns
 
 - `vps.enable`, `vps.baseDomain`, and `vps.caddy.acmeEmail`
-- service metadata for inventory rows and health units
+- service-local metadata for inventory rows and health units
 - generated service inventory and edge-ingress contracts
 - `vps-services` and `vps-health-check`
 

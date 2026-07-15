@@ -9,10 +9,18 @@ let
   vps = config.vps;
   cfg = vps.services.giteaActionsRunner;
   systemdInstanceName = utils.escapeSystemdPath cfg.instanceName;
+  serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
 in
 {
+  imports = [ ../fleet/foundation.nix ];
+
   options.vps.services.giteaActionsRunner = {
     enable = lib.mkEnableOption "Gitea Actions self-hosted runner";
+
+    metadata = serviceMetadata.mkOptions {
+      displayName = "Gitea Actions Runner";
+      category = "Developer";
+    };
 
     url = lib.mkOption {
       type = lib.types.str;

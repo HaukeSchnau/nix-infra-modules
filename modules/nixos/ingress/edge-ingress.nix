@@ -7,6 +7,7 @@ let
   vps = config.vps;
   cfg = vps.services.edgeIngress;
   generatedTypes = import ../inventory/generated-types.nix { inherit lib; };
+  serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
   tcpForwards = if cfg.upstream == null then { } else cfg.upstream.tcpForwards;
   tcpForwardRanges = if cfg.upstream == null then { } else cfg.upstream.tcpForwardRanges;
   sanitizeName = name: lib.replaceStrings [ "." "-" "*" ] [ "_" "_" "wildcard" ] name;
@@ -56,8 +57,19 @@ let
   '';
 in
 {
+  imports = [
+    ../fleet/foundation.nix
+    ./caddy.nix
+  ];
+
   options.vps.services.edgeIngress = {
     enable = lib.mkEnableOption "public edge ingress that fans out to a generated upstream VPS service contract";
+
+    metadata = serviceMetadata.mkOptions {
+      displayName = "Edge Ingress";
+      category = "Infrastructure";
+      healthUnits = [ "haproxy.service" ];
+    };
 
     upstream = lib.mkOption {
       default = null;

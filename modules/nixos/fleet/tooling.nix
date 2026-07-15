@@ -13,6 +13,8 @@ let
   );
 in
 {
+  imports = [ ./generated-contract.nix ];
+
   options.vps.tooling.enable = lib.mkOption {
     type = lib.types.bool;
     default = true;

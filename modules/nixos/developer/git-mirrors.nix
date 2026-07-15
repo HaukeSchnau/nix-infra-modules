@@ -7,6 +7,7 @@
 let
   vps = config.vps;
   cfg = vps.services.gitMirrors;
+  serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
 
   repositoryType = lib.types.submodule (
     { name, ... }:
@@ -474,8 +475,15 @@ let
   '';
 in
 {
+  imports = [ ../fleet/foundation.nix ];
+
   options.vps.services.gitMirrors = {
     enable = lib.mkEnableOption "periodic Gitea-to-GitHub repository mirrors";
+
+    metadata = serviceMetadata.mkOptions {
+      displayName = "Git Mirrors";
+      category = "Developer";
+    };
 
     interval = lib.mkOption {
       type = lib.types.str;

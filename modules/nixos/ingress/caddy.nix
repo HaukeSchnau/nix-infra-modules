@@ -7,6 +7,7 @@ let
   rawSiteList = lib.attrValues cfg.rawSites;
   rawSiteLabels = map (site: site.siteLabel) rawSiteList;
   extraConfigImports = map (path: "import ${path}") cfg.extraConfigImports;
+  serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
 
   sanitizeMatcherName = name: "vps_" + lib.replaceStrings [ "." "-" "*" ] [ "_" "_" "wildcard" ] name;
 
@@ -41,8 +42,16 @@ let
       handlerConfig;
 in
 {
+  imports = [ ../fleet/foundation.nix ];
+
   options.vps.services.caddy = {
     enable = lib.mkEnableOption "Caddy reverse proxy";
+
+    metadata = serviceMetadata.mkOptions {
+      displayName = "Caddy";
+      category = "Infrastructure";
+      healthUnits = [ "caddy.service" ];
+    };
 
     dataDir = lib.mkOption {
       type = lib.types.str;

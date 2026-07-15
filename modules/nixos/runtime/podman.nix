@@ -9,11 +9,23 @@ let
   cfg = vps.services.podman;
   hostCapabilities = vps.hostCapabilities;
   pruneUnitName = "${config.networking.hostName}-podman-prune";
+  serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
 in
 {
+  imports = [ ../fleet/foundation.nix ];
+
   options.vps = {
     services.podman = {
       enable = lib.mkEnableOption "Podman runtime for VPS services";
+
+      metadata = serviceMetadata.mkOptions {
+        displayName = "Podman";
+        category = "Infrastructure";
+        healthUnits = [
+          "podman.socket"
+          "podman-network-proxy.service"
+        ];
+      };
 
       networkName = lib.mkOption {
         type = lib.types.str;

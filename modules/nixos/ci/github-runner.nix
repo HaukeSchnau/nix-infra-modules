@@ -11,10 +11,18 @@ let
   runnerSuffix = index: if cfg.instanceCount == 1 || index == 1 then "" else "-${toString index}";
   runnerInstanceName = index: "${cfg.instanceName}${runnerSuffix index}";
   runnerDisplayName = index: "${cfg.runnerName}${runnerSuffix index}";
+  serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
 in
 {
+  imports = [ ../fleet/foundation.nix ];
+
   options.vps.services.githubRunner = {
     enable = lib.mkEnableOption "GitHub Actions self-hosted runner";
+
+    metadata = serviceMetadata.mkOptions {
+      displayName = "GitHub Runner";
+      category = "Developer";
+    };
 
     url = lib.mkOption {
       type = lib.types.str;

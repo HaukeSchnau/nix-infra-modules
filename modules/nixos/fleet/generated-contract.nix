@@ -25,6 +25,11 @@ let
   );
 in
 {
+  imports = [
+    ./foundation.nix
+    ../ingress/caddy.nix
+  ];
+
   options.vps.generated = {
     services = lib.mkOption {
       default = [ ];
