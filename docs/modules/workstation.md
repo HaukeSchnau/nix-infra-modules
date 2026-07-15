@@ -18,7 +18,8 @@ a complete desktop distribution.
 
 ## Boundary
 
-Public modules own reusable mechanics and fake defaults.
+Public modules own reusable mechanics and portable opinionated defaults,
+including fonts and color schemes.
 
 Private repos own real profile names, private repositories, workspaces, account
-paths, secrets, and machine-specific policy.
+paths, secrets, host placement, and policy tied to a specific machine.
