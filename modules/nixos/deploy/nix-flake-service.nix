@@ -7,6 +7,11 @@ app:
   ...
 }:
 let
+  internal = app.__appDeploymentsInternal or false;
+  declaredApp = builtins.removeAttrs app [
+    "name"
+    "__appDeploymentsInternal"
+  ];
   hasSops = options ? sops;
   cfg = lib.recursiveUpdate {
     enable = true;
@@ -280,11 +285,9 @@ let
 
     exec "$executable"
   '';
-in
-{
-  config = lib.mkMerge (
-    [
-      (lib.mkIf cfg.enable {
+  runtimeConfig =
+    if cfg.enable then
+      {
         users.users.${userName} = {
           isSystemUser = true;
           group = userName;
@@ -335,15 +338,17 @@ in
           };
         };
 
-        systemd.timers.${updateUnitName} = lib.mkIf cfg.autoUpdate.enable {
-          description = "Reconcile app deployment '${name}'";
-          wantedBy = [ "timers.target" ];
-          timerConfig = {
-            OnActiveSec = cfg.autoUpdate.onBootSec;
-            OnBootSec = cfg.autoUpdate.onBootSec;
-            OnUnitActiveSec = cfg.autoUpdate.interval;
-            Persistent = true;
-            Unit = "${updateUnitName}.service";
+        systemd.timers = lib.optionalAttrs cfg.autoUpdate.enable {
+          ${updateUnitName} = {
+            description = "Reconcile app deployment '${name}'";
+            wantedBy = [ "timers.target" ];
+            timerConfig = {
+              OnActiveSec = cfg.autoUpdate.onBootSec;
+              OnBootSec = cfg.autoUpdate.onBootSec;
+              OnUnitActiveSec = cfg.autoUpdate.interval;
+              Persistent = true;
+              Unit = "${updateUnitName}.service";
+            };
           };
         };
 
@@ -354,21 +359,28 @@ in
 
         vps.services.appDeployments.metadata.health.units = [ "${unitName}.service" ];
 
-        vps.services.caddy.virtualHosts = lib.mkIf (cfg.domain != null) {
+        vps.services.caddy.virtualHosts = lib.optionalAttrs (cfg.domain != null) {
           ${cfg.domain} = {
             upstream = "${cfg.host}:${toString cfg.port}";
             tailscaleOnly = !cfg.public;
           };
         };
-      })
-    ]
-    ++ lib.optionals hasSops [
-      (lib.mkIf (cfg.enable && cfg.source.giteaTokenSecretName != null) {
+      }
+      // lib.optionalAttrs (hasSops && cfg.source.giteaTokenSecretName != null) {
         sops.secrets.${cfg.source.giteaTokenSecretName} = {
           owner = "root";
           mode = "0400";
         };
-      })
-    ]
-  );
-}
+      }
+    else
+      { };
+  runtimeModule = {
+    config = runtimeConfig;
+  };
+in
+if internal then
+  runtimeModule
+else
+  {
+    config.vps.services.appDeployments.apps.${app.name} = declaredApp;
+  }

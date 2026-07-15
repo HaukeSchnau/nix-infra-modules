@@ -7,7 +7,232 @@
 }:
 let
   cfg = config.vps.appDeployments;
+  apps = config.vps.services.appDeployments.apps;
   hasSops = options ? sops;
+  serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
+  nixFlakeService = import ./nix-flake-service.nix;
+
+  appType = lib.types.submodule (
+    { name, ... }:
+    {
+      options = {
+        enable = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = "Whether to run and reconcile the ${name} application deployment.";
+        };
+
+        public = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = "Whether the generated Caddy route is publicly reachable.";
+        };
+
+        host = lib.mkOption {
+          type = lib.types.str;
+          default = "127.0.0.1";
+          description = "Address the deployed application listens on.";
+        };
+
+        port = lib.mkOption {
+          type = lib.types.port;
+          description = "Port the deployed application listens on.";
+        };
+
+        domain = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Optional domain exposed through the fleet Caddy service.";
+        };
+
+        package = lib.mkOption {
+          type = lib.types.str;
+          default = "default";
+          description = "Package attribute built from the source flake.";
+        };
+
+        executable = lib.mkOption {
+          type = lib.types.str;
+          description = "Executable expected in the built package's bin directory.";
+        };
+
+        environment = lib.mkOption {
+          type = lib.types.attrsOf lib.types.unspecified;
+          default = { };
+          description = "Environment variables passed to the application service.";
+        };
+
+        environmentFiles = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          description = "systemd environment files loaded by the application service.";
+        };
+
+        path = lib.mkOption {
+          type = lib.types.listOf lib.types.package;
+          default = [ ];
+          description = "Packages added to the application service PATH.";
+        };
+
+        stateDirs = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          description = "Additional state directories owned by the application's system user.";
+        };
+
+        preStart = lib.mkOption {
+          type = lib.types.lines;
+          default = "";
+          description = "Shell commands run before the application starts.";
+        };
+
+        serviceConfig = lib.mkOption {
+          type = lib.types.attrsOf lib.types.unspecified;
+          default = { };
+          description = "Additional systemd service settings for the application.";
+        };
+
+        source = {
+          url = lib.mkOption {
+            type = lib.types.str;
+            description = "Git-backed flake URL used to build the application.";
+          };
+
+          branch = lib.mkOption {
+            type = lib.types.str;
+            default = "main";
+            description = "Branch reconciled when no explicit revision is requested.";
+          };
+
+          netrcHost = lib.mkOption {
+            type = lib.types.str;
+            default = "git.example.net";
+            description = "Git host matched by the optional credential rewrite.";
+          };
+
+          username = lib.mkOption {
+            type = lib.types.str;
+            default = "deploy";
+            description = "Git username used with the optional read token.";
+          };
+
+          giteaTokenSecretName = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Optional SOPS secret containing a Git read token.";
+          };
+        };
+
+        health = {
+          host = lib.mkOption {
+            type = lib.types.str;
+            default = "127.0.0.1";
+            description = "Address probed after an application update.";
+          };
+
+          hostHeader = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Optional Host header sent by application health checks.";
+          };
+
+          headers = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = { };
+            description = "Additional HTTP headers sent by application health checks.";
+          };
+
+          paths = lib.mkOption {
+            type = lib.types.nonEmptyListOf (lib.types.strMatching "^/.*");
+            default = [ "/" ];
+            description = "Absolute HTTP paths that must all pass after an application update.";
+          };
+
+          startupTimeoutSec = lib.mkOption {
+            type = lib.types.ints.positive;
+            default = 60;
+            description = "Maximum time to wait for all health paths after an update.";
+          };
+
+          intervalSec = lib.mkOption {
+            type = lib.types.ints.positive;
+            default = 2;
+            description = "Delay between application health-check attempts.";
+          };
+
+          requestTimeoutSec = lib.mkOption {
+            type = lib.types.ints.positive;
+            default = 5;
+            description = "Timeout for each application health-check request.";
+          };
+        };
+
+        autoUpdate = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Whether to periodically reconcile the source branch.";
+          };
+
+          interval = lib.mkOption {
+            type = lib.types.str;
+            default = "10min";
+            description = "Interval between automatic application reconciliations.";
+          };
+
+          onBootSec = lib.mkOption {
+            type = lib.types.str;
+            default = "2min";
+            description = "Delay before the first application reconciliation after boot.";
+          };
+        };
+      };
+    }
+  );
+
+  appRuntimeModules = lib.mapAttrsToList (
+    name: app:
+    (nixFlakeService
+      (
+        app
+        // {
+          inherit name;
+          __appDeploymentsInternal = true;
+        }
+      )
+      {
+        inherit
+          config
+          lib
+          options
+          pkgs
+          ;
+      }
+    )
+  ) apps;
+
+  appRuntimeValues =
+    path: fallback: map (module: lib.attrByPath path fallback module.config) appRuntimeModules;
+
+  appRuntimeConfig = {
+    users.users = lib.mkMerge (appRuntimeValues [ "users" "users" ] { });
+    users.groups = lib.mkMerge (appRuntimeValues [ "users" "groups" ] { });
+    systemd.tmpfiles.rules = lib.mkMerge (appRuntimeValues [ "systemd" "tmpfiles" "rules" ] [ ]);
+    systemd.services = lib.mkMerge (appRuntimeValues [ "systemd" "services" ] { });
+    systemd.timers = lib.mkMerge (appRuntimeValues [ "systemd" "timers" ] { });
+    vps.appDeployments.webhookApps = lib.mkMerge (
+      appRuntimeValues [ "vps" "appDeployments" "webhookApps" ] { }
+    );
+    vps.services.appDeployments.metadata.health.units = lib.mkMerge (
+      appRuntimeValues [ "vps" "services" "appDeployments" "metadata" "health" "units" ] [ ]
+    );
+    vps.services.caddy.virtualHosts = lib.mkMerge (
+      appRuntimeValues [ "vps" "services" "caddy" "virtualHosts" ] { }
+    );
+  }
+  // lib.optionalAttrs hasSops {
+    sops.secrets = lib.mkMerge (appRuntimeValues [ "sops" "secrets" ] { });
+  };
 
   webhookAppsJson = pkgs.writeText "app-deployments-webhook-apps.json" (
     builtins.toJSON cfg.webhookApps
@@ -100,6 +325,11 @@ let
   '';
 in
 {
+  imports = [
+    ../fleet/foundation.nix
+    ../ingress/caddy.nix
+  ];
+
   options.vps.appDeployments = {
     webhook = {
       enable = lib.mkOption {
@@ -141,14 +371,37 @@ in
     };
   };
 
-  options.vps.services.appDeployments.enable = lib.mkOption {
-    type = lib.types.bool;
-    default = false;
-    description = "Enable reusable application deployment plumbing.";
+  options.vps.services.appDeployments = {
+    enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Enable reusable application deployment plumbing.";
+    };
+
+    metadata = serviceMetadata.mkOptions {
+      displayName = "App Deployments";
+      category = "Applications";
+    };
+
+    apps = lib.mkOption {
+      type = lib.types.attrsOf appType;
+      default = { };
+      description = "Flake-packaged applications reconciled as durable system services.";
+    };
   };
 
   config = lib.mkMerge (
     [
+      # Application lifecycles are controlled by apps.<name>.enable. Keep them
+      # independent of the shared webhook switch for compatibility with
+      # lib.nixos.nixFlakeService declarations.
+      appRuntimeConfig
+      {
+        assertions = lib.mapAttrsToList (name: _app: {
+          assertion = builtins.match "^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$" name != null;
+          message = "vps.services.appDeployments.apps.${name}: app names must contain only letters, digits, underscores, and hyphens, start with a letter or digit, and be at most 63 characters.";
+        }) apps;
+      }
       (lib.mkIf (config.vps.enable && config.vps.services.appDeployments.enable) {
         assertions = [
           {
@@ -157,8 +410,9 @@ in
           }
         ];
 
-        vps.services.appDeployments.metadata.health.units =
-          lib.optional cfg.webhook.enable "app-deployments-webhook.service";
+        vps.services.appDeployments.metadata.health.units = lib.mkBefore (
+          lib.optional cfg.webhook.enable "app-deployments-webhook.service"
+        );
 
         networking.firewall.interfaces.tailscale0.allowedTCPPorts = lib.mkIf cfg.webhook.enable [
           cfg.webhook.port
