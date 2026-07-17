@@ -33,6 +33,15 @@ in
         default = "proxy";
         description = "Shared Podman network used by VPS containers.";
       };
+
+      pruneUsers = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ "root" ];
+        description = ''
+          Local users whose independent Podman stores are cleaned by the
+          scheduled prune service. Include CI users that run rootless builds.
+        '';
+      };
     };
 
     hostCapabilities = {
@@ -118,25 +127,36 @@ in
                 exit 0
               fi
 
-              # Podman's global build cleanup ignores age filters for Buildah
-              # working containers. Select stale external storage explicitly so
-              # a recent or active build cannot be swept up by the daily job.
-              while read -r id status; do
-                if [ "$status" = Storage ]; then
-                  ${pkgs.podman}/bin/podman rm --force "$id"
+              prune_store() {
+                # Podman's global build cleanup ignores age filters for Buildah
+                # working containers. Select stale external storage explicitly so
+                # a recent or active build cannot be swept up by the daily job.
+                while read -r id status; do
+                  if [ "$status" = Storage ]; then
+                    "''${podman[@]}" rm --force "$id"
+                  fi
+                done < <(
+                  "''${podman[@]}" ps --all --external --no-trunc \
+                    --filter "until=${pruneUntil}" \
+                    --format '{{.ID}} {{.Status}}'
+                )
+
+                "''${podman[@]}" container prune --force --filter "until=${pruneUntil}"
+                "''${podman[@]}" image prune --all --force --filter "until=${pruneUntil}"
+
+                # The default volume-prune scope is anonymous volumes only, so
+                # named application data remains protected even while unused.
+                "''${podman[@]}" volume prune --force --filter "until=${pruneUntil}"
+              }
+
+              for user in ${lib.escapeShellArgs cfg.pruneUsers}; do
+                if [ "$user" = root ]; then
+                  podman=(${pkgs.podman}/bin/podman)
+                else
+                  podman=(${pkgs.util-linux}/bin/runuser --user "$user" -- ${pkgs.podman}/bin/podman)
                 fi
-              done < <(
-                ${pkgs.podman}/bin/podman ps --all --external --no-trunc \
-                  --filter "until=${pruneUntil}" \
-                  --format '{{.ID}} {{.Status}}'
-              )
-
-              ${pkgs.podman}/bin/podman container prune --force --filter "until=${pruneUntil}"
-              ${pkgs.podman}/bin/podman image prune --all --force --filter "until=${pruneUntil}"
-
-              # The default volume-prune scope is anonymous volumes only, so
-              # named application data remains protected even while unused.
-              ${pkgs.podman}/bin/podman volume prune --force --filter "until=${pruneUntil}"
+                prune_store
+              done
             '';
           };
         };
