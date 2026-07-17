@@ -9,6 +9,7 @@ let
   cfg = vps.services.podman;
   hostCapabilities = vps.hostCapabilities;
   pruneUnitName = "${config.networking.hostName}-podman-prune";
+  pruneUntil = "168h";
   serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
 in
 {
@@ -117,8 +118,25 @@ in
                 exit 0
               fi
 
-              ${pkgs.podman}/bin/podman container prune --force --filter "until=168h"
-              ${pkgs.podman}/bin/podman image prune --all --force --filter "until=168h"
+              # Podman's global build cleanup ignores age filters for Buildah
+              # working containers. Select stale external storage explicitly so
+              # a recent or active build cannot be swept up by the daily job.
+              while read -r id status; do
+                if [ "$status" = Storage ]; then
+                  ${pkgs.podman}/bin/podman rm --force "$id"
+                fi
+              done < <(
+                ${pkgs.podman}/bin/podman ps --all --external --no-trunc \
+                  --filter "until=${pruneUntil}" \
+                  --format '{{.ID}} {{.Status}}'
+              )
+
+              ${pkgs.podman}/bin/podman container prune --force --filter "until=${pruneUntil}"
+              ${pkgs.podman}/bin/podman image prune --all --force --filter "until=${pruneUntil}"
+
+              # The default volume-prune scope is anonymous volumes only, so
+              # named application data remains protected even while unused.
+              ${pkgs.podman}/bin/podman volume prune --force --filter "until=${pruneUntil}"
             '';
           };
         };
