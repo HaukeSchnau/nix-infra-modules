@@ -16,14 +16,18 @@ let
   cfg = lib.recursiveUpdate {
     enable = true;
     public = false;
+    backend = "service";
     host = "127.0.0.1";
+    port = null;
     package = "default";
+    executable = null;
     environment = { };
     environmentFiles = [ ];
     path = [ ];
     stateDirs = [ ];
     preStart = "";
     serviceConfig = { };
+    static.extraConfig = "";
     source = {
       branch = "main";
       netrcHost = "git.example.net";
@@ -47,6 +51,7 @@ let
   } app;
 
   name = cfg.name;
+  isService = cfg.backend == "service";
   unitName = "app-deployment-${name}";
   updateUnitName = "${unitName}-update";
   userName = "app-${name}";
@@ -86,8 +91,8 @@ let
       ]) cfg.health.headers
     );
 
-  healthScript = ''
-    check_health() {
+  serviceHealthScript = ''
+    check_service_health() {
       local deadline now path
       deadline=$((SECONDS + ${toString cfg.health.startupTimeoutSec}))
 
@@ -106,6 +111,29 @@ let
           fi
         done
         return 0
+      done
+    }
+  '';
+
+  staticHealthScript = ''
+    check_static_health() {
+      local root path relative candidate
+      root="$1"
+
+      for path in ${lib.escapeShellArgs cfg.health.paths}; do
+        relative="''${path#/}"
+        candidate="$root/$relative"
+
+        if [ -d "$candidate" ]; then
+          candidate="$candidate/index.html"
+        elif [ "$path" = "/" ] || [[ "$path" == */ ]]; then
+          candidate="$candidate/index.html"
+        fi
+
+        if [ ! -f "$candidate" ]; then
+          echo "static health check failed: $path does not resolve to a file under $root" >&2
+          return 1
+        fi
       done
     }
   '';
@@ -213,27 +241,44 @@ let
       build_flake_ref="''${build_flake_ref/__REVISION__/$resolved_revision}"
     fi
 
-    ${healthScript}
+    ${if isService then serviceHealthScript else staticHealthScript}
 
     if [ -n "$resolved_revision" ] \
       && [ -f "$current_revision_file" ] \
-      && [ "$(cat "$current_revision_file")" = "$resolved_revision" ] \
-      && systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"}; then
+      && [ "$(cat "$current_revision_file")" = "$resolved_revision" ]; then
       sync_gcroots
-      if [ -x "$current_link/bin/${cfg.executable}" ] && check_health; then
-        echo "app-deployment/${name}: already running $resolved_revision"
+      if ${
+        if isService then
+          "systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && [ -x \"$current_link/bin/${cfg.executable}\" ] && check_service_health"
+        else
+          "[ -d \"$current_link\" ] && check_static_health \"$current_link\""
+      }; then
+        echo "app-deployment/${name}: already active at $resolved_revision"
         exit 0
       fi
 
-      echo "app-deployment/${name}: $resolved_revision is active but failed store or health checks; redeploying"
+      echo "app-deployment/${name}: $resolved_revision is active but failed deployment checks; redeploying"
     fi
 
     echo "app-deployment/${name}: building $build_flake_ref#${cfg.package}"
     new_store_path="$(nix build --no-link --print-out-paths "$build_flake_ref#${cfg.package}")"
-    if [ ! -x "$new_store_path/bin/${cfg.executable}" ]; then
-      echo "app-deployment/${name}: missing executable $new_store_path/bin/${cfg.executable}" >&2
-      exit 1
-    fi
+    ${
+      if isService then
+        ''
+          if [ ! -x "$new_store_path/bin/${cfg.executable}" ]; then
+            echo "app-deployment/${name}: missing executable $new_store_path/bin/${cfg.executable}" >&2
+            exit 1
+          fi
+        ''
+      else
+        ''
+          if [ ! -d "$new_store_path" ]; then
+            echo "app-deployment/${name}: static package is not a directory: $new_store_path" >&2
+            exit 1
+          fi
+          check_static_health "$new_store_path"
+        ''
+    }
 
     old_store_path=""
     if [ -L "$current_link" ]; then
@@ -250,9 +295,9 @@ let
     printf '%s\n' "$resolved_revision" > "$current_revision_file"
     sync_gcroots
 
-    systemctl restart ${lib.escapeShellArg "${unitName}.service"}
+    ${lib.optionalString isService "systemctl restart ${lib.escapeShellArg "${unitName}.service"}"}
 
-    if check_health; then
+    if ${if isService then "check_service_health" else "check_static_health \"$current_link\""}; then
       echo "app-deployment/${name}: deployed $resolved_revision"
       exit 0
     fi
@@ -265,8 +310,17 @@ let
         cp "$previous_revision_file" "$current_revision_file"
       fi
       sync_gcroots
-      systemctl restart ${lib.escapeShellArg "${unitName}.service"}
-      check_health
+      ${
+        if isService then
+          ''
+            systemctl restart ${lib.escapeShellArg "${unitName}.service"}
+            check_service_health
+          ''
+        else
+          ''
+            check_static_health "$current_link"
+          ''
+      }
     fi
 
     exit 1
@@ -285,24 +339,36 @@ let
 
     exec "$executable"
   '';
+  staticCaddyConfig = ''
+    root * ${stateDir}/current
+    ${cfg.static.extraConfig}
+    file_server
+  '';
+
   runtimeConfig =
     if cfg.enable then
       {
-        users.users.${userName} = {
-          isSystemUser = true;
-          group = userName;
-          home = stateDir;
+        users.users = lib.optionalAttrs isService {
+          ${userName} = {
+            isSystemUser = true;
+            group = userName;
+            home = stateDir;
+          };
         };
-        users.groups.${userName} = { };
+        users.groups = lib.optionalAttrs isService {
+          ${userName} = { };
+        };
 
         systemd.tmpfiles.rules = [
           "d /var/lib/app-deployments 0755 root root -"
           "d ${stateDir} 0755 root root -"
-          "d ${runtimeDir} 0750 ${userName} ${userName} -"
         ]
-        ++ (map (dir: "d ${dir} 0750 ${userName} ${userName} -") cfg.stateDirs);
+        ++ lib.optionals isService (
+          [ "d ${runtimeDir} 0750 ${userName} ${userName} -" ]
+          ++ (map (dir: "d ${dir} 0750 ${userName} ${userName} -") cfg.stateDirs)
+        );
 
-        systemd.services.${unitName} = {
+        systemd.services.${unitName} = lib.mkIf isService {
           description = "App deployment '${name}'";
           after = [ "network-online.target" ];
           wants = [ "network-online.target" ];
@@ -357,13 +423,20 @@ let
           requestedRevisionFile = "${stateDir}/requested-revision";
         };
 
-        vps.services.appDeployments.metadata.health.units = [ "${unitName}.service" ];
+        vps.services.appDeployments.metadata.health.units = lib.optional isService "${unitName}.service";
 
         vps.services.caddy.virtualHosts = lib.optionalAttrs (cfg.domain != null) {
-          ${cfg.domain} = {
-            upstream = "${cfg.host}:${toString cfg.port}";
-            tailscaleOnly = !cfg.public;
-          };
+          ${cfg.domain} =
+            if isService then
+              {
+                upstream = "${cfg.host}:${toString cfg.port}";
+                tailscaleOnly = !cfg.public;
+              }
+            else
+              {
+                extraConfig = staticCaddyConfig;
+                tailscaleOnly = !cfg.public;
+              };
         };
       }
       // lib.optionalAttrs (hasSops && cfg.source.giteaTokenSecretName != null) {

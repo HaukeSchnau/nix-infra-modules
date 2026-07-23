@@ -33,6 +33,32 @@ let
       vps.appDeployments.webhook.enable = false;
     }
   ];
+  staticSystem = mkFleetSystem "static-01" [
+    {
+      vps.services.appDeployments = {
+        enable = true;
+        apps.docs = {
+          backend = "static";
+          domain = "docs.example.net";
+          public = true;
+          package = "site";
+          static.extraConfig = ''
+            encode zstd gzip
+          '';
+          source = {
+            url = "git+https://git.example.net/example/docs.git";
+            branch = "main";
+          };
+          health.paths = [
+            "/"
+            "/guide/"
+            "/manual.pdf"
+          ];
+        };
+      };
+      vps.appDeployments.webhook.enable = false;
+    }
+  ];
   stoppedSystem = mkFleetSystem "app-stopped" [
     {
       vps.services.appDeployments = {
@@ -62,6 +88,17 @@ let
             intervalSec = 0;
             paths = [ ];
           };
+        };
+      };
+      vps.appDeployments.webhook.enable = false;
+    }
+  ];
+  invalidStaticSystem = mkFleetSystem "app-invalid-static" [
+    {
+      vps.services.appDeployments = {
+        enable = true;
+        apps.demo = demoApp // {
+          backend = "static";
         };
       };
       vps.appDeployments.webhook.enable = false;
@@ -128,9 +165,26 @@ let
   typedRuntime = pkgs.writeText "typed-app-runtime.json" (
     builtins.toJSON (appRuntimeProjection typedSystem.config)
   );
+  staticRuntime = pkgs.writeText "static-app-runtime.json" (
+    builtins.toJSON {
+      hasAppService = builtins.hasAttr "app-deployment-docs" staticSystem.config.systemd.services;
+      hasUpdateService = builtins.hasAttr "app-deployment-docs-update" staticSystem.config.systemd.services;
+      hasUpdateTimer = builtins.hasAttr "app-deployment-docs-update" staticSystem.config.systemd.timers;
+      hasUser = builtins.hasAttr "app-docs" staticSystem.config.users.users;
+      caddy = staticSystem.config.vps.services.caddy.virtualHosts."docs.example.net";
+      webhook = staticSystem.config.vps.appDeployments.webhookApps.docs;
+      healthUnits = staticSystem.config.vps.services.appDeployments.metadata.health.units;
+    }
+  );
+  serviceUpdateScript =
+    typedSystem.config.systemd.services.app-deployment-demo-update.serviceConfig.ExecStart;
+  staticUpdateScript =
+    staticSystem.config.systemd.services.app-deployment-docs-update.serviceConfig.ExecStart;
 in
 {
   app-deployments-contract = pkgs.runCommand "app-deployments-contract" { } ''
+    ${pkgs.bash}/bin/bash -n ${serviceUpdateScript}
+    ${pkgs.bash}/bin/bash -n ${staticUpdateScript}
     cmp ${legacyRuntime} ${typedRuntime}
     test '${
       if builtins.hasAttr "app-deployment-demo" legacySystem.config.systemd.services then
@@ -146,6 +200,19 @@ in
     }' = absent
     test '${if configurationSucceeds invalidNameSystem then "accepted" else "rejected"}' = rejected
     test '${if configurationSucceeds invalidHealthSystem then "accepted" else "rejected"}' = rejected
+    test '${if configurationSucceeds invalidStaticSystem then "accepted" else "rejected"}' = rejected
+    ${pkgs.jq}/bin/jq -e '
+      .hasAppService == false
+      and .hasUpdateService == true
+      and .hasUpdateTimer == true
+      and .hasUser == false
+      and .caddy.tailscaleOnly == false
+      and (.caddy.extraConfig | contains("root * /var/lib/app-deployments/docs/current"))
+      and (.caddy.extraConfig | contains("encode zstd gzip"))
+      and (.caddy.extraConfig | contains("file_server"))
+      and .webhook.updateUnit == "app-deployment-docs-update.service"
+      and .healthUnits == []
+    ' ${staticRuntime} >/dev/null
     touch $out
   '';
 }

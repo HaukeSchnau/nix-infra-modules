@@ -28,6 +28,19 @@ let
           description = "Whether the generated Caddy route is publicly reachable.";
         };
 
+        backend = lib.mkOption {
+          type = lib.types.enum [
+            "service"
+            "static"
+          ];
+          default = "service";
+          description = ''
+            Runtime used for the built flake output. Service deployments run an
+            executable behind Caddy; static deployments are served directly by
+            Caddy from the atomically activated store path.
+          '';
+        };
+
         host = lib.mkOption {
           type = lib.types.str;
           default = "127.0.0.1";
@@ -35,8 +48,9 @@ let
         };
 
         port = lib.mkOption {
-          type = lib.types.port;
-          description = "Port the deployed application listens on.";
+          type = lib.types.nullOr lib.types.port;
+          default = null;
+          description = "Port the deployed service listens on.";
         };
 
         domain = lib.mkOption {
@@ -52,8 +66,9 @@ let
         };
 
         executable = lib.mkOption {
-          type = lib.types.str;
-          description = "Executable expected in the built package's bin directory.";
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Executable expected in a service package's bin directory.";
         };
 
         environment = lib.mkOption {
@@ -90,6 +105,15 @@ let
           type = lib.types.attrsOf lib.types.unspecified;
           default = { };
           description = "Additional systemd service settings for the application.";
+        };
+
+        static.extraConfig = lib.mkOption {
+          type = lib.types.lines;
+          default = "";
+          description = ''
+            Additional Caddy directives emitted between the generated root and
+            file_server directives for a static deployment.
+          '';
         };
 
         source = {
@@ -145,7 +169,11 @@ let
           paths = lib.mkOption {
             type = lib.types.nonEmptyListOf (lib.types.strMatching "^/.*");
             default = [ "/" ];
-            description = "Absolute HTTP paths that must all pass after an application update.";
+            description = ''
+              Absolute paths that must all pass after an update. Service
+              deployments probe them over HTTP; static deployments require the
+              corresponding files or directory indexes in the built output.
+            '';
           };
 
           startupTimeoutSec = lib.mkOption {
@@ -386,7 +414,7 @@ in
     apps = lib.mkOption {
       type = lib.types.attrsOf appType;
       default = { };
-      description = "Flake-packaged applications reconciled as durable system services.";
+      description = "Flake-packaged services and static sites reconciled as durable deployments.";
     };
   };
 
@@ -397,10 +425,23 @@ in
       # lib.nixos.nixFlakeService declarations.
       appRuntimeConfig
       {
-        assertions = lib.mapAttrsToList (name: _app: {
-          assertion = builtins.match "^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$" name != null;
-          message = "vps.services.appDeployments.apps.${name}: app names must contain only letters, digits, underscores, and hyphens, start with a letter or digit, and be at most 63 characters.";
-        }) apps;
+        assertions =
+          lib.mapAttrsToList (name: _app: {
+            assertion = builtins.match "^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$" name != null;
+            message = "vps.services.appDeployments.apps.${name}: app names must contain only letters, digits, underscores, and hyphens, start with a letter or digit, and be at most 63 characters.";
+          }) apps
+          ++ lib.concatLists (
+            lib.mapAttrsToList (name: app: [
+              {
+                assertion = app.backend != "service" || (app.port != null && app.executable != null);
+                message = "vps.services.appDeployments.apps.${name}: service deployments require port and executable.";
+              }
+              {
+                assertion = app.backend != "static" || (app.port == null && app.executable == null);
+                message = "vps.services.appDeployments.apps.${name}: static deployments must not set port or executable.";
+              }
+            ]) apps
+          );
       }
       (lib.mkIf (config.vps.enable && config.vps.services.appDeployments.enable) {
         assertions = [

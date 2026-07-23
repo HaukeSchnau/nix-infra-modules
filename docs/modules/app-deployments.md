@@ -1,7 +1,7 @@
 # App Deployments
 
 `vps.services.appDeployments.apps` is the primary interface for durable,
-flake-packaged HTTP applications:
+flake-packaged services and static sites:
 
 ```nix
 {
@@ -20,10 +20,33 @@ flake-packaged HTTP applications:
 }
 ```
 
-The app attribute name becomes the deployment name, system user suffix, unit
-suffix, state-directory suffix, and webhook target. App declarations are typed,
-so invalid ports, packages, health settings, and update settings fail during
-module evaluation.
+Static sites use the same exact-revision build, activation, rollback, timer,
+and webhook machinery without creating an application process:
+
+```nix
+{
+  vps.services.appDeployments.apps.docs = {
+    backend = "static";
+    domain = "docs.example.net";
+    public = true;
+    package = "site";
+    static.extraConfig = ''
+      encode zstd gzip
+    '';
+    source.url = "git+https://git.example.net/example/docs.git";
+    health.paths = [
+      "/"
+      "/guide/"
+      "/manual.pdf"
+    ];
+  };
+}
+```
+
+The app attribute name becomes the deployment name, unit suffix,
+state-directory suffix, and webhook target. Service deployments also use it as
+their system-user suffix. App declarations are typed, so invalid ports,
+packages, health settings, and update settings fail during module evaluation.
 
 `lib.nixos.nixFlakeService` remains available as a compatibility adapter for
 existing callers. It contributes the supplied app to the same typed registry;
@@ -35,9 +58,12 @@ such as the webhook, so disabling that shared service does not stop explicitly
 declared applications. This preserves the compatibility adapter's established
 behavior.
 
-The implementation keeps deployment state under `/var/lib/app-deployments`,
-builds a selected flake reference, starts the app as a dedicated system user,
-checks health paths, and rolls back when the new version fails health checks.
+The implementation keeps deployment state under `/var/lib/app-deployments` and
+builds a selected flake reference. Service deployments run the selected
+executable as a dedicated system user and probe health paths over HTTP. Static
+deployments atomically point Caddy at the selected store output and verify that
+each health path resolves to a file or directory index. Both backends preserve
+the previous output for rollback.
 
 The module does not require private Git credentials unless
 `source.giteaTokenSecretName` is set by the consuming private repo.
@@ -57,6 +83,8 @@ webhook token secrets, branch/revision policy, and placement on real hosts.
 - The update service records requested revisions separately from deployed
   revisions.
 - A failed health check keeps or restores the previous working profile.
+- Static deployments do not create an application user or long-running
+  application systemd service.
 
 Declare ordinary flake-packaged HTTP apps under
 `vps.services.appDeployments.apps`. Add private wrappers when a real app needs
