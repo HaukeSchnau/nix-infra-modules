@@ -284,6 +284,18 @@ let
     old_store_path=""
     if [ -L "$current_link" ]; then
       old_store_path="$(readlink "$current_link")"
+      if [ "$new_store_path" = "$old_store_path" ] && ${
+        if isService then
+          "systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && check_service_health"
+        else
+          "check_static_health \"$current_link\""
+      }; then
+        printf '%s\n' "$resolved_revision" > "$current_revision_file"
+        sync_gcroots
+        echo "app-deployment/${name}: revision $resolved_revision already produces the active output"
+        exit 0
+      fi
+
       ln -sfn "$old_store_path" "$previous_link.next"
       mv -Tf "$previous_link.next" "$previous_link"
       if [ -f "$current_revision_file" ]; then

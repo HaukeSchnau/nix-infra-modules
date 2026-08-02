@@ -187,6 +187,8 @@ in
     ${pkgs.bash}/bin/bash -n ${staticUpdateScript}
     grep -Fq ${lib.escapeShellArg "${pkgs.openssh}/bin"} ${serviceUpdateScript}
     grep -Fq ${lib.escapeShellArg "${pkgs.openssh}/bin"} ${staticUpdateScript}
+    grep -Fq 'already produces the active output' ${serviceUpdateScript}
+    grep -Fq 'already produces the active output' ${staticUpdateScript}
     cmp ${legacyRuntime} ${typedRuntime}
     test '${
       if builtins.hasAttr "app-deployment-demo" legacySystem.config.systemd.services then
