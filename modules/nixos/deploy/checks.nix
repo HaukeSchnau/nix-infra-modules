@@ -185,6 +185,8 @@ in
   app-deployments-contract = pkgs.runCommand "app-deployments-contract" { } ''
     ${pkgs.bash}/bin/bash -n ${serviceUpdateScript}
     ${pkgs.bash}/bin/bash -n ${staticUpdateScript}
+    grep -Fq ${lib.escapeShellArg "${pkgs.openssh}/bin"} ${serviceUpdateScript}
+    grep -Fq ${lib.escapeShellArg "${pkgs.openssh}/bin"} ${staticUpdateScript}
     cmp ${legacyRuntime} ${typedRuntime}
     test '${
       if builtins.hasAttr "app-deployment-demo" legacySystem.config.systemd.services then

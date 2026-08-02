@@ -68,6 +68,7 @@ let
     pkgs.gnused
     pkgs.jq
     pkgs.nix
+    pkgs.openssh
     pkgs.systemd
     pkgs.util-linux
   ];
