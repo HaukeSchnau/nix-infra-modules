@@ -22,6 +22,25 @@ let
       ];
     };
   workspaceReposScript = ./workspace-repos.py;
+  typedInventory = pkgs.writeText "workspace-repos-typed-inventory.json" (
+    builtins.toJSON {
+      version = 1;
+      roots = [ "Code" ];
+      gitlab_groups = [ ];
+      repositories = [
+        {
+          path = "Code/overridden";
+          url = "git@example.test:old/overridden.git";
+          bookmark = "old";
+        }
+        {
+          path = "Code/from-file";
+          url = "git@example.test:example/from-file.git";
+          bookmark = "main";
+        }
+      ];
+    }
+  );
 in
 {
   workspace-repos-home =
@@ -45,6 +64,44 @@ in
       ! grep -q -- '--discover-gitlab-groups' ${home.activationPackage}/activate
       touch $out
     '';
+
+  workspace-repos-typed-repositories =
+    let
+      home = mkHome {
+        workspaceRepos = {
+          inventoryFile = typedInventory;
+          repositories = [
+            {
+              path = "Code/overridden";
+              url = "git@example.test:example/overridden.git";
+              bookmark = "main";
+              workingCopy.mode = "snapshot-and-reset";
+            }
+            {
+              path = "Code/typed";
+              url = "git@example.test:example/typed.git";
+              workingCopy = false;
+            }
+          ];
+        };
+      };
+      renderedConfig = pkgs.writeText "workspace-repos-rendered-config.json" (
+        home.config.xdg.configFile."workspace-repos/config.json".text
+      );
+    in
+    pkgs.runCommand "workspace-repos-typed-repositories"
+      {
+        nativeBuildInputs = [ pkgs.jq ];
+      }
+      ''
+        test "$(${pkgs.jq}/bin/jq '.inventory.repositories | length' ${renderedConfig})" = 3
+        test "$(${pkgs.jq}/bin/jq -r '.inventory.roots[0]' ${renderedConfig})" = Code
+        test "$(${pkgs.jq}/bin/jq -r '.inventory.repositories[] | select(.path == "Code/overridden") | .url' ${renderedConfig})" = git@example.test:example/overridden.git
+        test "$(${pkgs.jq}/bin/jq -r '.inventory.repositories[] | select(.path == "Code/overridden") | .working_copy.mode' ${renderedConfig})" = snapshot-and-reset
+        test "$(${pkgs.jq}/bin/jq -r '.inventory.repositories[] | select(.path == "Code/typed") | .working_copy' ${renderedConfig})" = false
+        test -x ${pkgs.lib.getExe home.config.workspaceRepos.package}
+        touch $out
+      '';
 
   workspace-repos-python =
     pkgs.runCommand "workspace-repos-python" { nativeBuildInputs = [ pkgs.python3 ]; }
@@ -195,11 +252,24 @@ in
               path: "Code/example",
               url: $url,
               bookmark: "main"
+            }, {
+              path: "Code/unselected",
+              url: $url,
+              bookmark: "main"
             }]
           }
         }' > config.json
 
-        python3 ${workspaceReposScript} --config config.json sync --no-fetch
+        python3 ${workspaceReposScript} \
+          --config config.json sync --no-fetch --path Code/example
+        test ! -e "$HOME/Code/unselected"
+        if python3 ${workspaceReposScript} \
+          --config config.json sync --no-fetch --path Code/missing 2> missing-path.log
+        then
+          echo "unknown targeted path unexpectedly succeeded" >&2
+          exit 1
+        fi
+        grep -q 'requested repository paths are not configured: Code/missing' missing-path.log
         jj -R "$HOME/Code/example" config unset --repo revsets.short-prefixes
         test -n "$(
           jj -R "$HOME/Code/example" log \

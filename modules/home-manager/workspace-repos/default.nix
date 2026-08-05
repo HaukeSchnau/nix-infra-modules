@@ -10,6 +10,83 @@ let
   workspaceReposScript = ./workspace-repos.py;
   inventory = builtins.fromJSON (builtins.readFile cfg.inventoryFile);
 
+  workingCopyPolicyType = lib.types.submodule {
+    options = {
+      base = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "JJ revision on which to base a clean working copy. Defaults to the remote bookmark.";
+      };
+
+      mode = lib.mkOption {
+        type = lib.types.enum [
+          "guarded"
+          "snapshot-and-reset"
+        ];
+        default = "guarded";
+        description = "How workspace-repos handles an existing working copy.";
+      };
+    };
+  };
+
+  repositoryType = lib.types.submodule {
+    options = {
+      path = lib.mkOption {
+        type = lib.types.str;
+        description = "Checkout path, relative to the user's home directory.";
+      };
+
+      url = lib.mkOption {
+        type = lib.types.str;
+        description = "Canonical Git remote URL.";
+      };
+
+      bookmark = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Remote bookmark used by the automatic working-copy policy.";
+      };
+
+      workingCopy = lib.mkOption {
+        type = lib.types.nullOr (
+          lib.types.oneOf [
+            (lib.types.enum [ false ])
+            workingCopyPolicyType
+          ]
+        );
+        default = null;
+        description = ''
+          Optional working-copy policy. Null selects the automatic guarded
+          policy, false opts out, and an attribute set configures it explicitly.
+        '';
+      };
+    };
+  };
+
+  repositoryToInventory =
+    repository:
+    lib.filterAttrs (_: value: value != null) {
+      inherit (repository) path url bookmark;
+      working_copy =
+        if builtins.isAttrs repository.workingCopy then
+          lib.filterAttrs (_: value: value != null) repository.workingCopy
+        else
+          repository.workingCopy;
+    };
+
+  typedRepositories = map repositoryToInventory cfg.repositories;
+  typedPaths = map (repository: repository.path) typedRepositories;
+  fileRepositories = inventory.repositories or [ ];
+  mergedInventory = inventory // {
+    repositories =
+      builtins.filter (repository: !(builtins.elem repository.path typedPaths)) fileRepositories
+      ++ typedRepositories;
+  };
+  mergedRepositoryUrls = map (repository: repository.url) mergedInventory.repositories;
+  duplicateValues =
+    values:
+    builtins.filter (value: lib.count (candidate: candidate == value) values > 1) (lib.unique values);
+
   workspaceRepos = pkgs.writeShellApplication {
     name = "workspace-repos";
     runtimeInputs = [
@@ -59,6 +136,21 @@ in
       description = "Generated workspace repository inventory read by Home Manager.";
     };
 
+    repositories = lib.mkOption {
+      type = lib.types.listOf repositoryType;
+      default = [ ];
+      description = ''
+        Typed repository declarations merged into the JSON inventory. A typed
+        declaration replaces an inventory-file entry with the same checkout path.
+      '';
+    };
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      description = "The configured workspace-repos command package.";
+    };
+
     writableInventoryPath = lib.mkOption {
       type = lib.types.str;
       default = "${config.home.homeDirectory}/.config/workspace-repos/inventory.generated.json";
@@ -106,13 +198,15 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    workspaceRepos.package = workspaceRepos;
+
     home.packages = [
       workspaceRepos
     ];
 
     xdg.configFile.${configPath}.text =
       builtins.toJSON {
-        inherit inventory;
+        inventory = mergedInventory;
         version = 1;
         writable_inventory_path = cfg.writableInventoryPath;
       }
@@ -155,7 +249,18 @@ in
       };
     };
 
-    assertions = lib.optional cfg.scheduledSync.enable (
+    assertions = [
+      {
+        assertion = builtins.length typedPaths == builtins.length (lib.unique typedPaths);
+        message = "workspaceRepos.repositories contains duplicate checkout paths: ${lib.concatStringsSep ", " (duplicateValues typedPaths)}";
+      }
+      {
+        assertion =
+          builtins.length mergedRepositoryUrls == builtins.length (lib.unique mergedRepositoryUrls);
+        message = "workspaceRepos resolves the same Git URL to multiple checkout paths: ${lib.concatStringsSep ", " (duplicateValues mergedRepositoryUrls)}";
+      }
+    ]
+    ++ lib.optional cfg.scheduledSync.enable (
       lib.hm.darwin.assertInterval "workspaceRepos.scheduledSync.period" cfg.scheduledSync.period pkgs
     );
   };

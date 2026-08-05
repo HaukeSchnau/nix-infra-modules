@@ -774,8 +774,21 @@ def reconcile_all(args: argparse.Namespace, config: dict[str, Any]) -> int:
         include_gitlab=include_gitlab,
         timeout=args.timeout,
     )
+    selected_paths = set(args.path)
+    if selected_paths:
+        configured_paths = {repo.path for repo in repos}
+        missing_paths = sorted(selected_paths - configured_paths)
+        if missing_paths:
+            raise ValueError(
+                "requested repository paths are not configured: "
+                + ", ".join(missing_paths)
+            )
+
     if args.write:
         write_inventory(config, repos)
+
+    if selected_paths:
+        repos = [repo for repo in repos if repo.path in selected_paths]
 
     failures = 0
     for repo in repos:
@@ -903,6 +916,12 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--fetch", dest="fetch", action="store_true", default=True)
     sync.add_argument("--no-fetch", dest="fetch", action="store_false")
     sync.add_argument("--timeout", type=int, default=120)
+    sync.add_argument(
+        "--path",
+        action="append",
+        default=[],
+        help="Only reconcile this exact configured checkout path. Repeatable.",
+    )
     sync.set_defaults(func=command_sync)
 
     fetch = subparsers.add_parser("fetch", help="Fetch all managed repositories.")
