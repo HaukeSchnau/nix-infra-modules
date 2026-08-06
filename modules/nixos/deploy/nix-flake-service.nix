@@ -350,12 +350,23 @@ let
     }
 
     ${lib.optionalString isProject ''
+      record_matching_descriptor() {
+        local descriptor="$1"
+        jq -e -S . ${lib.escapeShellArg expectedProjectDescriptor} > "$state_dir/expected-descriptor.json.next"
+        if ! jq -e -S . "$descriptor" > "$state_dir/artifact-descriptor.json.next" \
+          || ! cmp -s "$state_dir/expected-descriptor.json.next" "$state_dir/artifact-descriptor.json.next"; then
+          rm -f "$state_dir/expected-descriptor.json.next" "$state_dir/artifact-descriptor.json.next"
+          return 1
+        fi
+        mv -f "$state_dir/expected-descriptor.json.next" "$state_dir/expected-descriptor.json"
+        mv -f "$state_dir/artifact-descriptor.json.next" "$state_dir/artifact-descriptor.json"
+      }
+
       current_descriptor_matches() {
         local descriptor
         descriptor="$current_link/share/project/descriptor.json"
         [ -f "$descriptor" ] || return 1
-        cmp <(jq -e -S . ${lib.escapeShellArg expectedProjectDescriptor}) \
-          <(jq -e -S . "$descriptor")
+        record_matching_descriptor "$descriptor"
       }
     ''}
 
@@ -400,15 +411,10 @@ let
         echo "app-deployment/${name}: Project artifact is missing $descriptor_file" >&2
         exit 1
       fi
-      jq -S . ${lib.escapeShellArg expectedProjectDescriptor} > "$state_dir/expected-descriptor.json.next"
-      jq -S . "$descriptor_file" > "$state_dir/artifact-descriptor.json.next"
-      if ! cmp -s "$state_dir/expected-descriptor.json.next" "$state_dir/artifact-descriptor.json.next"; then
+      if ! record_matching_descriptor "$descriptor_file"; then
         echo "app-deployment/${name}: Project artifact descriptor does not match host policy" >&2
-        rm -f "$state_dir/expected-descriptor.json.next" "$state_dir/artifact-descriptor.json.next"
         exit 1
       fi
-      mv -f "$state_dir/expected-descriptor.json.next" "$state_dir/expected-descriptor.json"
-      mv -f "$state_dir/artifact-descriptor.json.next" "$state_dir/artifact-descriptor.json"
       ${lib.optionalString (projectActivationExecutable != null) ''
         if [ ! -x "$new_store_path/bin/${projectActivationExecutable}" ]; then
           echo "app-deployment/${name}: missing activation executable $new_store_path/bin/${projectActivationExecutable}" >&2
