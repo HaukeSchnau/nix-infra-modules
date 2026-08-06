@@ -29,6 +29,8 @@
       forAllSystems = lib.genAttrs systems;
     in
     {
+      lib.projectDescriptor = import ./lib/project-descriptor.nix { inherit lib; };
+
       lib.nixos = {
         nixFlakeService = import ./modules/nixos/deploy/nix-flake-service.nix;
         generatedInventory = import ./modules/nixos/inventory/generated-inventory.nix;

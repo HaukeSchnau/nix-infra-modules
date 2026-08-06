@@ -11,6 +11,7 @@ let
   hasSops = options ? sops;
   serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
   nixFlakeService = import ./nix-flake-service.nix;
+  projectDescriptor = import ../../../lib/project-descriptor.nix { inherit lib; };
 
   appType = lib.types.submodule (
     { name, ... }:
@@ -105,6 +106,131 @@ let
           type = lib.types.attrsOf lib.types.unspecified;
           default = { };
           description = "Additional systemd service settings for the application.";
+        };
+
+        project = lib.mkOption {
+          default = null;
+          description = ''
+            Repository-owned Project descriptor and host-owned bindings. Use
+            lib.projectDescriptor.releaseApp to construct this projection
+            without depending on appDeployments implementation details.
+          '';
+          type = lib.types.nullOr (
+            lib.types.submodule {
+              options = {
+                descriptor = lib.mkOption {
+                  type = lib.types.attrs;
+                  description = "Repository-authored schemaVersion 1 Project descriptor.";
+                };
+
+                parameters = lib.mkOption {
+                  type = lib.types.attrs;
+                  default = { };
+                  description = "Validated, non-secret Release parameter values.";
+                };
+
+                secrets = lib.mkOption {
+                  type = lib.types.attrsOf (lib.types.strMatching "^/.*");
+                  default = { };
+                  description = "Semantic Secret names mapped to absolute credential source paths.";
+                };
+
+                approvedOci = lib.mkOption {
+                  type = lib.types.listOf lib.types.str;
+                  default = [ ];
+                  description = "OCI auxiliary names explicitly approved by host policy.";
+                };
+
+                auxiliaryPorts = lib.mkOption {
+                  type = lib.types.attrsOf (lib.types.attrsOf lib.types.port);
+                  default = { };
+                  internal = true;
+                  description = "Adapter-assigned localhost ports for approved OCI auxiliaries.";
+                };
+
+                healthRecovery = {
+                  enable = lib.mkOption {
+                    type = lib.types.bool;
+                    default = true;
+                    description = "Restart a failed Project service after periodic HTTP probes.";
+                  };
+
+                  interval = lib.mkOption {
+                    type = lib.types.str;
+                    default = "1min";
+                    description = "Interval between Project service recovery probes.";
+                  };
+
+                  onBootSec = lib.mkOption {
+                    type = lib.types.str;
+                    default = "4min";
+                    description = "Delay before the first Project service recovery probe.";
+                  };
+                };
+
+                resources.memory = {
+                  high = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Optional systemd memory pressure threshold for Release actions.";
+                  };
+
+                  max = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Optional systemd hard memory limit for Release actions.";
+                  };
+
+                  swapMax = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Optional systemd swap limit for Release actions.";
+                  };
+                };
+
+                jobs = lib.mkOption {
+                  default = { };
+                  description = "Host schedules for descriptor-declared Release maintenance jobs.";
+                  type = lib.types.attrsOf (
+                    lib.types.submodule {
+                      options = {
+                        calendar = lib.mkOption {
+                          type = lib.types.nullOr lib.types.str;
+                          default = null;
+                          description = "systemd calendar expression for this job.";
+                        };
+
+                        interval = lib.mkOption {
+                          type = lib.types.nullOr lib.types.str;
+                          default = null;
+                          description = "Monotonic interval between this job's runs.";
+                        };
+
+                        onBootSec = lib.mkOption {
+                          type = lib.types.str;
+                          default = "5min";
+                          description = "Delay before the first interval-based run.";
+                        };
+
+                        randomizedDelaySec = lib.mkOption {
+                          type = lib.types.str;
+                          default = "0";
+                          description = "Random delay applied to each scheduled run.";
+                        };
+
+                        persistent = lib.mkOption {
+                          type = lib.types.bool;
+                          default = true;
+                          description = "Whether missed wall-clock runs are caught up.";
+                        };
+
+                      };
+                    }
+                  );
+                };
+              };
+            }
+          );
         };
 
         static.extraConfig = lib.mkOption {
@@ -218,6 +344,64 @@ let
     }
   );
 
+  projectServiceNames = builtins.attrNames (
+    lib.filterAttrs (_: app: app.project != null && app.backend == "service" && app.port == null) apps
+  );
+  allocatedProjectPort =
+    name:
+    let
+      index = lib.lists.findFirstIndex (candidate: candidate == name) null projectServiceNames;
+    in
+    if index == null then null else cfg.projectPortRange.from + index;
+
+  projectDescriptors = lib.mapAttrs (
+    name: app:
+    projectDescriptor.normalize {
+      descriptor = app.project.descriptor;
+      expectedProject = name;
+    }
+  ) (lib.filterAttrs (_: app: app.project != null) apps);
+  projectAuxiliaryPortRequests = lib.concatLists (
+    lib.mapAttrsToList (
+      appName: descriptor:
+      lib.concatLists (
+        lib.mapAttrsToList (
+          auxiliaryName: auxiliary:
+          map (portName: {
+            inherit appName auxiliaryName portName;
+            key = "${appName}/${auxiliaryName}/${portName}";
+          }) (builtins.attrNames auxiliary.ports)
+        ) descriptor.release.ociAuxiliaries
+      )
+    ) projectDescriptors
+  );
+  projectAuxiliaryPortAssignments = builtins.listToAttrs (
+    lib.imap0 (index: request: {
+      name = request.key;
+      value = cfg.projectAuxiliaryPortRange.from + index;
+    }) projectAuxiliaryPortRequests
+  );
+  auxiliaryPortsFor =
+    appName:
+    lib.mapAttrs (
+      auxiliaryName: auxiliary:
+      lib.genAttrs (builtins.attrNames auxiliary.ports) (
+        portName: projectAuxiliaryPortAssignments."${appName}/${auxiliaryName}/${portName}"
+      )
+    ) projectDescriptors.${appName}.release.ociAuxiliaries;
+  resolvedApps = lib.mapAttrs (
+    name: app:
+    app
+    // lib.optionalAttrs (app.project != null && app.backend == "service" && app.port == null) {
+      port = allocatedProjectPort name;
+    }
+    // lib.optionalAttrs (app.project != null) {
+      project = app.project // {
+        auxiliaryPorts = auxiliaryPortsFor name;
+      };
+    }
+  ) apps;
+
   appRuntimeModules = lib.mapAttrsToList (
     name: app:
     (nixFlakeService
@@ -237,7 +421,7 @@ let
           ;
       }
     )
-  ) apps;
+  ) resolvedApps;
 
   appRuntimeValues =
     path: fallback: map (module: lib.attrByPath path fallback module.config) appRuntimeModules;
@@ -248,6 +432,9 @@ let
     systemd.tmpfiles.rules = lib.mkMerge (appRuntimeValues [ "systemd" "tmpfiles" "rules" ] [ ]);
     systemd.services = lib.mkMerge (appRuntimeValues [ "systemd" "services" ] { });
     systemd.timers = lib.mkMerge (appRuntimeValues [ "systemd" "timers" ] { });
+    virtualisation.oci-containers.containers = lib.mkMerge (
+      appRuntimeValues [ "virtualisation" "oci-containers" "containers" ] { }
+    );
     vps.appDeployments.webhookApps = lib.mkMerge (
       appRuntimeValues [ "vps" "appDeployments" "webhookApps" ] { }
     );
@@ -359,6 +546,34 @@ in
   ];
 
   options.vps.appDeployments = {
+    projectPortRange = {
+      from = lib.mkOption {
+        type = lib.types.port;
+        default = 18200;
+        description = "First internal port allocated to Project-derived Release services.";
+      };
+
+      to = lib.mkOption {
+        type = lib.types.port;
+        default = 18999;
+        description = "Last internal port allocated to Project-derived Release services.";
+      };
+    };
+
+    projectAuxiliaryPortRange = {
+      from = lib.mkOption {
+        type = lib.types.port;
+        default = 22000;
+        description = "First localhost port allocated to Project Release OCI auxiliaries.";
+      };
+
+      to = lib.mkOption {
+        type = lib.types.port;
+        default = 22999;
+        description = "Last localhost port allocated to Project Release OCI auxiliaries.";
+      };
+    };
+
     webhook = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -440,8 +655,74 @@ in
                 assertion = app.backend != "static" || (app.port == null && app.executable == null);
                 message = "vps.services.appDeployments.apps.${name}: static deployments must not set port or executable.";
               }
-            ]) apps
-          );
+            ]) resolvedApps
+          )
+          ++ lib.mapAttrsToList (name: app: {
+            assertion =
+              app.project == null
+              ||
+                (projectDescriptor.normalize {
+                  descriptor = app.project.descriptor;
+                  expectedProject = name;
+                }).release != null;
+            message = "vps.services.appDeployments.apps.${name}: Project descriptor must define the matching Release realization.";
+          }) resolvedApps
+          ++ lib.concatLists (
+            lib.mapAttrsToList (
+              name: app:
+              lib.mapAttrsToList (jobName: job: {
+                assertion = (job.calendar != null) != (job.interval != null);
+                message = "vps.services.appDeployments.apps.${name}.project.jobs.${jobName}: set exactly one of calendar or interval.";
+              }) (if app.project == null then { } else app.project.jobs)
+            ) resolvedApps
+          )
+          ++ [
+            {
+              assertion = cfg.projectPortRange.from <= cfg.projectPortRange.to;
+              message = "vps.appDeployments.projectPortRange.from must be <= projectPortRange.to.";
+            }
+            {
+              assertion =
+                builtins.length projectServiceNames <= cfg.projectPortRange.to - cfg.projectPortRange.from + 1;
+              message = "vps.appDeployments.projectPortRange is exhausted.";
+            }
+            {
+              assertion = lib.all (
+                app:
+                app.project != null
+                || app.port == null
+                || app.port < cfg.projectPortRange.from
+                || app.port > cfg.projectPortRange.to
+              ) (builtins.attrValues resolvedApps);
+              message = "Legacy app deployment ports must not overlap the Project Release allocation range.";
+            }
+            {
+              assertion = cfg.projectAuxiliaryPortRange.from <= cfg.projectAuxiliaryPortRange.to;
+              message = "vps.appDeployments.projectAuxiliaryPortRange.from must be <= projectAuxiliaryPortRange.to.";
+            }
+            {
+              assertion =
+                builtins.length projectAuxiliaryPortRequests
+                <= cfg.projectAuxiliaryPortRange.to - cfg.projectAuxiliaryPortRange.from + 1;
+              message = "vps.appDeployments.projectAuxiliaryPortRange is exhausted.";
+            }
+            {
+              assertion =
+                cfg.projectAuxiliaryPortRange.to < cfg.projectPortRange.from
+                || cfg.projectAuxiliaryPortRange.from > cfg.projectPortRange.to;
+              message = "Project service and auxiliary allocation ranges must not overlap.";
+            }
+            {
+              assertion = lib.all (
+                app:
+                app.project != null
+                || app.port == null
+                || app.port < cfg.projectAuxiliaryPortRange.from
+                || app.port > cfg.projectAuxiliaryPortRange.to
+              ) (builtins.attrValues resolvedApps);
+              message = "Legacy app deployment ports must not overlap the Project auxiliary allocation range.";
+            }
+          ];
       }
       (lib.mkIf (config.vps.enable && config.vps.services.appDeployments.enable) {
         assertions = [

@@ -58,6 +58,8 @@ nix-infra-modules ../nix-infra-modules` for fast local iteration.
 
 Available helpers:
 
+- `lib.projectDescriptor` (`load`, `normalize`, `resolveParameters`, and
+  `releaseApp`)
 - `lib.nixos.nixFlakeService`
 - `lib.nixos.generatedInventory`
 - `lib.nixos.generatedTypes`

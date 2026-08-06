@@ -13,6 +13,7 @@ let
     "__appDeploymentsInternal"
   ];
   hasSops = options ? sops;
+  projectDescriptor = import ../../../lib/project-descriptor.nix { inherit lib; };
   cfg = lib.recursiveUpdate {
     enable = true;
     public = false;
@@ -27,6 +28,7 @@ let
     stateDirs = [ ];
     preStart = "";
     serviceConfig = { };
+    project = null;
     static.extraConfig = "";
     source = {
       branch = "main";
@@ -52,11 +54,81 @@ let
 
   name = cfg.name;
   isService = cfg.backend == "service";
+  isProject = cfg.project != null;
+  descriptor =
+    if isProject then
+      projectDescriptor.normalize {
+        descriptor = cfg.project.descriptor;
+        expectedProject = name;
+      }
+    else
+      null;
+  projectRelease = if isProject then descriptor.release else null;
+  projectSecrets = if isProject then cfg.project.secrets else { };
+  projectActivationExecutable = if isProject then projectRelease.activationExecutable else null;
+  projectStateDirectories = if isProject then projectRelease.stateDirectories else [ ];
+  projectAuxiliaries = if isProject then projectRelease.ociAuxiliaries else { };
+  projectAuxiliaryPorts = if isProject then cfg.project.auxiliaryPorts else { };
+  projectJobs = if isProject then cfg.project.jobs else { };
+  projectMemory = if isProject then cfg.project.resources.memory else { };
   unitName = "app-deployment-${name}";
   updateUnitName = "${unitName}-update";
+  activationUnitName = "${unitName}-activate";
   userName = "app-${name}";
   stateDir = "/var/lib/app-deployments/${name}";
   runtimeDir = "${stateDir}/runtime";
+  needsRuntimeUser =
+    isService || (isProject && (projectActivationExecutable != null || projectJobs != { }));
+  ociBackend = config.virtualisation.oci-containers.backend;
+  projectContainerName = auxiliaryName: "project-${name}-${auxiliaryName}";
+  projectContainerUnits = map (
+    auxiliaryName: "${ociBackend}-${projectContainerName auxiliaryName}.service"
+  ) (builtins.attrNames projectAuxiliaries);
+  auxiliaryRuntimeEndpoints = lib.listToAttrs (
+    lib.concatLists (
+      lib.mapAttrsToList (
+        auxiliaryName: auxiliary:
+        lib.mapAttrsToList (portName: port: {
+          name = "${auxiliaryName}-${portName}";
+          value = {
+            url = "${port.protocol}://127.0.0.1:${toString projectAuxiliaryPorts.${auxiliaryName}.${portName}}";
+            listen = {
+              host = "127.0.0.1";
+              port = projectAuxiliaryPorts.${auxiliaryName}.${portName};
+            };
+          };
+        }) auxiliary.ports
+      ) projectAuxiliaries
+    )
+  );
+  projectRuntimeManifest = pkgs.writeText "project-release-runtime-${name}.json" (
+    builtins.toJSON {
+      schemaVersion = 1;
+      project = name;
+      realization = "release";
+      paths = {
+        state = runtimeDir;
+        runtime = runtimeDir;
+      };
+      endpoints = {
+        default = {
+          url =
+            if cfg.domain != null then "https://${cfg.domain}" else "http://${cfg.host}:${toString cfg.port}";
+          listen = {
+            host = cfg.host;
+            port = cfg.port;
+          };
+        };
+      }
+      // auxiliaryRuntimeEndpoints;
+      parameters = if isProject then cfg.project.parameters else { };
+      secrets = lib.mapAttrs (secretName: _: secretName) projectSecrets;
+    }
+    + "\n"
+  );
+  expectedProjectDescriptor = pkgs.writeText "project-release-descriptor-${name}.json" (
+    builtins.toJSON cfg.project.descriptor + "\n"
+  );
 
   shellPath = lib.makeBinPath [
     pkgs.bash
@@ -80,17 +152,65 @@ let
     else
       "${cfg.source.url}?rev=${revision}";
 
+  effectiveHealthHostHeader =
+    if isProject && cfg.health.hostHeader == null then cfg.domain else cfg.health.hostHeader;
+  inferredHealthHeaders = lib.optionalAttrs (isProject && cfg.domain != null) {
+    "X-Forwarded-Host" = cfg.domain;
+    "X-Forwarded-Port" = "443";
+    "X-Forwarded-Proto" = "https";
+  };
+  effectiveHealthHeaders = inferredHealthHeaders // cfg.health.headers;
   healthCurlArgs =
-    lib.optionals (cfg.health.hostHeader != null) [
+    lib.optionals (effectiveHealthHostHeader != null) [
       "-H"
-      "Host: ${cfg.health.hostHeader}"
+      "Host: ${effectiveHealthHostHeader}"
     ]
     ++ lib.concatLists (
       lib.mapAttrsToList (header: value: [
         "-H"
         "${header}: ${value}"
-      ]) cfg.health.headers
+      ]) effectiveHealthHeaders
     );
+
+  caddyQuote = value: ''"${lib.replaceStrings [ "\\" "\"" "\n" ] [ "\\\\" "\\\"" "" ] value}"'';
+  projectIngressConfig =
+    if !isProject then
+      ""
+    else
+      let
+        ingress = projectRelease.ingress;
+        redirects = map (
+          redirect: "redir ${caddyQuote redirect.from} ${caddyQuote redirect.to} ${toString redirect.status}"
+        ) ingress.redirects;
+        cacheRules = lib.imap0 (
+          index: rule:
+          let
+            matcher = "project_cache_${toString index}";
+          in
+          ''
+            @${matcher} path ${lib.concatStringsSep " " (map caddyQuote rule.paths)}
+            header @${matcher} Cache-Control ${caddyQuote rule.value}
+          ''
+        ) ingress.cacheRules;
+        responseHeaders = lib.optional (ingress.responseHeaders != { }) ''
+          header {
+            ${lib.concatStringsSep "\n" (
+              lib.mapAttrsToList (header: value: "${header} ${caddyQuote value}") ingress.responseHeaders
+            )}
+          }
+        '';
+      in
+      lib.concatStringsSep "\n" (
+        lib.optional ingress.compression "encode zstd gzip"
+        ++ lib.optional (ingress.requestBodyMaxBytes != null) ''
+          request_body {
+            max_size ${toString ingress.requestBodyMaxBytes}B
+          }
+        ''
+        ++ redirects
+        ++ cacheRules
+        ++ responseHeaders
+      );
 
   serviceHealthScript = ''
     check_service_health() {
@@ -263,6 +383,28 @@ let
 
     echo "app-deployment/${name}: building $build_flake_ref#${cfg.package}"
     new_store_path="$(nix build --no-link --print-out-paths "$build_flake_ref#${cfg.package}")"
+    ${lib.optionalString isProject ''
+      descriptor_file="$new_store_path/share/project/descriptor.json"
+      if [ ! -f "$descriptor_file" ]; then
+        echo "app-deployment/${name}: Project artifact is missing $descriptor_file" >&2
+        exit 1
+      fi
+      jq -S . ${lib.escapeShellArg expectedProjectDescriptor} > "$state_dir/expected-descriptor.json.next"
+      jq -S . "$descriptor_file" > "$state_dir/artifact-descriptor.json.next"
+      if ! cmp -s "$state_dir/expected-descriptor.json.next" "$state_dir/artifact-descriptor.json.next"; then
+        echo "app-deployment/${name}: Project artifact descriptor does not match host policy" >&2
+        rm -f "$state_dir/expected-descriptor.json.next" "$state_dir/artifact-descriptor.json.next"
+        exit 1
+      fi
+      mv -f "$state_dir/expected-descriptor.json.next" "$state_dir/expected-descriptor.json"
+      mv -f "$state_dir/artifact-descriptor.json.next" "$state_dir/artifact-descriptor.json"
+      ${lib.optionalString (projectActivationExecutable != null) ''
+        if [ ! -x "$new_store_path/bin/${projectActivationExecutable}" ]; then
+          echo "app-deployment/${name}: missing activation executable $new_store_path/bin/${projectActivationExecutable}" >&2
+          exit 1
+        fi
+      ''}
+    ''}
     ${
       if isService then
         ''
@@ -308,6 +450,31 @@ let
     printf '%s\n' "$resolved_revision" > "$current_revision_file"
     sync_gcroots
 
+    ${lib.optionalString (projectActivationExecutable != null) ''
+      if [ "$new_store_path" != "$old_store_path" ]; then
+        ${lib.optionalString isService "systemctl stop ${lib.escapeShellArg "${unitName}.service"}"}
+        if ! systemctl start ${lib.escapeShellArg "${activationUnitName}.service"}; then
+          echo "app-deployment/${name}: activation failed" >&2
+          if [ -n "$old_store_path" ]; then
+            echo "app-deployment/${name}: restoring and reactivating $old_store_path" >&2
+            ln -sfn "$old_store_path" "$current_link.next"
+            mv -Tf "$current_link.next" "$current_link"
+            if [ -f "$previous_revision_file" ]; then
+              cp "$previous_revision_file" "$current_revision_file"
+            fi
+            sync_gcroots
+            if ! systemctl start ${lib.escapeShellArg "${activationUnitName}.service"}; then
+              echo "app-deployment/${name}: rollback activation also failed" >&2
+            fi
+            ${lib.optionalString isService "systemctl start ${lib.escapeShellArg "${unitName}.service"}"}
+          else
+            rm -f "$current_link" "$current_revision_file"
+            sync_gcroots
+          fi
+          exit 1
+        fi
+      fi
+    ''}
     ${lib.optionalString isService "systemctl restart ${lib.escapeShellArg "${unitName}.service"}"}
 
     if ${if isService then "check_service_health" else "check_static_health \"$current_link\""}; then
@@ -317,12 +484,20 @@ let
 
     if [ -n "$old_store_path" ]; then
       echo "app-deployment/${name}: health failed, rolling back to $old_store_path" >&2
+      ${lib.optionalString (
+        isService && projectActivationExecutable != null
+      ) "systemctl stop ${lib.escapeShellArg "${unitName}.service"}"}
       ln -sfn "$old_store_path" "$current_link.next"
       mv -Tf "$current_link.next" "$current_link"
       if [ -f "$previous_revision_file" ]; then
         cp "$previous_revision_file" "$current_revision_file"
       fi
       sync_gcroots
+      ${lib.optionalString (projectActivationExecutable != null) ''
+        if ! systemctl start ${lib.escapeShellArg "${activationUnitName}.service"}; then
+          echo "app-deployment/${name}: rollback activation failed" >&2
+        fi
+      ''}
       ${
         if isService then
           ''
@@ -350,25 +525,168 @@ let
       exit 1
     fi
 
+    ${lib.optionalString isProject ''
+      export PROJECT_RUNTIME_FILE=${lib.escapeShellArg projectRuntimeManifest}
+      export PROJECT_SECRETS_DIR="''${CREDENTIALS_DIRECTORY:-${runtimeDir}/secrets}"
+    ''}
     exec "$executable"
   '';
+  activationScript = pkgs.writeShellScript "app-deployment-${name}-activate" ''
+    set -euo pipefail
+
+    current=${lib.escapeShellArg stateDir}/current
+    descriptor="$current/share/project/descriptor.json"
+    activation_executable="$(${pkgs.jq}/bin/jq -r '.release.activationExecutable // empty' "$descriptor")"
+    if [ -z "$activation_executable" ]; then
+      exit 0
+    fi
+    executable="$current/bin/$activation_executable"
+    if [ ! -x "$executable" ]; then
+      echo "app-deployment/${name}: no deployed activation executable at $executable" >&2
+      exit 1
+    fi
+
+    export PROJECT_RUNTIME_FILE=${lib.escapeShellArg projectRuntimeManifest}
+    export PROJECT_SECRETS_DIR="''${CREDENTIALS_DIRECTORY:-${runtimeDir}/secrets}"
+    exec "$executable"
+  '';
+  projectJobScripts = lib.mapAttrs (
+    jobName: _policy:
+    let
+      action = projectRelease.maintenanceJobs.${jobName}.action;
+    in
+    pkgs.writeShellScript "app-deployment-${name}-job-${jobName}" ''
+      set -euo pipefail
+
+      current=${lib.escapeShellArg stateDir}/current
+      executable="$current/bin/${cfg.executable}"
+      if [ ! -x "$executable" ]; then
+        echo "app-deployment/${name}: no deployed Release executable at $executable" >&2
+        exit 1
+      fi
+
+      export PROJECT_RUNTIME_FILE=${lib.escapeShellArg projectRuntimeManifest}
+      export PROJECT_SECRETS_DIR="''${CREDENTIALS_DIRECTORY:-${runtimeDir}/secrets}"
+      exec "$executable" ${lib.escapeShellArg action}
+    ''
+  ) projectJobs;
+  projectJobServices = lib.mapAttrs' (
+    jobName: policy:
+    lib.nameValuePair "${unitName}-job-${jobName}" {
+      description = "Run Project Release job '${name}/${jobName}'";
+      after = [ "network-online.target" ] ++ projectContainerUnits;
+      wants = [ "network-online.target" ] ++ projectContainerUnits;
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = projectJobScripts.${jobName};
+        User = userName;
+        Group = userName;
+        WorkingDirectory = stateDir;
+      }
+      // projectHardening
+      // lib.optionalAttrs (projectSecrets != { }) {
+        LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
+      }
+      // {
+        IOSchedulingClass = "idle";
+        Nice = 10;
+      };
+    }
+  ) projectJobs;
+  projectJobTimers = lib.mapAttrs' (
+    jobName: policy:
+    lib.nameValuePair "${unitName}-job-${jobName}" {
+      description = "Schedule Project Release job '${name}/${jobName}'";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        Persistent = policy.persistent;
+        RandomizedDelaySec = policy.randomizedDelaySec;
+        Unit = "${unitName}-job-${jobName}.service";
+      }
+      // lib.optionalAttrs (policy.calendar != null) {
+        OnCalendar = policy.calendar;
+      }
+      // lib.optionalAttrs (policy.interval != null) {
+        OnBootSec = policy.onBootSec;
+        OnUnitActiveSec = policy.interval;
+      };
+    }
+  ) projectJobs;
   staticCaddyConfig = ''
     root * ${stateDir}/current
-    ${cfg.static.extraConfig}
+    ${if isProject then projectIngressConfig else cfg.static.extraConfig}
+    ${lib.optionalString isProject ''
+      @project_metadata path /share/project/*
+      respond @project_metadata 404
+    ''}
     file_server
   '';
+  projectServiceCaddyConfig = ''
+    ${projectIngressConfig}
+    reverse_proxy ${cfg.host}:${toString cfg.port}
+  '';
+  projectHealthRecoveryScript = pkgs.writeShellScript "app-deployment-${name}-health-recovery" ''
+    set -euo pipefail
+
+    check_once() {
+      local path
+      for path in ${lib.escapeShellArgs cfg.health.paths}; do
+        ${pkgs.curl}/bin/curl -fsS --max-time ${toString cfg.health.requestTimeoutSec} \
+          ${lib.escapeShellArgs healthCurlArgs} \
+          "http://${cfg.health.host}:${toString cfg.port}$path" >/dev/null || return 1
+      done
+    }
+
+    if check_once; then
+      exit 0
+    fi
+
+    echo "app-deployment/${name}: periodic health failed; restarting" >&2
+    ${pkgs.systemd}/bin/systemctl restart ${lib.escapeShellArg "${unitName}.service"}
+    ${serviceHealthScript}
+    check_service_health
+  '';
+  projectHardening = {
+    CapabilityBoundingSet = "";
+    LockPersonality = true;
+    NoNewPrivileges = true;
+    PrivateDevices = true;
+    PrivateTmp = true;
+    ProtectClock = true;
+    ProtectControlGroups = true;
+    ProtectHome = true;
+    ProtectKernelLogs = true;
+    ProtectKernelModules = true;
+    ProtectKernelTunables = true;
+    ProtectSystem = "strict";
+    ReadWritePaths = [ runtimeDir ];
+    RemoveIPC = true;
+    RestrictAddressFamilies = [
+      "AF_INET"
+      "AF_INET6"
+      "AF_UNIX"
+    ];
+    RestrictRealtime = true;
+    RestrictSUIDSGID = true;
+    SystemCallArchitectures = "native";
+    TimeoutStopSec = "30s";
+    UMask = "0027";
+  }
+  // lib.optionalAttrs (projectMemory.high != null) { MemoryHigh = projectMemory.high; }
+  // lib.optionalAttrs (projectMemory.max != null) { MemoryMax = projectMemory.max; }
+  // lib.optionalAttrs (projectMemory.swapMax != null) { MemorySwapMax = projectMemory.swapMax; };
 
   runtimeConfig =
     if cfg.enable then
       {
-        users.users = lib.optionalAttrs isService {
+        users.users = lib.optionalAttrs needsRuntimeUser {
           ${userName} = {
             isSystemUser = true;
             group = userName;
             home = stateDir;
           };
         };
-        users.groups = lib.optionalAttrs isService {
+        users.groups = lib.optionalAttrs needsRuntimeUser {
           ${userName} = { };
         };
 
@@ -376,60 +694,118 @@ let
           "d /var/lib/app-deployments 0755 root root -"
           "d ${stateDir} 0755 root root -"
         ]
-        ++ lib.optionals isService (
-          [ "d ${runtimeDir} 0750 ${userName} ${userName} -" ]
+        ++ lib.optionals needsRuntimeUser (
+          [
+            "d ${runtimeDir} 0750 ${userName} ${userName} -"
+            "d ${runtimeDir}/secrets 0700 ${userName} ${userName} -"
+          ]
+          ++ (map (dir: "d ${runtimeDir}/${dir} 0750 ${userName} ${userName} -") projectStateDirectories)
           ++ (map (dir: "d ${dir} 0750 ${userName} ${userName} -") cfg.stateDirs)
         );
 
-        systemd.services.${unitName} = lib.mkIf isService {
-          description = "App deployment '${name}'";
-          after = [ "network-online.target" ];
-          wants = [ "network-online.target" ];
-          environment = {
-            HOST = cfg.host;
-            PORT = toString cfg.port;
-            HOME = stateDir;
-          }
-          // cfg.environment;
-          path = cfg.path;
-          serviceConfig = {
-            ExecStart = startScript;
-            Restart = "always";
-            RestartSec = "15s";
-            User = userName;
-            Group = userName;
-            WorkingDirectory = stateDir;
-          }
-          // lib.optionalAttrs (cfg.environmentFiles != [ ]) {
-            EnvironmentFile = cfg.environmentFiles;
-          }
-          // cfg.serviceConfig;
-          preStart = cfg.preStart;
-        };
-
-        systemd.services.${updateUnitName} = {
-          description = "Update app deployment '${name}'";
-          after = [ "network-online.target" ];
-          wants = [ "network-online.target" ];
-          serviceConfig = {
-            Type = "oneshot";
-            ExecStart = updateScript;
+        systemd.services = projectJobServices // {
+          ${unitName} = lib.mkIf isService {
+            description = "App deployment '${name}'";
+            after = [ "network-online.target" ] ++ projectContainerUnits;
+            wants = [ "network-online.target" ] ++ projectContainerUnits;
+            environment =
+              (
+                if isProject then
+                  { HOME = stateDir; }
+                else
+                  {
+                    HOST = cfg.host;
+                    PORT = toString cfg.port;
+                    HOME = stateDir;
+                  }
+              )
+              // cfg.environment;
+            path = cfg.path;
+            serviceConfig = {
+              ExecStart = startScript;
+              Restart = "always";
+              RestartSec = "15s";
+              User = userName;
+              Group = userName;
+              WorkingDirectory = stateDir;
+            }
+            // lib.optionalAttrs isProject projectHardening
+            // lib.optionalAttrs (isProject && projectSecrets != { }) {
+              LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
+            }
+            // lib.optionalAttrs (cfg.environmentFiles != [ ]) {
+              EnvironmentFile = cfg.environmentFiles;
+            }
+            // cfg.serviceConfig;
+            preStart = cfg.preStart;
           };
-        };
 
-        systemd.timers = lib.optionalAttrs cfg.autoUpdate.enable {
           ${updateUnitName} = {
-            description = "Reconcile app deployment '${name}'";
-            wantedBy = [ "timers.target" ];
-            timerConfig = {
-              OnActiveSec = cfg.autoUpdate.onBootSec;
-              OnBootSec = cfg.autoUpdate.onBootSec;
-              OnUnitActiveSec = cfg.autoUpdate.interval;
-              Persistent = true;
-              Unit = "${updateUnitName}.service";
+            description = "Update app deployment '${name}'";
+            after = [ "network-online.target" ] ++ projectContainerUnits;
+            wants = [ "network-online.target" ] ++ projectContainerUnits;
+            serviceConfig = {
+              Type = "oneshot";
+              ExecStart = updateScript;
             };
           };
+
+          ${activationUnitName} = lib.mkIf (projectActivationExecutable != null) {
+            description = "Activate Project Release '${name}'";
+            after = projectContainerUnits;
+            wants = projectContainerUnits;
+            serviceConfig = {
+              Type = "oneshot";
+              ExecStart = activationScript;
+              User = userName;
+              Group = userName;
+              WorkingDirectory = stateDir;
+            }
+            // projectHardening
+            // lib.optionalAttrs (projectSecrets != { }) {
+              LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
+            };
+          };
+
+          "${unitName}-health-recovery" =
+            lib.mkIf (isProject && isService && cfg.project.healthRecovery.enable)
+              {
+                description = "Recover unhealthy Project Release '${name}'";
+                after = [ "${unitName}.service" ];
+                serviceConfig = {
+                  Type = "oneshot";
+                  ExecStart = projectHealthRecoveryScript;
+                };
+              };
         };
+
+        systemd.timers =
+          lib.optionalAttrs cfg.autoUpdate.enable {
+            ${updateUnitName} = {
+              description = "Reconcile app deployment '${name}'";
+              wantedBy = [ "timers.target" ];
+              timerConfig = {
+                OnActiveSec = cfg.autoUpdate.onBootSec;
+                OnBootSec = cfg.autoUpdate.onBootSec;
+                OnUnitActiveSec = cfg.autoUpdate.interval;
+                Persistent = true;
+                Unit = "${updateUnitName}.service";
+              };
+            };
+          }
+          // lib.optionalAttrs (isProject && isService && cfg.project.healthRecovery.enable) {
+            "${unitName}-health-recovery" = {
+              description = "Periodically probe Project Release '${name}'";
+              wantedBy = [ "timers.target" ];
+              timerConfig = {
+                OnBootSec = cfg.project.healthRecovery.onBootSec;
+                OnUnitActiveSec = cfg.project.healthRecovery.interval;
+                Persistent = true;
+                Unit = "${unitName}-health-recovery.service";
+              };
+            };
+          }
+          // projectJobTimers;
 
         vps.appDeployments.webhookApps.${name} = {
           updateUnit = "${updateUnitName}.service";
@@ -438,11 +814,31 @@ let
 
         vps.services.appDeployments.metadata.health.units = lib.optional isService "${unitName}.service";
 
+        virtualisation.oci-containers.containers = lib.mapAttrs' (
+          auxiliaryName: auxiliary:
+          lib.nameValuePair (projectContainerName auxiliaryName) {
+            image = auxiliary.image;
+            cmd = auxiliary.command;
+            ports = lib.mapAttrsToList (
+              portName: port:
+              "127.0.0.1:${
+                toString projectAuxiliaryPorts.${auxiliaryName}.${portName}
+              }:${toString port.containerPort}/${port.protocol}"
+            ) auxiliary.ports;
+            extraOptions = [ "--init" ];
+          }
+        ) projectAuxiliaries;
+
         vps.services.caddy.virtualHosts = lib.optionalAttrs (cfg.domain != null) {
           ${cfg.domain} =
-            if isService then
+            if isService && !isProject then
               {
                 upstream = "${cfg.host}:${toString cfg.port}";
+                tailscaleOnly = !cfg.public;
+              }
+            else if isService then
+              {
+                extraConfig = projectServiceCaddyConfig;
                 tailscaleOnly = !cfg.public;
               }
             else
