@@ -295,7 +295,7 @@ let
     builtins.toJSON {
       service = {
         inherit (projectService) after wants environment;
-        condition = projectService.unitConfig.ConditionPathIsExecutable;
+        condition = projectService.unitConfig.ConditionFileIsExecutable;
         inherit (projectService.serviceConfig)
           CapabilityBoundingSet
           LoadCredential
@@ -340,13 +340,13 @@ let
           hasOnBootSec = timer.timerConfig ? OnBootSec;
         };
       recovery = {
-        condition = projectRecoveryService.unitConfig.ConditionPathIsExecutable;
+        condition = projectRecoveryService.unitConfig.ConditionFileIsExecutable;
         inherit (projectRecoveryService.serviceConfig) TimeoutStartSec;
       };
       recoveryScript = projectRecoveryService.serviceConfig.ExecStart;
       job = {
         inherit (projectJobService) after wants;
-        condition = projectJobService.unitConfig.ConditionPathIsExecutable;
+        condition = projectJobService.unitConfig.ConditionFileIsExecutable;
         inherit (projectJobService.serviceConfig)
           LoadCredential
           IOSchedulingClass

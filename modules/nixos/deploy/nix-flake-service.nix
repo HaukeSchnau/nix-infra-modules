@@ -577,7 +577,7 @@ let
       description = "Run Project Release job '${name}/${jobName}'";
       after = [ "network-online.target" ] ++ projectContainerUnits;
       wants = [ "network-online.target" ] ++ projectContainerUnits;
-      unitConfig.ConditionPathIsExecutable = "${stateDir}/current/bin/${cfg.executable}";
+      unitConfig.ConditionFileIsExecutable = "${stateDir}/current/bin/${cfg.executable}";
       serviceConfig = {
         Type = "oneshot";
         ExecStart = projectJobScripts.${jobName};
@@ -711,7 +711,7 @@ let
             after = [ "network-online.target" ] ++ projectContainerUnits;
             wants = [ "network-online.target" ] ++ projectContainerUnits;
             unitConfig = lib.optionalAttrs isProject {
-              ConditionPathIsExecutable = "${stateDir}/current/bin/${cfg.executable}";
+              ConditionFileIsExecutable = "${stateDir}/current/bin/${cfg.executable}";
             };
             environment =
               (
@@ -777,7 +777,7 @@ let
               {
                 description = "Recover unhealthy Project Release '${name}'";
                 after = [ "${unitName}.service" ];
-                unitConfig.ConditionPathIsExecutable = "${stateDir}/current/bin/${cfg.executable}";
+                unitConfig.ConditionFileIsExecutable = "${stateDir}/current/bin/${cfg.executable}";
                 serviceConfig = {
                   Type = "oneshot";
                   ExecStart = projectHealthRecoveryScript;
