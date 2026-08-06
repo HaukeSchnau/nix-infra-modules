@@ -349,6 +349,16 @@ let
       done
     }
 
+    ${lib.optionalString isProject ''
+      current_descriptor_matches() {
+        local descriptor
+        descriptor="$current_link/share/project/descriptor.json"
+        [ -f "$descriptor" ] || return 1
+        cmp <(jq -e -S . ${lib.escapeShellArg expectedProjectDescriptor}) \
+          <(jq -e -S . "$descriptor")
+      }
+    ''}
+
     ${gitTokenSetup}
 
     echo "app-deployment/${name}: resolving $flake_ref"
@@ -371,9 +381,9 @@ let
       sync_gcroots
       if ${
         if isService then
-          "systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && [ -x \"$current_link/bin/${cfg.executable}\" ] && check_service_health"
+          "systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && [ -x \"$current_link/bin/${cfg.executable}\" ] && ${lib.optionalString isProject "current_descriptor_matches && "}check_service_health"
         else
-          "[ -d \"$current_link\" ] && check_static_health \"$current_link\""
+          "[ -d \"$current_link\" ] && ${lib.optionalString isProject "current_descriptor_matches && "}check_static_health \"$current_link\""
       }; then
         echo "app-deployment/${name}: already active at $resolved_revision"
         exit 0
@@ -532,6 +542,25 @@ let
     ''}
     exec "$executable"
   '';
+  projectArtifactConditionScript = pkgs.writeShellScript "app-deployment-${name}-artifact-condition" ''
+    set -euo pipefail
+
+    current=${lib.escapeShellArg stateDir}/current
+    executable="$current/bin/${cfg.executable}"
+    descriptor="$current/share/project/descriptor.json"
+
+    if [ ! -x "$executable" ] || [ ! -f "$descriptor" ]; then
+      echo "app-deployment/${name}: no descriptor-compatible Project artifact is deployed" >&2
+      exit 1
+    fi
+
+    actual="$(${pkgs.jq}/bin/jq -e -S . "$descriptor")"
+    expected="$(${pkgs.jq}/bin/jq -e -S . ${lib.escapeShellArg expectedProjectDescriptor})"
+    if [ "$actual" != "$expected" ]; then
+      echo "app-deployment/${name}: deployed Project artifact does not match host policy" >&2
+      exit 1
+    fi
+  '';
   activationScript = pkgs.writeShellScript "app-deployment-${name}-activate" ''
     set -euo pipefail
 
@@ -577,9 +606,9 @@ let
       description = "Run Project Release job '${name}/${jobName}'";
       after = [ "network-online.target" ] ++ projectContainerUnits;
       wants = [ "network-online.target" ] ++ projectContainerUnits;
-      unitConfig.ConditionFileIsExecutable = "${stateDir}/current/bin/${cfg.executable}";
       serviceConfig = {
         Type = "oneshot";
+        ExecCondition = projectArtifactConditionScript;
         ExecStart = projectJobScripts.${jobName};
         User = userName;
         Group = userName;
@@ -710,9 +739,6 @@ let
             description = "App deployment '${name}'";
             after = [ "network-online.target" ] ++ projectContainerUnits;
             wants = [ "network-online.target" ] ++ projectContainerUnits;
-            unitConfig = lib.optionalAttrs isProject {
-              ConditionFileIsExecutable = "${stateDir}/current/bin/${cfg.executable}";
-            };
             environment =
               (
                 if isProject then
@@ -733,6 +759,9 @@ let
               User = userName;
               Group = userName;
               WorkingDirectory = stateDir;
+            }
+            // lib.optionalAttrs isProject {
+              ExecCondition = projectArtifactConditionScript;
             }
             // lib.optionalAttrs isProject projectHardening
             // lib.optionalAttrs (isProject && projectSecrets != { }) {
@@ -777,9 +806,9 @@ let
               {
                 description = "Recover unhealthy Project Release '${name}'";
                 after = [ "${unitName}.service" ];
-                unitConfig.ConditionFileIsExecutable = "${stateDir}/current/bin/${cfg.executable}";
                 serviceConfig = {
                   Type = "oneshot";
+                  ExecCondition = projectArtifactConditionScript;
                   ExecStart = projectHealthRecoveryScript;
                   TimeoutStartSec = "${toString (cfg.health.startupTimeoutSec + 10)}s";
                 };

@@ -295,7 +295,7 @@ let
     builtins.toJSON {
       service = {
         inherit (projectService) after wants environment;
-        condition = projectService.unitConfig.ConditionFileIsExecutable;
+        condition = projectService.serviceConfig.ExecCondition;
         inherit (projectService.serviceConfig)
           CapabilityBoundingSet
           LoadCredential
@@ -340,13 +340,13 @@ let
           hasOnBootSec = timer.timerConfig ? OnBootSec;
         };
       recovery = {
-        condition = projectRecoveryService.unitConfig.ConditionFileIsExecutable;
+        condition = projectRecoveryService.serviceConfig.ExecCondition;
         inherit (projectRecoveryService.serviceConfig) TimeoutStartSec;
       };
       recoveryScript = projectRecoveryService.serviceConfig.ExecStart;
       job = {
         inherit (projectJobService) after wants;
-        condition = projectJobService.unitConfig.ConditionFileIsExecutable;
+        condition = projectJobService.serviceConfig.ExecCondition;
         inherit (projectJobService.serviceConfig)
           LoadCredential
           IOSchedulingClass
@@ -528,6 +528,7 @@ in
     ${pkgs.bash}/bin/bash -n ${projectActivationScript}
     ${pkgs.bash}/bin/bash -n ${projectJobScript}
     grep -Fq 'share/project/descriptor.json' ${projectUpdateScript}
+    grep -Fq 'current_descriptor_matches' ${projectUpdateScript}
     grep -Fq 'jq -S .' ${projectUpdateScript}
     grep -Fq -- '-diffutils-' ${projectUpdateScript}
     grep -Fq 'app-deployment-demo-project-activate.service' ${projectUpdateScript}
@@ -569,7 +570,7 @@ in
       and .service.MemoryHigh == "768M"
       and .service.MemoryMax == "1G"
       and .service.MemorySwapMax == "0"
-      and (.service.condition | endswith("/current/bin/project-release-runtime"))
+      and (.service.condition | endswith("-app-deployment-demo-project-artifact-condition"))
       and (.service.LoadCredential | index("betterAuthSecret:/run/secrets/demo-better-auth"))
       and (.service.after | index("podman-project-demo-project-database.service"))
       and .activation.Type == "oneshot"
@@ -577,7 +578,7 @@ in
       and .updateTimer.OnActiveSec == "2min"
       and .updateTimer.OnUnitActiveSec == "10min"
       and .updateTimer.hasOnBootSec == false
-      and (.recovery.condition | endswith("/current/bin/project-release-runtime"))
+      and (.recovery.condition | endswith("-app-deployment-demo-project-artifact-condition"))
       and .recovery.TimeoutStartSec == "70s"
       and .recoveryTimer.OnActiveSec == "4min"
       and (.caddy.extraConfig | contains("reverse_proxy 127.0.0.1:18200"))
@@ -590,7 +591,7 @@ in
       and .job.NoNewPrivileges == true
       and .job.Nice == 10
       and .job.IOSchedulingClass == "idle"
-      and (.job.condition | endswith("/current/bin/project-release-runtime"))
+      and (.job.condition | endswith("-app-deployment-demo-project-artifact-condition"))
       and (.job.LoadCredential | index("betterAuthSecret:/run/secrets/demo-better-auth"))
       and .job.timer.OnActiveSec == "15min"
       and .job.timer.OnUnitActiveSec == "1d"
