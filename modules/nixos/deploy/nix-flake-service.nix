@@ -134,6 +134,7 @@ let
     pkgs.bash
     pkgs.coreutils
     pkgs.curl
+    pkgs.diffutils
     pkgs.findutils
     pkgs.git
     pkgs.gnugrep
@@ -576,6 +577,7 @@ let
       description = "Run Project Release job '${name}/${jobName}'";
       after = [ "network-online.target" ] ++ projectContainerUnits;
       wants = [ "network-online.target" ] ++ projectContainerUnits;
+      unitConfig.ConditionPathIsExecutable = "${stateDir}/current/bin/${cfg.executable}";
       serviceConfig = {
         Type = "oneshot";
         ExecStart = projectJobScripts.${jobName};
@@ -607,7 +609,7 @@ let
         OnCalendar = policy.calendar;
       }
       // lib.optionalAttrs (policy.interval != null) {
-        OnBootSec = policy.onBootSec;
+        OnActiveSec = policy.onBootSec;
         OnUnitActiveSec = policy.interval;
       };
     }
@@ -642,7 +644,7 @@ let
     fi
 
     echo "app-deployment/${name}: periodic health failed; restarting" >&2
-    ${pkgs.systemd}/bin/systemctl restart ${lib.escapeShellArg "${unitName}.service"}
+    ${pkgs.systemd}/bin/systemctl restart --no-block ${lib.escapeShellArg "${unitName}.service"}
     ${serviceHealthScript}
     check_service_health
   '';
@@ -708,6 +710,9 @@ let
             description = "App deployment '${name}'";
             after = [ "network-online.target" ] ++ projectContainerUnits;
             wants = [ "network-online.target" ] ++ projectContainerUnits;
+            unitConfig = lib.optionalAttrs isProject {
+              ConditionPathIsExecutable = "${stateDir}/current/bin/${cfg.executable}";
+            };
             environment =
               (
                 if isProject then
@@ -772,9 +777,11 @@ let
               {
                 description = "Recover unhealthy Project Release '${name}'";
                 after = [ "${unitName}.service" ];
+                unitConfig.ConditionPathIsExecutable = "${stateDir}/current/bin/${cfg.executable}";
                 serviceConfig = {
                   Type = "oneshot";
                   ExecStart = projectHealthRecoveryScript;
+                  TimeoutStartSec = "${toString (cfg.health.startupTimeoutSec + 10)}s";
                 };
               };
         };
@@ -786,10 +793,12 @@ let
               wantedBy = [ "timers.target" ];
               timerConfig = {
                 OnActiveSec = cfg.autoUpdate.onBootSec;
-                OnBootSec = cfg.autoUpdate.onBootSec;
                 OnUnitActiveSec = cfg.autoUpdate.interval;
                 Persistent = true;
                 Unit = "${updateUnitName}.service";
+              }
+              // lib.optionalAttrs (!isProject) {
+                OnBootSec = cfg.autoUpdate.onBootSec;
               };
             };
           }
@@ -798,7 +807,7 @@ let
               description = "Periodically probe Project Release '${name}'";
               wantedBy = [ "timers.target" ];
               timerConfig = {
-                OnBootSec = cfg.project.healthRecovery.onBootSec;
+                OnActiveSec = cfg.project.healthRecovery.onBootSec;
                 OnUnitActiveSec = cfg.project.healthRecovery.interval;
                 Persistent = true;
                 Unit = "${unitName}-health-recovery.service";

@@ -295,6 +295,7 @@ let
     builtins.toJSON {
       service = {
         inherit (projectService) after wants environment;
+        condition = projectService.unitConfig.ConditionPathIsExecutable;
         inherit (projectService.serviceConfig)
           CapabilityBoundingSet
           LoadCredential
@@ -324,15 +325,28 @@ let
         {
           inherit (timer) wantedBy;
           inherit (timer.timerConfig)
-            OnBootSec
+            OnActiveSec
             OnUnitActiveSec
             Persistent
             Unit
             ;
         };
+      updateTimer =
+        let
+          timer = projectSystem.config.systemd.timers.app-deployment-demo-project-update;
+        in
+        {
+          inherit (timer.timerConfig) OnActiveSec OnUnitActiveSec;
+          hasOnBootSec = timer.timerConfig ? OnBootSec;
+        };
+      recovery = {
+        condition = projectRecoveryService.unitConfig.ConditionPathIsExecutable;
+        inherit (projectRecoveryService.serviceConfig) TimeoutStartSec;
+      };
       recoveryScript = projectRecoveryService.serviceConfig.ExecStart;
       job = {
         inherit (projectJobService) after wants;
+        condition = projectJobService.unitConfig.ConditionPathIsExecutable;
         inherit (projectJobService.serviceConfig)
           LoadCredential
           IOSchedulingClass
@@ -348,7 +362,7 @@ let
           {
             inherit (timer) wantedBy;
             inherit (timer.timerConfig)
-              OnBootSec
+              OnActiveSec
               OnUnitActiveSec
               Persistent
               RandomizedDelaySec
@@ -515,6 +529,7 @@ in
     ${pkgs.bash}/bin/bash -n ${projectJobScript}
     grep -Fq 'share/project/descriptor.json' ${projectUpdateScript}
     grep -Fq 'jq -S .' ${projectUpdateScript}
+    grep -Fq -- '-diffutils-' ${projectUpdateScript}
     grep -Fq 'app-deployment-demo-project-activate.service' ${projectUpdateScript}
     grep -Fq 'rollback activation' ${projectUpdateScript}
     grep -Fq 'PROJECT_RUNTIME_FILE=' ${projectStartScript}
@@ -554,10 +569,17 @@ in
       and .service.MemoryHigh == "768M"
       and .service.MemoryMax == "1G"
       and .service.MemorySwapMax == "0"
+      and (.service.condition | endswith("/current/bin/project-release-runtime"))
       and (.service.LoadCredential | index("betterAuthSecret:/run/secrets/demo-better-auth"))
       and (.service.after | index("podman-project-demo-project-database.service"))
       and .activation.Type == "oneshot"
       and .activation.User == "app-demo-project"
+      and .updateTimer.OnActiveSec == "2min"
+      and .updateTimer.OnUnitActiveSec == "10min"
+      and .updateTimer.hasOnBootSec == false
+      and (.recovery.condition | endswith("/current/bin/project-release-runtime"))
+      and .recovery.TimeoutStartSec == "70s"
+      and .recoveryTimer.OnActiveSec == "4min"
       and (.caddy.extraConfig | contains("reverse_proxy 127.0.0.1:18200"))
       and (.caddy.extraConfig | contains("redir \"/old\" \"/new\" 307"))
       and (.caddy.extraConfig | contains("Cache-Control \"public, max-age=3600\""))
@@ -568,8 +590,9 @@ in
       and .job.NoNewPrivileges == true
       and .job.Nice == 10
       and .job.IOSchedulingClass == "idle"
+      and (.job.condition | endswith("/current/bin/project-release-runtime"))
       and (.job.LoadCredential | index("betterAuthSecret:/run/secrets/demo-better-auth"))
-      and .job.timer.OnBootSec == "15min"
+      and .job.timer.OnActiveSec == "15min"
       and .job.timer.OnUnitActiveSec == "1d"
       and .job.timer.RandomizedDelaySec == "30min"
       and (.staticCaddy.extraConfig | contains("@project_metadata path /share/project/*"))

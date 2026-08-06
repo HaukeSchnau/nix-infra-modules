@@ -127,7 +127,11 @@ systemd controls for repository-owned Release actions.
 
 Host policy may schedule descriptor-declared maintenance jobs by name. Each job
 sets exactly one of `calendar` or `interval`; interval jobs may set
-`onBootSec`, and all jobs may set `randomizedDelaySec` and `persistent`.
+`onBootSec` as their initial delay after the timer is activated, and all jobs
+may set `randomizedDelaySec` and `persistent`. Project update, recovery, and
+interval-job timers deliberately use activation-relative delays, so adding or
+changing a Project on an already-running host never starts repository builds or
+maintenance work inside a NixOS switch.
 The generated one-shot invokes the same Release executable with the descriptor
 action as its single argument and reuses the exact runtime manifest,
 credentials, user, hardening, memory policy, and auxiliary ordering. Maintenance
