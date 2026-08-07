@@ -326,7 +326,10 @@ def local_manifest(config: Mapping[str, Any]) -> pathlib.Path:
             },
             "endpoints": endpoints,
             "parameters": config.get("localParameters", {}),
-            "secrets": {name: name for name in config.get("secrets", [])},
+            # A descriptor declares semantic requirements, not concrete local
+            # bindings. Local actions may fall back to repository-owned env
+            # files; managed adapters populate this map with real credentials.
+            "secrets": {},
         }
         atomic_json(manifest_path, value)
     return manifest_path

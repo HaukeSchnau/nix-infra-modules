@@ -182,6 +182,12 @@ in
               HOME="$local_home" XDG_RUNTIME_DIR="$local_runtime" \
               ${development.package}/bin/project-context endpoint mobile listen-port)"
             test "$web_port" != "$mobile_port"
+            (cd "$checkout" && assert_status 1 env -u PROJECT_RUNTIME_FILE \
+              HOME="$local_home" XDG_RUNTIME_DIR="$local_runtime" \
+              ${development.package}/bin/project-context secret-file token)
+            (cd "$checkout" && assert_status 66 env -u PROJECT_RUNTIME_FILE \
+              HOME="$local_home" XDG_RUNTIME_DIR="$local_runtime" \
+              ${development.package}/bin/project-context secret-file token --required)
             second_checkout="$root/second-checkout"
             mkdir -p "$second_checkout"
             second_web_port="$(cd "$second_checkout" && env -u PROJECT_RUNTIME_FILE \

@@ -87,6 +87,9 @@ token_file="$($PROJECT_RUNTIME_QUERY secret-file authToken --required)"
 
 `project-context` also supports `path <name>`. It never prints Secret values;
 `secret-file` returns only a validated path beneath the credential directory.
+Local manifests do not claim descriptor Secrets are bound. Repository actions
+may use an optional `secret-file` query and retain their ordinary local env-file
+fallback; managed adapters bind and enforce required Secrets.
 
 ## Ownership
 
