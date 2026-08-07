@@ -73,6 +73,7 @@ let
 in
 {
   project-runtime =
+    assert lib.all (app: builtins.isString app.program) (lib.attrValues development.apps);
     pkgs.runCommand "project-runtime-interface-check"
       {
         nativeBuildInputs = [

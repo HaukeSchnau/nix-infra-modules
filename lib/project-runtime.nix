@@ -68,7 +68,7 @@ let
       '';
   appFor = program: {
     type = "app";
-    inherit program;
+    program = toString program;
   };
   mkInvocation =
     {
