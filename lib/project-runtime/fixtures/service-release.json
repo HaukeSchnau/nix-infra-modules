@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "project": "runtime-service-fixture",
+  "release": {
+    "action": "serve",
+    "activationExecutable": "activate-release",
+    "maintenanceJobs": {
+      "backup": {
+        "action": "backup"
+      }
+    }
+  }
+}

@@ -448,6 +448,7 @@ let
       context = "release";
       attrs = ensure context (isAttrs value) "must be an attribute set" value;
       checked = checkKeys context [
+        "action"
         "activationExecutable"
         "backend"
         "executable"
@@ -459,6 +460,7 @@ let
         "stateDirectories"
       ] attrs;
       backend = checked.backend or "service";
+      action = checked.action or (if backend == "service" then "web" else null);
       package = checked.package or "projectRelease";
       executable =
         checked.executable or (if backend == "service" then "project-release-runtime" else null);
@@ -492,33 +494,38 @@ let
               )
               "service releases require an executable and static releases must not define one"
               (
-                ensure context
+                ensure context (backend == "static" || (isString action && action != ""))
+                  "service releases require a non-empty action"
                   (
-                    activationExecutable == null
-                    || (
-                      isString activationExecutable && builtins.match executableNamePattern activationExecutable != null
-                    )
-                  )
-                  "activationExecutable must be null or a simple executable name"
-                  (
-                    ensure context (builtins.isList stateDirectories && lib.all validRelative stateDirectories)
-                      "stateDirectories must contain safe relative paths"
+                    ensure context
                       (
-                        ensure context (backend == "service" || maintenanceJobs == { })
-                          "maintenanceJobs require the service backend"
-                          {
-                            inherit
-                              activationExecutable
-                              backend
-                              executable
-                              maintenanceJobs
-                              package
-                              stateDirectories
-                              ;
-                            health = normalizeHealth "release.health" (checked.health or { });
-                            ingress = normalizeIngress (checked.ingress or { });
-                            ociAuxiliaries = lib.mapAttrs normalizeOci (checked.ociAuxiliaries or { });
-                          }
+                        activationExecutable == null
+                        || (
+                          isString activationExecutable && builtins.match executableNamePattern activationExecutable != null
+                        )
+                      )
+                      "activationExecutable must be null or a simple executable name"
+                      (
+                        ensure context (builtins.isList stateDirectories && lib.all validRelative stateDirectories)
+                          "stateDirectories must contain safe relative paths"
+                          (
+                            ensure context (backend == "service" || maintenanceJobs == { })
+                              "maintenanceJobs require the service backend"
+                              {
+                                inherit action;
+                                inherit
+                                  activationExecutable
+                                  backend
+                                  executable
+                                  maintenanceJobs
+                                  package
+                                  stateDirectories
+                                  ;
+                                health = normalizeHealth "release.health" (checked.health or { });
+                                ingress = normalizeIngress (checked.ingress or { });
+                                ociAuxiliaries = lib.mapAttrs normalizeOci (checked.ociAuxiliaries or { });
+                              }
+                          )
                       )
                   )
               )

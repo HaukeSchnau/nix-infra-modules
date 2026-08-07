@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.schnau.dev/project-runtime/v1.json",
+  "title": "Project Runtime Manifest v1",
+  "type": "object",
+  "required": ["schemaVersion", "project", "realization", "paths", "endpoints"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "project": { "$ref": "#/$defs/name" },
+    "realization": { "enum": ["development", "release"] },
+    "paths": {
+      "type": "object",
+      "required": ["state", "runtime"],
+      "properties": {
+        "checkout": { "$ref": "#/$defs/absolutePath" },
+        "state": { "$ref": "#/$defs/absolutePath" },
+        "cache": { "$ref": "#/$defs/absolutePath" },
+        "runtime": { "$ref": "#/$defs/absolutePath" }
+      },
+      "additionalProperties": false
+    },
+    "endpoints": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/name" },
+      "additionalProperties": { "$ref": "#/$defs/endpoint" }
+    },
+    "parameters": { "type": "object" },
+    "settings": {
+      "type": "object",
+      "deprecated": true,
+      "description": "Rolling v1 compatibility alias for parameters. Producers must emit parameters."
+    },
+    "secrets": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Za-z0-9_.-]+$" },
+      "additionalProperties": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "realization": { "const": "development" } } },
+      "then": {
+        "properties": {
+          "paths": { "required": ["checkout", "state", "cache", "runtime"] }
+        }
+      }
+    },
+    {
+      "not": { "required": ["parameters", "settings"] }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
+    "absolutePath": { "type": "string", "pattern": "^/" },
+    "endpoint": {
+      "type": "object",
+      "required": ["url", "listen"],
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "listen": {
+          "type": "object",
+          "required": ["host", "port"],
+          "properties": {
+            "host": { "type": "string", "minLength": 1 },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          },
+          "additionalProperties": false
+        },
+        "hostNames": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "visibility": { "enum": ["local", "tailnet", "public"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "project": "runtime-fixture",
+  "parameters": {
+    "flavour": {
+      "type": "string",
+      "default": "local"
+    }
+  },
+  "secrets": {
+    "token": {
+      "description": "Fixture credential"
+    }
+  },
+  "development": {
+    "preparation": {
+      "action": "install",
+      "secrets": ["token"]
+    },
+    "workloads": {
+      "web": {
+        "action": "serve",
+        "secrets": ["token"]
+      },
+      "mobile": {
+        "action": "bundle",
+        "dependsOn": ["web"]
+      }
+    },
+    "endpoints": {
+      "web": {
+        "workload": "web"
+      },
+      "mobile": {
+        "workload": "mobile",
+        "health": {
+          "paths": ["/status"]
+        }
+      }
+    }
+  }
+}

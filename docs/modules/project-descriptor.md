@@ -14,6 +14,9 @@ The public helper is exported as `lib.projectDescriptor`:
 - `releaseApp { descriptor; policy; }` projects a Release into the typed
   `appDeployments` interface while preserving the raw descriptor for artifact
   identity.
+- `lib.projectRuntime` turns the descriptor into conventional repository
+  Runtime packages, local flake apps, and exact-descriptor Release artifacts;
+  see [Project Runtime](./project-runtime.md).
 
 ## Shape
 
@@ -36,6 +39,7 @@ either or both realizations:
     }
   },
   "release": {
+    "action": "web",
     "activationExecutable": "activate-release",
     "stateDirectories": ["data"],
     "ingress": {
@@ -64,6 +68,10 @@ workloads and actions. Release defaults to backend `service`, package
 `projectRelease`, executable `project-release-runtime`, health path `/`, and no
 state, ingress customization, jobs, or OCI auxiliaries. OCI port protocol
 defaults to `tcp`.
+
+Service Releases also default `action` to `web`. The shared Runtime Module uses
+that action when the Release executable is invoked without arguments. Declare
+it explicitly whenever a repository uses another name.
 
 Secrets and parameters use semantic names containing letters, digits,
 underscores, dots, or hyphens. Parameter types are `string`, `boolean`,

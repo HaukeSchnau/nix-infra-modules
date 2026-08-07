@@ -30,6 +30,7 @@
     in
     {
       lib.projectDescriptor = import ./lib/project-descriptor.nix { inherit lib; };
+      lib.projectRuntime = import ./lib/project-runtime.nix { inherit lib; };
 
       lib.nixos = {
         nixFlakeService = import ./modules/nixos/deploy/nix-flake-service.nix;
@@ -127,6 +128,7 @@
               ./modules/nixos/backup/checks.nix
               ./modules/home-manager/workspace-repos/checks.nix
               ./modules/home-manager/colors/checks.nix
+              ./lib/project-runtime/checks.nix
             ]
           );
         in

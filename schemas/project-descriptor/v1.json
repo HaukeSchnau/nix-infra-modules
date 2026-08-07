@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.schnau.dev/project-descriptor/v1.json",
+  "title": "Project Descriptor v1",
+  "type": "object",
+  "required": ["schemaVersion", "project"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "project": { "$ref": "#/$defs/name" },
+    "secrets": { "type": "object" },
+    "parameters": { "type": "object" },
+    "development": {
+      "type": "object",
+      "properties": {
+        "preparation": { "type": "object" },
+        "workloads": { "type": "object" },
+        "endpoints": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "release": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "minLength": 1 },
+        "activationExecutable": { "type": "string", "minLength": 1 },
+        "backend": { "enum": ["service", "static"] },
+        "executable": { "type": "string", "minLength": 1 },
+        "health": { "type": "object" },
+        "ingress": { "type": "object" },
+        "maintenanceJobs": { "type": "object" },
+        "ociAuxiliaries": { "type": "object" },
+        "package": { "type": "string", "minLength": 1 },
+        "stateDirectories": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" }
+  }
+}

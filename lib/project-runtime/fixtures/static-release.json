@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "project": "runtime-static-fixture",
+  "release": {
+    "backend": "static"
+  }
+}
