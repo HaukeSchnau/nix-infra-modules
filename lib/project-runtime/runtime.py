@@ -11,11 +11,11 @@ import json
 import os
 import pathlib
 import re
-import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, NoReturn
 
@@ -82,6 +82,13 @@ def require_absolute_path(value: Any, pointer: str) -> str:
 
 
 def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
+    schema_version = raw.get("schemaVersion")
+    if schema_version not in (1, 2):
+        fail(65, "runtime manifest /schemaVersion: unsupported version")
+    descriptor_schema_version = config.get("descriptorSchemaVersion", 1)
+    if schema_version == 2 and descriptor_schema_version != 2:
+        fail(65, "runtime manifest /schemaVersion: version 2 requires a v2 Project descriptor")
+
     allowed_root = {
         "schemaVersion",
         "project",
@@ -92,11 +99,11 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
         "settings",
         "secrets",
     }
+    if schema_version == 2:
+        allowed_root.remove("settings")
     unknown_root = set(raw) - allowed_root
     if unknown_root:
         fail(65, "runtime manifest: unknown fields: " + ", ".join(sorted(unknown_root)))
-    if raw.get("schemaVersion") != 1:
-        fail(65, "runtime manifest /schemaVersion: unsupported version")
     if raw.get("project") != config["project"]:
         fail(
             65,
@@ -129,7 +136,10 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
     for name, endpoint in endpoints.items():
         if not NAME_RE.fullmatch(name) or not isinstance(endpoint, dict):
             fail(65, f"runtime manifest /endpoints/{name}: invalid Endpoint")
-        unknown_endpoint = set(endpoint) - {"url", "listen", "hostNames", "visibility"}
+        allowed_endpoint = {"url", "listen", "hostNames", "visibility"}
+        if schema_version == 2:
+            allowed_endpoint.add("protocol")
+        unknown_endpoint = set(endpoint) - allowed_endpoint
         if unknown_endpoint:
             fail(
                 65,
@@ -150,21 +160,37 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
         port = listen.get("port")
         if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
             fail(65, f"runtime manifest /endpoints/{name}/listen/port: invalid port")
-        url = require_string(endpoint.get("url"), f"/endpoints/{name}/url")
-        host_names = endpoint.get("hostNames", [])
-        if not isinstance(host_names, list) or not all(
-            isinstance(item, str) and item for item in host_names
-        ) or len(host_names) != len(set(host_names)):
-            fail(65, f"runtime manifest /endpoints/{name}/hostNames: invalid list")
-        visibility = endpoint.get("visibility")
-        if visibility is not None and visibility not in ("local", "tailnet", "public"):
-            fail(65, f"runtime manifest /endpoints/{name}/visibility: invalid value")
-        normalized_endpoints[name] = {
-            **endpoint,
-            "url": url,
-            "hostNames": host_names,
-            "listen": {**listen, "host": host, "port": port},
-        }
+        protocol = "http" if schema_version == 1 else endpoint.get("protocol")
+        if protocol not in ("http", "tcp"):
+            fail(65, f"runtime manifest /endpoints/{name}/protocol: must be http or tcp")
+        if protocol == "http":
+            url = require_string(endpoint.get("url"), f"/endpoints/{name}/url")
+            host_names = endpoint.get("hostNames", [])
+            if not isinstance(host_names, list) or not all(
+                isinstance(item, str) and item for item in host_names
+            ) or len(host_names) != len(set(host_names)):
+                fail(65, f"runtime manifest /endpoints/{name}/hostNames: invalid list")
+            visibility = endpoint.get("visibility")
+            if visibility is not None and visibility not in ("local", "tailnet", "public"):
+                fail(65, f"runtime manifest /endpoints/{name}/visibility: invalid value")
+            normalized_endpoints[name] = {
+                **endpoint,
+                "url": url,
+                "hostNames": host_names,
+                "listen": {**listen, "host": host, "port": port},
+            }
+        else:
+            publication_fields = set(endpoint) & {"url", "hostNames", "visibility"}
+            if publication_fields:
+                fail(
+                    65,
+                    f"runtime manifest /endpoints/{name}: TCP Endpoints cannot declare publication fields: "
+                    + ", ".join(sorted(publication_fields)),
+                )
+            normalized_endpoints[name] = {
+                "protocol": protocol,
+                "listen": {**listen, "host": host, "port": port},
+            }
     if config["realization"] == "development":
         expected_endpoints = set(config["endpoints"])
         actual_endpoints = set(normalized_endpoints)
@@ -175,6 +201,20 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
                 65,
                 "runtime manifest /endpoints: does not match descriptor"
                 f" (missing: {missing or '-'}; extra: {extra or '-'})",
+            )
+        expected_protocols = config.get(
+            "endpointProtocols", {name: "http" for name in config["endpoints"]}
+        )
+        mismatched_protocols = sorted(
+            name
+            for name, endpoint in normalized_endpoints.items()
+            if endpoint.get("protocol", "http") != expected_protocols.get(name, "http")
+        )
+        if mismatched_protocols:
+            fail(
+                65,
+                "runtime manifest /endpoints: protocols do not match descriptor: "
+                + ", ".join(mismatched_protocols),
             )
 
     if "parameters" in raw and "settings" in raw:
@@ -273,9 +313,13 @@ def local_manifest(config: Mapping[str, Any]) -> pathlib.Path:
     ) / config["project"] / "instances" / identity
 
     with exclusive_lock(runtime_root() / "local-allocations.lock"):
+        target_schema_version = config.get("descriptorSchemaVersion", 1)
         if manifest_path.exists():
             existing = load_json(manifest_path, label="runtime manifest")
-            if existing.get("paths", {}).get("checkout") == str(checkout):
+            if (
+                existing.get("schemaVersion") == target_schema_version
+                and existing.get("paths", {}).get("checkout") == str(checkout)
+            ):
                 validate_manifest(existing, config)
                 return manifest_path
 
@@ -297,6 +341,7 @@ def local_manifest(config: Mapping[str, Any]) -> pathlib.Path:
         start, end = config["localPortRange"]
         size = end - start + 1
         for name in sorted(config["endpoints"]):
+            protocol = config.get("endpointProtocols", {}).get(name, "http")
             offset = int(
                 hashlib.sha256(f"{checkout}/{name}".encode()).hexdigest()[:8], 16
             ) % size
@@ -304,18 +349,33 @@ def local_manifest(config: Mapping[str, Any]) -> pathlib.Path:
                 candidate = start + ((offset + step) % size)
                 if candidate not in used and port_available(candidate):
                     used.add(candidate)
-                    endpoints[name] = {
-                        "url": f"http://127.0.0.1:{candidate}",
-                        "hostNames": [],
-                        "visibility": "local",
-                        "listen": {"host": "127.0.0.1", "port": candidate},
-                    }
+                    if target_schema_version == 1:
+                        endpoint = {
+                            "url": f"http://127.0.0.1:{candidate}",
+                            "hostNames": [],
+                            "visibility": "local",
+                            "listen": {"host": "127.0.0.1", "port": candidate},
+                        }
+                    else:
+                        endpoint = {
+                            "protocol": protocol,
+                            "listen": {"host": "127.0.0.1", "port": candidate},
+                        }
+                        if protocol == "http":
+                            endpoint.update(
+                                {
+                                    "url": f"http://127.0.0.1:{candidate}",
+                                    "hostNames": [],
+                                    "visibility": "local",
+                                }
+                            )
+                    endpoints[name] = endpoint
                     break
             else:
                 fail(69, "local Project Runtime listener range is exhausted")
 
         value = {
-            "schemaVersion": 1,
+            "schemaVersion": target_schema_version,
             "project": config["project"],
             "realization": "development",
             "paths": {
@@ -453,7 +513,7 @@ def supervise(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
                 status = process.poll()
                 if status is not None:
                     return status
-            signal.pause()
+            time.sleep(0.1)
     except KeyboardInterrupt:
         return 130
     finally:
@@ -476,7 +536,7 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
     endpoint_parser = subparsers.add_parser("endpoint")
     endpoint_parser.add_argument("name")
     endpoint_parser.add_argument(
-        "field", choices=["url", "listen-host", "listen-port", "host-names"]
+        "field", choices=["protocol", "url", "listen-host", "listen-port", "host-names"]
     )
     endpoint_parser.add_argument("--json", action="store_true")
     parameter_parser = subparsers.add_parser("parameter")
@@ -501,12 +561,16 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
         endpoint = manifest["endpoints"].get(options.name)
         if endpoint is None:
             fail(66, f"Project Endpoint is unavailable: {options.name}")
-        value = {
-            "url": endpoint["url"],
+        values = {
+            "protocol": endpoint.get("protocol", "http"),
+            "url": endpoint.get("url"),
             "listen-host": endpoint["listen"]["host"],
             "listen-port": endpoint["listen"]["port"],
-            "host-names": endpoint["hostNames"],
-        }[options.field]
+            "host-names": endpoint.get("hostNames", []),
+        }
+        value = values[options.field]
+        if value is None:
+            fail(66, f"Project Endpoint field is unavailable: {options.name}.{options.field}")
     elif options.command == "parameter":
         if options.name not in config.get("parameterDefinitions", {}):
             fail(66, f"Project parameter is undeclared: {options.name}")
@@ -547,6 +611,16 @@ def main(arguments: Sequence[str]) -> int:
         if config["realization"] != "development":
             fail(64, "dev is only available for a Development Runtime")
         return supervise(config, remaining[1:])
+    if (
+        remaining
+        and remaining[0] == "workload"
+        and config.get("descriptorSchemaVersion", 1) == 2
+        and config["realization"] == "development"
+    ):
+        if len(remaining) != 2 or remaining[1] not in config["workloads"]:
+            fail(64, "usage: project runtime workload <name>")
+        action = config["workloads"][remaining[1]]["action"]
+        return execute_action(config, action, replace=True)
     if remaining == ["--activate"]:
         if not config.get("activation"):
             fail(64, "this Release has no activation action")

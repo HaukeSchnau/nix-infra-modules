@@ -1,4 +1,4 @@
-# Project Descriptor Schema v1
+# Project Descriptor Schemas
 
 A Project descriptor is repository-owned, versioned JSON. It describes what a
 repository can run in Development and Release without embedding fleet policy or
@@ -7,8 +7,11 @@ NixOS implementation details.
 The public helper is exported as `lib.projectDescriptor`:
 
 - `load { path; expectedProject?; }` reads and normalizes JSON.
-- `normalize { descriptor; expectedProject?; }` validates schema v1 and fills
-  defaults. Normalization is idempotent.
+- `normalize { descriptor; expectedProject?; }` validates schema v1 or v2 and
+  fills defaults. Normalization is idempotent.
+- `requireRealizations { descriptor; expectedProject?; }` additionally requires
+  both Development and Release. It supports auditing v1 repositories during a
+  rolling migration; v2 enforces this invariant directly.
 - `resolveParameters { descriptor; values?; }` type-checks host values and
   applies repository defaults.
 - `releaseApp { descriptor; policy; }` projects a Release into the typed
@@ -20,12 +23,13 @@ The public helper is exported as `lib.projectDescriptor`:
 
 ## Shape
 
-Only `schemaVersion` and `project` are always required. A descriptor can define
-either or both realizations:
+Schema v2 is the complete Project contract. It requires both Development and
+Release capabilities in the repository, independently of where either
+realization is placed:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "project": "example",
   "secrets": {
     "betterAuthSecret": { "description": "Signs sessions" }
@@ -34,8 +38,13 @@ either or both realizations:
     "maxStorageMb": { "type": "integer", "default": 512 }
   },
   "development": {
+    "workloads": {
+      "database": {},
+      "web": { "dependsOn": ["database"] }
+    },
     "endpoints": {
-      "web": {}
+      "database": { "protocol": "tcp" },
+      "web": { "workload": "web" }
     }
   },
   "release": {
@@ -63,7 +72,11 @@ either or both realizations:
 }
 ```
 
-Defaults are intentionally aggressive. Development endpoints imply same-named
+Schema v1 remains supported without semantic changes: only `schemaVersion` and
+`project` are always required, and a v1 descriptor may define either or both
+realizations. New and migrated Project repositories should emit v2.
+
+Defaults are intentionally aggressive. Development Endpoints imply same-named
 workloads and actions. Release defaults to backend `service`, package
 `projectRelease`, executable `project-release-runtime`, health path `/`, and no
 state, ingress customization, jobs, or OCI auxiliaries. OCI port protocol
@@ -79,13 +92,15 @@ underscores, dots, or hyphens. Parameter types are `string`, `boolean`,
 explicitly marked required. Workload, preparation, and maintenance-job Secret
 references must name declarations at the descriptor root.
 
-Development contains a preparation action, workload dependency graph, and HTTP
-endpoints with health policy. Release contains backend/package/executable,
-health policy, safe relative state directories, structured ingress,
-maintenance-job action declarations, an optional activation executable, and
-explicitly approved digest-pinned OCI auxiliaries. Ingress supports compression,
-request-body limits, response headers, redirects, and Cache-Control rules; it
-never accepts raw proxy configuration.
+Development contains a preparation action, acyclic Workload dependency graph,
+and HTTP or TCP Endpoints with health policy. HTTP health defaults to path `/`;
+TCP health is a connect-only probe and therefore has no paths. Both share
+`startupTimeoutSec`, `intervalSec`, and `requestTimeoutSec`. Release contains
+backend/package/executable, health policy, safe relative state directories,
+structured ingress, maintenance-job action declarations, an optional activation
+executable, and explicitly approved digest-pinned OCI auxiliaries. Ingress
+supports compression, request-body limits, response headers, redirects, and
+Cache-Control rules; it never accepts raw proxy configuration.
 
 ## Ownership Boundary
 
@@ -102,11 +117,24 @@ Host Release policy may additionally bind typed memory high/max/swap limits;
 these remain outside the portable descriptor because they depend on machine
 capacity and placement.
 
-Maintenance jobs intentionally stop at names/actions in schema v1. Private host
-policy supplies schedules and resource policy. The generic Release adapter then
-invokes the repository Release executable with the declared action as its
-single argument, reusing the normal runtime manifest and credentials. This
-keeps operational policy out of the portable descriptor without duplicating
-runtime projection in private adapters. Maintenance actions receive fixed
-low-priority CPU/IO defaults rather than an arbitrary systemd configuration
-escape hatch.
+An Endpoint protocol describes only the portable network contract. Use `http`
+for HTTP applications and `tcp` for local socket dependencies. Do not encode
+application or framework names such as Postgres, Redis, Expo, Vite, Docker, or
+Podman as protocols. A repository action obtains its allocated listener through
+`project-context` and derives application-specific environment variables or
+connection strings itself.
+
+Pairing is a repository capability invariant, not a placement invariant. The
+same paired descriptor may back one Development placement and several named
+Release-only placements on different hosts. Infrastructure decides which
+realizations to place and whether an HTTP Endpoint is local, Tailnet-only, or
+public.
+
+Maintenance jobs intentionally stop at names/actions in both schema versions.
+Private host policy supplies schedules and resource policy. The generic Release
+adapter then invokes the repository Release executable with the declared action
+as its single argument, reusing the normal runtime manifest and credentials.
+This keeps operational policy out of the portable descriptor without
+duplicating runtime projection in private adapters. Maintenance actions receive
+fixed low-priority CPU/IO defaults rather than an arbitrary systemd
+configuration escape hatch.

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 2,
+  "project": "runtime-invalid-tcp-fixture",
+  "development": {
+    "endpoints": {
+      "database": {
+        "protocol": "tcp",
+        "health": { "paths": ["/"] }
+      }
+    }
+  },
+  "release": {}
+}

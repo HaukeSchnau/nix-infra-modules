@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 2,
+  "project": "runtime-cycle-fixture",
+  "development": {
+    "workloads": {
+      "api": { "dependsOn": ["database"] },
+      "database": { "dependsOn": ["api"] }
+    },
+    "endpoints": {
+      "api": { "workload": "api" }
+    }
+  },
+  "release": {}
+}

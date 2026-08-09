@@ -132,10 +132,12 @@ rec {
         mainProgram = "${descriptor.project}-project-runtime";
         config = {
           schemaVersion = 1;
+          descriptorSchemaVersion = descriptor.schemaVersion;
           inherit (descriptor) project;
           realization = "development";
           actions = checkedActions;
           endpoints = builtins.attrNames development.endpoints;
+          endpointProtocols = lib.mapAttrs (_: endpoint: endpoint.protocol) development.endpoints;
           parameterDefinitions = descriptor.parameters;
           secrets = builtins.attrNames descriptor.secrets;
           workloads = development.workloads;
@@ -227,6 +229,7 @@ rec {
         mainProgram = release.executable;
         config = {
           schemaVersion = 1;
+          descriptorSchemaVersion = descriptor.schemaVersion;
           inherit (descriptor) project;
           realization = "release";
           actions = checkedActions;

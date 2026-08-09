@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.schnau.dev/project-runtime/v2.json",
+  "title": "Project Runtime Manifest v2",
+  "type": "object",
+  "required": ["schemaVersion", "project", "realization", "paths", "endpoints"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "project": { "$ref": "#/$defs/name" },
+    "realization": { "enum": ["development", "release"] },
+    "paths": {
+      "type": "object",
+      "required": ["state", "runtime"],
+      "properties": {
+        "checkout": { "$ref": "#/$defs/absolutePath" },
+        "state": { "$ref": "#/$defs/absolutePath" },
+        "cache": { "$ref": "#/$defs/absolutePath" },
+        "runtime": { "$ref": "#/$defs/absolutePath" }
+      },
+      "additionalProperties": false
+    },
+    "endpoints": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/name" },
+      "additionalProperties": { "$ref": "#/$defs/endpoint" }
+    },
+    "parameters": { "type": "object" },
+    "secrets": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Za-z0-9_.-]+$" },
+      "additionalProperties": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "realization": { "const": "development" } } },
+      "then": {
+        "properties": {
+          "paths": { "required": ["checkout", "state", "cache", "runtime"] }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
+    "absolutePath": { "type": "string", "pattern": "^/" },
+    "listen": {
+      "type": "object",
+      "required": ["host", "port"],
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      },
+      "additionalProperties": false
+    },
+    "endpoint": {
+      "type": "object",
+      "required": ["protocol", "listen"],
+      "properties": {
+        "protocol": { "enum": ["http", "tcp"] },
+        "url": { "type": "string", "minLength": 1 },
+        "listen": { "$ref": "#/$defs/listen" },
+        "hostNames": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "visibility": { "enum": ["local", "tailnet", "public"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "protocol": { "const": "http" } } },
+          "then": { "required": ["url"] },
+          "else": {
+            "not": {
+              "anyOf": [
+                { "required": ["url"] },
+                { "required": ["hostNames"] },
+                { "required": ["visibility"] }
+              ]
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

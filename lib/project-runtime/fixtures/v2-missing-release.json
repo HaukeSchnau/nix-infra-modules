@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 2,
+  "project": "runtime-incomplete-fixture",
+  "development": {
+    "endpoints": {
+      "web": {}
+    }
+  }
+}

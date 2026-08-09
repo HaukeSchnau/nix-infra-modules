@@ -107,25 +107,33 @@ let
     );
 
   normalizeHealth =
-    context: value:
+    {
+      context,
+      protocol ? "http",
+      value,
+    }:
     let
       attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context [
+      allowedFields = [
         "intervalSec"
-        "paths"
         "requestTimeoutSec"
         "startupTimeoutSec"
-      ] attrs;
-      paths = checked.paths or [ "/" ];
+      ]
+      ++ lib.optional (protocol == "http") "paths";
+      checked = checkKeys context allowedFields attrs;
+      paths = if protocol == "http" then checked.paths or [ "/" ] else null;
       startupTimeoutSec = checked.startupTimeoutSec or 60;
       intervalSec = checked.intervalSec or 2;
       requestTimeoutSec = checked.requestTimeoutSec or 5;
     in
     ensure context
       (
-        builtins.isList paths
-        && paths != [ ]
-        && lib.all (path: isString path && lib.hasPrefix "/" path) paths
+        protocol != "http"
+        || (
+          builtins.isList paths
+          && paths != [ ]
+          && lib.all (path: isString path && lib.hasPrefix "/" path) paths
+        )
       )
       "paths must be a non-empty list of absolute HTTP paths"
       (
@@ -138,17 +146,57 @@ let
                 {
                   inherit
                     intervalSec
-                    paths
                     requestTimeoutSec
                     startupTimeoutSec
                     ;
                 }
+              // lib.optionalAttrs (protocol == "http") { inherit paths; }
             )
           )
       );
 
+  graphIsAcyclic =
+    workloads:
+    let
+      visit =
+        name: visiting: visited:
+        if builtins.elem name visiting then
+          {
+            valid = false;
+            inherit visited;
+          }
+        else if builtins.elem name visited then
+          {
+            valid = true;
+            inherit visited;
+          }
+        else
+          let
+            result =
+              lib.foldl'
+                (
+                  state: dependency:
+                  if state.valid then visit dependency ([ name ] ++ visiting) state.visited else state
+                )
+                {
+                  valid = true;
+                  inherit visited;
+                }
+                workloads.${name}.dependsOn;
+          in
+          {
+            inherit (result) valid;
+            visited = result.visited ++ lib.optional result.valid name;
+          };
+      result = lib.foldl' (state: name: if state.valid then visit name [ ] state.visited else state) {
+        valid = true;
+        visited = [ ];
+      } (builtins.attrNames workloads);
+    in
+    result.valid;
+
   normalizeDevelopment =
-    secrets: value:
+    schemaVersion: secrets: value:
     let
       context = "development";
       attrs = ensure context (isAttrs value) "must be an attribute set" value;
@@ -204,10 +252,30 @@ let
           ensure itemContext (isString workload && builtins.hasAttr workload workloads)
             "references unknown workload ${toString workload}"
             (
-              ensure itemContext (protocol == "http") "protocol must be http in schemaVersion 1" {
-                inherit protocol workload;
-                health = normalizeHealth "${itemContext}.health" (item.health or { });
-              }
+              ensure itemContext
+                (
+                  if schemaVersion == 1 then
+                    protocol == "http"
+                  else
+                    builtins.elem protocol [
+                      "http"
+                      "tcp"
+                    ]
+                )
+                (
+                  if schemaVersion == 1 then
+                    "protocol must be http in schemaVersion 1"
+                  else
+                    "protocol must be http or tcp"
+                )
+                {
+                  inherit protocol workload;
+                  health = normalizeHealth {
+                    context = "${itemContext}.health";
+                    inherit protocol;
+                    value = item.health or { };
+                  };
+                }
             )
         )
       ) endpointInput;
@@ -243,11 +311,15 @@ let
             ensure context workloadReferencesValid
               "workload dependencies and Secrets must reference declared names"
               (
-                ensure context (lib.all (secret: builtins.hasAttr secret secrets) preparation.secrets)
-                  "Preparation Secrets must reference declared names"
-                  {
-                    inherit endpoints preparation workloads;
-                  }
+                ensure context (schemaVersion == 1 || graphIsAcyclic workloads)
+                  "Workload dependency graph must be acyclic"
+                  (
+                    ensure context (lib.all (secret: builtins.hasAttr secret secrets) preparation.secrets)
+                      "Preparation Secrets must reference declared names"
+                      {
+                        inherit endpoints preparation workloads;
+                      }
+                  )
               )
           )
       );
@@ -521,7 +593,10 @@ let
                                   package
                                   stateDirectories
                                   ;
-                                health = normalizeHealth "release.health" (checked.health or { });
+                                health = normalizeHealth {
+                                  context = "release.health";
+                                  value = checked.health or { };
+                                };
                                 ingress = normalizeIngress (checked.ingress or { });
                                 ociAuxiliaries = lib.mapAttrs normalizeOci (checked.ociAuxiliaries or { });
                               }
@@ -561,7 +636,7 @@ let
           ;
         development =
           if checked ? development && checked.development != null then
-            normalizeDevelopment secrets checked.development
+            normalizeDevelopment schemaVersion secrets checked.development
           else
             null;
         release =
@@ -571,11 +646,39 @@ let
             null;
       };
     in
-    ensure "schemaVersion" (schemaVersion == 1) "unsupported schemaVersion ${toString schemaVersion}" (
-      ensure "project" (
-        expectedProject == null || expectedProject == project
-      ) "expected ${toString expectedProject}, got ${project}" (builtins.deepSeq result result)
-    );
+    ensure "schemaVersion"
+      (builtins.elem schemaVersion [
+        1
+        2
+      ])
+      "unsupported schemaVersion ${toString schemaVersion}"
+      (
+        ensure "root"
+          (
+            schemaVersion == 1
+            || (
+              checked ? development && checked.development != null && checked ? release && checked.release != null
+            )
+          )
+          "schemaVersion 2 requires both Development and Release realizations"
+          (
+            ensure "project" (
+              expectedProject == null || expectedProject == project
+            ) "expected ${toString expectedProject}, got ${project}" (builtins.deepSeq result result)
+          )
+      );
+
+  requireRealizations =
+    {
+      descriptor,
+      expectedProject ? null,
+    }:
+    let
+      normalized = normalize { inherit descriptor expectedProject; };
+    in
+    ensure "root" (
+      normalized.development != null && normalized.release != null
+    ) "Project must define both Development and Release realizations" normalized;
 
   resolveParameters =
     {
@@ -746,6 +849,7 @@ in
   inherit
     load
     normalize
+    requireRealizations
     releaseApp
     resolveParameters
     ;

@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 2,
+  "project": "runtime-paired-fixture",
+  "parameters": {
+    "flavour": {
+      "type": "string",
+      "default": "local"
+    }
+  },
+  "secrets": {
+    "token": {
+      "description": "Fixture credential"
+    }
+  },
+  "development": {
+    "preparation": {
+      "action": "install",
+      "secrets": ["token"]
+    },
+    "workloads": {
+      "database": {
+        "action": "database"
+      },
+      "web": {
+        "action": "serve",
+        "dependsOn": ["database"],
+        "secrets": ["token"]
+      }
+    },
+    "endpoints": {
+      "database": {
+        "protocol": "tcp",
+        "workload": "database"
+      },
+      "web": {
+        "workload": "web",
+        "health": {
+          "paths": ["/healthz"]
+        }
+      }
+    }
+  },
+  "release": {
+    "action": "serve"
+  }
+}

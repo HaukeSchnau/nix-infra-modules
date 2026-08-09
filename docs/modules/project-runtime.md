@@ -36,6 +36,12 @@ The generated dispatcher serializes Preparation by physical Checkout. The same
 lock covers canonical Checkouts, ad-hoc git worktrees, jj workspaces, and local
 flake apps.
 
+`dev --only <workload>` retains dependency-recursive local behavior. Managed
+infrastructure uses `project-runtime workload <name>` to execute exactly one
+Workload while it realizes the repository-declared dependency graph itself.
+This prevents independently activated Endpoints from starting duplicate copies
+of a shared dependency.
+
 ## Release
 
 ```nix
@@ -66,9 +72,10 @@ runtime.
 
 ## Runtime context
 
-Infrastructure supplies a v1 JSON manifest through `PROJECT_RUNTIME_FILE` and
-Secret values through a credential directory. The dispatcher validates Project
-identity and realization, creates allocated directories, and exports:
+Infrastructure supplies a versioned JSON manifest through
+`PROJECT_RUNTIME_FILE` and Secret values through a credential directory. The
+dispatcher validates Project identity and realization, creates allocated
+directories, and exports:
 
 - `PROJECT_CHECKOUT` for Development
 - `PROJECT_STATE_DIR`, `PROJECT_CACHE_DIR`, and `PROJECT_RUNTIME_DIR`
@@ -79,6 +86,7 @@ Actions should not parse JSON directly. They use the stable query Interface:
 
 ```sh
 port="$($PROJECT_RUNTIME_QUERY endpoint web listen-port)"
+protocol="$($PROJECT_RUNTIME_QUERY endpoint web protocol)"
 origin="$($PROJECT_RUNTIME_QUERY endpoint web url)"
 hosts="$($PROJECT_RUNTIME_QUERY endpoint web host-names --json)"
 mode="$($PROJECT_RUNTIME_QUERY parameter mode --default '"development"')"
@@ -90,6 +98,14 @@ token_file="$($PROJECT_RUNTIME_QUERY secret-file authToken --required)"
 Local manifests do not claim descriptor Secrets are bound. Repository actions
 may use an optional `secret-file` query and retain their ordinary local env-file
 fallback; managed adapters bind and enforce required Secrets.
+
+Runtime manifest v2 makes Endpoint transport explicit. HTTP Endpoints carry a
+URL and may carry hostnames and visibility. TCP Endpoints carry only their
+allocated listener; `url` is intentionally unavailable because the repository,
+not infrastructure, owns application-specific connection-string construction.
+For example, a database action can query `listen-host` and `listen-port`, read a
+password path with `secret-file`, and derive `DATABASE_URL` without teaching the
+infrastructure contract about Postgres.
 
 ## Ownership
 
@@ -106,12 +122,12 @@ commands.
 
 ## Rolling compatibility and errors
 
-Schemas live at `schemas/project-descriptor/v1.json` and
-`schemas/project-runtime/v1.json`. A numbered schema is immutable. New producers
-emit canonical `parameters`; v1 consumers accept legacy `settings` only when
+Schemas live below `schemas/project-descriptor/` and `schemas/project-runtime/`.
+A numbered schema is immutable. Descriptor v1 and runtime v1 remain supported;
+new Projects use paired descriptor v2 and runtime v2. New producers emit
+canonical `parameters`; runtime v1 consumers accept legacy `settings` only when
 `parameters` is absent. Actions depend on `project-context`, not the JSON layout,
-allowing a future dispatcher to normalize several manifest versions behind the
-same Interface.
+and the dispatcher normalizes both runtime versions behind that Interface.
 
 Runtime failures use stable statuses: 64 for invocation/action errors, 65 for
 invalid manifests or identity, 66 for unavailable or unsafe allocations and
