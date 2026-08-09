@@ -71,6 +71,7 @@ let
   projectAuxiliaryPorts = if isProject then cfg.project.auxiliaryPorts else { };
   projectJobs = if isProject then cfg.project.jobs else { };
   projectMemory = if isProject then cfg.project.resources.memory else { };
+  projectRuntimeSchemaVersion = if isProject then descriptor.schemaVersion else 1;
   unitName = "app-deployment-${name}";
   updateUnitName = "${unitName}-update";
   activationUnitName = "${unitName}-activate";
@@ -88,22 +89,58 @@ let
     lib.concatLists (
       lib.mapAttrsToList (
         auxiliaryName: auxiliary:
-        lib.mapAttrsToList (portName: port: {
-          name = "${auxiliaryName}-${portName}";
-          value = {
-            url = "${port.protocol}://127.0.0.1:${toString projectAuxiliaryPorts.${auxiliaryName}.${portName}}";
+        lib.mapAttrsToList (
+          portName: port:
+          let
+            endpointName = "${auxiliaryName}-${portName}";
             listen = {
               host = "127.0.0.1";
               port = projectAuxiliaryPorts.${auxiliaryName}.${portName};
             };
-          };
-        }) auxiliary.ports
+          in
+          if projectRuntimeSchemaVersion == 2 && port.protocol != "tcp" then
+            throw "app-deployment/${name}: Project Runtime v2 cannot expose UDP auxiliary Endpoint ${endpointName}"
+          else
+            {
+              name = endpointName;
+              value =
+                if projectRuntimeSchemaVersion == 1 then
+                  {
+                    url = "${port.protocol}://${listen.host}:${toString listen.port}";
+                    inherit listen;
+                  }
+                else
+                  {
+                    protocol = "tcp";
+                    inherit listen;
+                  };
+            }
+        ) auxiliary.ports
       ) projectAuxiliaries
     )
   );
+  defaultRuntimeEndpoint = {
+    url =
+      if cfg.domain != null then "https://${cfg.domain}" else "http://${cfg.host}:${toString cfg.port}";
+    listen = {
+      host = cfg.host;
+      port = cfg.port;
+    };
+  }
+  // lib.optionalAttrs (projectRuntimeSchemaVersion == 2) {
+    protocol = "http";
+    hostNames = lib.optional (cfg.domain != null) cfg.domain;
+    visibility =
+      if cfg.domain == null then
+        "local"
+      else if cfg.public then
+        "public"
+      else
+        "tailnet";
+  };
   projectRuntimeManifest = pkgs.writeText "project-release-runtime-${name}.json" (
     builtins.toJSON {
-      schemaVersion = 1;
+      schemaVersion = projectRuntimeSchemaVersion;
       project = name;
       realization = "release";
       paths = {
@@ -111,14 +148,7 @@ let
         runtime = runtimeDir;
       };
       endpoints = {
-        default = {
-          url =
-            if cfg.domain != null then "https://${cfg.domain}" else "http://${cfg.host}:${toString cfg.port}";
-          listen = {
-            host = cfg.host;
-            port = cfg.port;
-          };
-        };
+        default = defaultRuntimeEndpoint;
       }
       // auxiliaryRuntimeEndpoints;
       parameters = if isProject then cfg.project.parameters else { };

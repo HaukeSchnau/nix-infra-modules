@@ -109,6 +109,11 @@ allocated auxiliary endpoints. Secret values are exposed with systemd
 `LoadCredential`; `PROJECT_SECRETS_DIR` points to that credential directory.
 Repositories derive framework-specific variables such as database or auth URLs
 from this small manifest rather than requiring those variables in infra.
+The manifest version follows the repository descriptor. Schema v2 marks the
+service Endpoint as HTTP and exposes auxiliary TCP listeners without inventing
+application-specific URLs; repository actions construct those from
+`project-context`. Descriptor v1 retains its original manifest shape for
+rolling compatibility. UDP auxiliaries are not supported by Runtime v2.
 
 An optional `activationExecutable` is run once when a different store output is
 cut over, before the service starts and with the same manifest and credentials.

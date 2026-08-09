@@ -249,11 +249,28 @@ let
     descriptor = conciseProjectDescriptor;
     policy = projectPolicy;
   };
+  pairedProjectDescriptor = conciseProjectDescriptor // {
+    schemaVersion = 2;
+    development = { };
+  };
+  pairedProjectApp = self.lib.projectDescriptor.releaseApp {
+    descriptor = pairedProjectDescriptor;
+    policy = projectPolicy;
+  };
   projectSystem = mkFleetSystem "project-01" [
     {
       vps.services.appDeployments = {
         enable = true;
         apps.demo-project = projectApp;
+      };
+      vps.appDeployments.webhook.enable = false;
+    }
+  ];
+  pairedProjectSystem = mkFleetSystem "paired-project-01" [
+    {
+      vps.services.appDeployments = {
+        enable = true;
+        apps.demo-project = pairedProjectApp;
       };
       vps.appDeployments.webhook.enable = false;
     }
@@ -269,6 +286,8 @@ let
   projectActivationScript = projectActivationService.serviceConfig.ExecStart;
   projectJobService = projectSystem.config.systemd.services.app-deployment-demo-project-job-cleanup;
   projectJobScript = projectJobService.serviceConfig.ExecStart;
+  pairedProjectStartScript =
+    pairedProjectSystem.config.systemd.services.app-deployment-demo-project.serviceConfig.ExecStart;
   staticProjectDescriptor = {
     schemaVersion = 1;
     project = "static-project";
@@ -529,7 +548,7 @@ in
     ${pkgs.bash}/bin/bash -n ${projectJobScript}
     grep -Fq 'share/project/descriptor.json' ${projectUpdateScript}
     grep -Fq 'current_descriptor_matches' ${projectUpdateScript}
-    grep -Fq 'jq -S .' ${projectUpdateScript}
+    grep -Fq 'jq -e -S .' ${projectUpdateScript}
     grep -Fq -- '-diffutils-' ${projectUpdateScript}
     grep -Fq 'app-deployment-demo-project-activate.service' ${projectUpdateScript}
     grep -Fq 'rollback activation' ${projectUpdateScript}
@@ -541,8 +560,12 @@ in
 
     expected_descriptor="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-descriptor-demo-project.json' ${projectUpdateScript} | head -n 1)"
     runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-demo-project.json' ${projectStartScript} | head -n 1)"
+    paired_runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-demo-project.json' ${pairedProjectStartScript} | head -n 1)"
     job_runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-demo-project.json' ${projectJobScript} | head -n 1)"
     test "$runtime_manifest" = "$job_runtime_manifest"
+    ${pkgs.check-jsonschema}/bin/check-jsonschema \
+      --schemafile ${../../../schemas/project-runtime/v2.json} \
+      "$paired_runtime_manifest"
     ${pkgs.jq}/bin/jq -e '
       .schemaVersion == 1
       and .project == "demo-project"
@@ -560,6 +583,22 @@ in
       and .parameters.maxStorageMb == 512
       and .secrets.betterAuthSecret == "betterAuthSecret"
     ' "$runtime_manifest" >/dev/null
+    ${pkgs.jq}/bin/jq -e '
+      .schemaVersion == 2
+      and .project == "demo-project"
+      and .realization == "release"
+      and .endpoints.default.protocol == "http"
+      and .endpoints.default.url == "https://demo-project.example.net"
+      and .endpoints.default.hostNames == ["demo-project.example.net"]
+      and .endpoints.default.visibility == "public"
+      and .endpoints.default.listen.host == "127.0.0.1"
+      and .endpoints.default.listen.port == 18200
+      and .endpoints["database-postgres"].protocol == "tcp"
+      and .endpoints["database-postgres"].listen.host == "127.0.0.1"
+      and .endpoints["database-postgres"].listen.port == 22000
+      and (.endpoints["database-postgres"] | has("url") | not)
+      and (.endpoints["database-postgres"] | has("visibility") | not)
+    ' "$paired_runtime_manifest" >/dev/null
 
     ${pkgs.jq}/bin/jq -e '
       .service.environment.HOME == "/var/lib/app-deployments/demo-project"
