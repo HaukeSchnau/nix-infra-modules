@@ -56,14 +56,14 @@ let
         install -Dm0555 ${runtimeImplementation} $out/libexec/project-runtime/runtime.py
         makeWrapper ${pkgs.python3}/bin/python $out/bin/${mainProgram} \
           --add-flags "$out/libexec/project-runtime/runtime.py --config ${configFile}" \
-          --set PROJECT_RUNTIME_QUERY "$out/bin/project-context"
+          --prefix PATH : "$out/bin"
         makeWrapper ${pkgs.python3}/bin/python $out/bin/project-context \
           --add-flags "$out/libexec/project-runtime/runtime.py --config ${configFile} context" \
-          --set PROJECT_RUNTIME_QUERY "$out/bin/project-context"
+          --prefix PATH : "$out/bin"
         ${lib.optionalString (activationExecutable != null) ''
           makeWrapper ${pkgs.python3}/bin/python $out/bin/${activationExecutable} \
             --add-flags "$out/libexec/project-runtime/runtime.py --config ${configFile} --activate" \
-            --set PROJECT_RUNTIME_QUERY "$out/bin/project-context"
+            --prefix PATH : "$out/bin"
         ''}
       '';
   appFor = program: {
@@ -223,6 +223,27 @@ rec {
       activationExecutable = release.activationExecutable;
       activationAction =
         if activation == null then null else executableFor "mkServiceRelease.activation" activation;
+      auxiliaryEndpoints = lib.mapAttrs (
+        auxiliaryName: auxiliary: lib.mapAttrs (portName: _: "${auxiliaryName}-${portName}") auxiliary.ports
+      ) release.ociAuxiliaries;
+      flattenedAuxiliaryEndpoints = lib.concatLists (
+        lib.mapAttrsToList (_: ports: builtins.attrValues ports) auxiliaryEndpoints
+      );
+      releaseEndpoints = [ release.action ] ++ flattenedAuxiliaryEndpoints;
+      releaseEndpointProtocols = {
+        ${release.action} = "http";
+      }
+      // lib.listToAttrs (
+        lib.concatLists (
+          lib.mapAttrsToList (
+            auxiliaryName: auxiliary:
+            lib.mapAttrsToList (portName: port: {
+              name = auxiliaryEndpoints.${auxiliaryName}.${portName};
+              value = port.protocol;
+            }) auxiliary.ports
+          ) release.ociAuxiliaries
+        )
+      );
       runtimePackage = mkRuntimePackage {
         inherit pkgs activationExecutable;
         name = "${descriptor.project}-release-runtime";
@@ -237,6 +258,11 @@ rec {
           activation = activationAction;
           parameterDefinitions = descriptor.parameters;
           secrets = builtins.attrNames descriptor.secrets;
+          inherit auxiliaryEndpoints;
+        }
+        // lib.optionalAttrs (descriptor.schemaVersion == 2) {
+          endpoints = releaseEndpoints;
+          endpointProtocols = releaseEndpointProtocols;
         };
       };
       embeddedDescriptor = descriptorPackage {

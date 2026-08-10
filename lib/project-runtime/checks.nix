@@ -22,14 +22,17 @@ let
       ''
     );
   installAction = action "runtime-fixture-install" ''
-    printf 'start\n' >> "$PROJECT_STATE_DIR/preparation.log"
+    state="$(project-context path state)"
+    test -z "''${PROJECT_RUNTIME_QUERY+x}"
+    test -z "''${PROJECT_STATE_DIR+x}"
+    printf 'start\n' >> "$state/preparation.log"
     ${pkgs.coreutils}/bin/sleep 0.2
-    printf 'end\n' >> "$PROJECT_STATE_DIR/preparation.log"
+    printf 'end\n' >> "$state/preparation.log"
   '';
   queryAction =
     name: endpoint:
     action name ''
-      "$PROJECT_RUNTIME_QUERY" endpoint ${endpoint} listen-port
+      project-context endpoint ${endpoint} listen-port
     '';
   development = runtime.mkDevelopment {
     inherit pkgs;
@@ -48,7 +51,8 @@ let
   pairedWorkloadAction =
     name:
     action "runtime-paired-${name}" ''
-      printf '%s\n' ${lib.escapeShellArg name} >> "$PROJECT_STATE_DIR/workloads.log"
+      state="$(project-context path state)"
+      printf '%s\n' ${lib.escapeShellArg name} >> "$state/workloads.log"
       ${pkgs.coreutils}/bin/sleep 0.2
     '';
   pairedDevelopment = runtime.mkDevelopment {
@@ -68,7 +72,8 @@ let
   releaseAction =
     name:
     action name ''
-      printf '%s\n' ${lib.escapeShellArg name} >> "$PROJECT_STATE_DIR/release.log"
+      state="$(project-context path state)"
+      printf '%s\n' ${lib.escapeShellArg name} >> "$state/release.log"
     '';
   service = runtime.mkServiceRelease {
     inherit pkgs;
@@ -346,10 +351,20 @@ in
               --arg state "$state" --arg runtime "$runtime_dir" \
               '{schemaVersion: 2, project: "runtime-paired-fixture", realization: "release",
                 paths: {state: $state, runtime: $runtime},
-                endpoints: {default: {protocol: "http", url: "https://paired.example",
-                  listen: {host: "127.0.0.1", port: 33103}}},
+                endpoints: {
+                  serve: {protocol: "http", url: "https://paired.example",
+                    listen: {host: "127.0.0.1", port: 33103}},
+                  "database-postgres": {protocol: "tcp",
+                    listen: {host: "127.0.0.1", port: 33104}}
+                },
                 parameters: {flavour: "release"}, secrets: {}}' > "$paired_release_manifest"
             check-jsonschema --schemafile ${../../schemas/project-runtime/v2.json} "$paired_release_manifest"
+            test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
+              ${pairedService.package}/bin/project-context endpoint serve url)" = https://paired.example
+            test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
+              ${pairedService.package}/bin/project-context auxiliary database postgres listen-port)" = 33104
+            assert_status 66 env PROJECT_RUNTIME_FILE="$paired_release_manifest" \
+              ${pairedService.package}/bin/project-context auxiliary database missing listen-port
             rm -f "$state/release.log"
             PROJECT_RUNTIME_FILE="$paired_release_manifest" \
               ${pairedService.package}/bin/project-release-runtime

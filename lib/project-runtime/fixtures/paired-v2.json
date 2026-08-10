@@ -41,6 +41,17 @@
     }
   },
   "release": {
-    "action": "serve"
+    "action": "serve",
+    "ociAuxiliaries": {
+      "database": {
+        "image": "postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": {
+          "postgres": {
+            "containerPort": 5432,
+            "protocol": "tcp"
+          }
+        }
+      }
+    }
   }
 }

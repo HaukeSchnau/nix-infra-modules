@@ -124,6 +124,11 @@ Podman as protocols. A repository action obtains its allocated listener through
 `project-context` and derives application-specific environment variables or
 connection strings itself.
 
+The Release action name is also the semantic name of its primary Runtime
+Endpoint. OCI auxiliary listeners retain both descriptor names at the query
+Interface: auxiliary name and port name. Repository actions do not depend on
+flattened manifest keys or adapter-generated endpoint names.
+
 Pairing is a repository capability invariant, not a placement invariant. The
 same paired descriptor may back one Development placement and several named
 Release-only placements on different hosts. Infrastructure decides which

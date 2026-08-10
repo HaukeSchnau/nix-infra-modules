@@ -587,12 +587,12 @@ in
       .schemaVersion == 2
       and .project == "demo-project"
       and .realization == "release"
-      and .endpoints.default.protocol == "http"
-      and .endpoints.default.url == "https://demo-project.example.net"
-      and .endpoints.default.hostNames == ["demo-project.example.net"]
-      and .endpoints.default.visibility == "public"
-      and .endpoints.default.listen.host == "127.0.0.1"
-      and .endpoints.default.listen.port == 18200
+      and .endpoints.web.protocol == "http"
+      and .endpoints.web.url == "https://demo-project.example.net"
+      and .endpoints.web.hostNames == ["demo-project.example.net"]
+      and .endpoints.web.visibility == "public"
+      and .endpoints.web.listen.host == "127.0.0.1"
+      and .endpoints.web.listen.port == 18200
       and .endpoints["database-postgres"].protocol == "tcp"
       and .endpoints["database-postgres"].listen.host == "127.0.0.1"
       and .endpoints["database-postgres"].listen.port == 22000

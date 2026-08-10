@@ -138,6 +138,8 @@ let
       else
         "tailnet";
   };
+  primaryRuntimeEndpointName =
+    if projectRuntimeSchemaVersion == 2 then projectRelease.action else "default";
   projectRuntimeManifest = pkgs.writeText "project-release-runtime-${name}.json" (
     builtins.toJSON {
       schemaVersion = projectRuntimeSchemaVersion;
@@ -148,7 +150,7 @@ let
         runtime = runtimeDir;
       };
       endpoints = {
-        default = defaultRuntimeEndpoint;
+        ${primaryRuntimeEndpointName} = defaultRuntimeEndpoint;
       }
       // auxiliaryRuntimeEndpoints;
       parameters = if isProject then cfg.project.parameters else { };

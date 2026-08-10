@@ -191,8 +191,9 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
                 "protocol": protocol,
                 "listen": {**listen, "host": host, "port": port},
             }
-    if config["realization"] == "development":
-        expected_endpoints = set(config["endpoints"])
+    expected_endpoint_names = config.get("endpoints")
+    if expected_endpoint_names is not None:
+        expected_endpoints = set(expected_endpoint_names)
         actual_endpoints = set(normalized_endpoints)
         if actual_endpoints != expected_endpoints:
             missing = ", ".join(sorted(expected_endpoints - actual_endpoints))
@@ -203,7 +204,7 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
                 f" (missing: {missing or '-'}; extra: {extra or '-'})",
             )
         expected_protocols = config.get(
-            "endpointProtocols", {name: "http" for name in config["endpoints"]}
+            "endpointProtocols", {name: "http" for name in expected_endpoint_names}
         )
         mismatched_protocols = sorted(
             name
@@ -407,15 +408,8 @@ def load_manifest(config: Mapping[str, Any]) -> tuple[pathlib.Path, dict[str, An
     return path, validate_manifest(load_json(path, label="runtime manifest"), config)
 
 
-def set_environment(path: pathlib.Path, manifest: Mapping[str, Any]) -> None:
+def prepare_context(manifest: Mapping[str, Any]) -> None:
     paths = manifest["paths"]
-    os.environ["PROJECT_RUNTIME_FILE"] = str(path)
-    os.environ["PROJECT_STATE_DIR"] = paths["state"]
-    os.environ["PROJECT_RUNTIME_DIR"] = paths["runtime"]
-    if "checkout" in paths:
-        os.environ["PROJECT_CHECKOUT"] = paths["checkout"]
-    if "cache" in paths:
-        os.environ["PROJECT_CACHE_DIR"] = paths["cache"]
     for name in ("state", "runtime", "cache"):
         if name in paths:
             pathlib.Path(paths[name]).mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -443,8 +437,8 @@ def execute_action(
     executable = config.get("activation") if activation else actions.get(action)
     if not isinstance(executable, str):
         fail(64, f"undeclared Project action: {action}")
-    path, manifest = load_manifest(config)
-    set_environment(path, manifest)
+    _, manifest = load_manifest(config)
+    prepare_context(manifest)
     is_preparation = action == config.get("preparationAction")
     context = preparation_lock(manifest) if is_preparation else contextlib.nullcontext()
     with context:
@@ -491,8 +485,8 @@ def supervise(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
     except SystemExit as error:
         return 0 if error.code == 0 else 64
 
-    path, manifest = load_manifest(config)
-    set_environment(path, manifest)
+    _, manifest = load_manifest(config)
+    prepare_context(manifest)
     preparation = config.get("preparationAction")
     if preparation:
         status = execute_action(config, preparation, replace=False)
@@ -539,6 +533,12 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
         "field", choices=["protocol", "url", "listen-host", "listen-port", "host-names"]
     )
     endpoint_parser.add_argument("--json", action="store_true")
+    auxiliary_parser = subparsers.add_parser("auxiliary")
+    auxiliary_parser.add_argument("name")
+    auxiliary_parser.add_argument("port")
+    auxiliary_parser.add_argument(
+        "field", choices=["protocol", "listen-host", "listen-port"]
+    )
     parameter_parser = subparsers.add_parser("parameter")
     parameter_parser.add_argument("name")
     parameter_parser.add_argument("--default")
@@ -551,16 +551,23 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
     except SystemExit as error:
         return 0 if error.code == 0 else 64
 
-    manifest_path, manifest = load_manifest(config)
-    set_environment(manifest_path, manifest)
+    _, manifest = load_manifest(config)
+    prepare_context(manifest)
     if options.command == "path":
         value = manifest["paths"].get(options.name)
         if value is None:
             fail(66, f"Project path is unavailable: {options.name}")
-    elif options.command == "endpoint":
-        endpoint = manifest["endpoints"].get(options.name)
+    elif options.command in ("endpoint", "auxiliary"):
+        if options.command == "endpoint":
+            endpoint_name = options.name
+        else:
+            auxiliary = config.get("auxiliaryEndpoints", {}).get(options.name, {})
+            endpoint_name = auxiliary.get(options.port)
+            if endpoint_name is None:
+                fail(66, f"Project auxiliary port is unavailable: {options.name}.{options.port}")
+        endpoint = manifest["endpoints"].get(endpoint_name)
         if endpoint is None:
-            fail(66, f"Project Endpoint is unavailable: {options.name}")
+            fail(66, f"Project Endpoint is unavailable: {endpoint_name}")
         values = {
             "protocol": endpoint.get("protocol", "http"),
             "url": endpoint.get("url"),
@@ -570,7 +577,7 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
         }
         value = values[options.field]
         if value is None:
-            fail(66, f"Project Endpoint field is unavailable: {options.name}.{options.field}")
+            fail(66, f"Project Endpoint field is unavailable: {endpoint_name}.{options.field}")
     elif options.command == "parameter":
         if options.name not in config.get("parameterDefinitions", {}):
             fail(66, f"Project parameter is undeclared: {options.name}")

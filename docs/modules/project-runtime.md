@@ -72,25 +72,23 @@ runtime.
 
 ## Runtime context
 
-Infrastructure supplies a versioned JSON manifest through
-`PROJECT_RUNTIME_FILE` and Secret values through a credential directory. The
-dispatcher validates Project identity and realization, creates allocated
-directories, and exports:
+Infrastructure supplies a versioned JSON manifest and credential directory to
+the dispatcher. Those transport variables are private Runtime Module
+implementation details. The dispatcher validates Project identity and
+Realization, creates allocated directories, and places `project-context` on the
+action `PATH`.
 
-- `PROJECT_CHECKOUT` for Development
-- `PROJECT_STATE_DIR`, `PROJECT_CACHE_DIR`, and `PROJECT_RUNTIME_DIR`
-- `PROJECT_SECRETS_DIR`
-- `PROJECT_RUNTIME_QUERY`, the absolute `project-context` executable
-
-Actions should not parse JSON directly. They use the stable query Interface:
+Actions use that single stable query Interface and never parse JSON or read
+`PROJECT_*` transport and path variables directly:
 
 ```sh
-port="$($PROJECT_RUNTIME_QUERY endpoint web listen-port)"
-protocol="$($PROJECT_RUNTIME_QUERY endpoint web protocol)"
-origin="$($PROJECT_RUNTIME_QUERY endpoint web url)"
-hosts="$($PROJECT_RUNTIME_QUERY endpoint web host-names --json)"
-mode="$($PROJECT_RUNTIME_QUERY parameter mode --default '"development"')"
-token_file="$($PROJECT_RUNTIME_QUERY secret-file authToken --required)"
+checkout="$(project-context path checkout)"
+port="$(project-context endpoint web listen-port)"
+protocol="$(project-context endpoint web protocol)"
+origin="$(project-context endpoint web url)"
+hosts="$(project-context endpoint web host-names --json)"
+mode="$(project-context parameter mode --default '"development"')"
+token_file="$(project-context secret-file authToken --required)"
 ```
 
 `project-context` also supports `path <name>`. It never prints Secret values;
@@ -98,6 +96,13 @@ token_file="$($PROJECT_RUNTIME_QUERY secret-file authToken --required)"
 Local manifests do not claim descriptor Secrets are bound. Repository actions
 may use an optional `secret-file` query and retain their ordinary local env-file
 fallback; managed adapters bind and enforce required Secrets.
+
+Release primary Endpoints use the repository-owned Release action name. A
+Release with action `web` therefore queries `endpoint web` just like
+Development; repositories never need an infrastructure-generated `default`
+name. Digest-pinned OCI auxiliary listeners are queried by their descriptor
+identity with `auxiliary <name> <port> <field>`; their flattened manifest keys
+remain an implementation detail.
 
 Runtime manifest v2 makes Endpoint transport explicit. HTTP Endpoints carry a
 URL and may carry hostnames and visibility. TCP Endpoints carry only their
