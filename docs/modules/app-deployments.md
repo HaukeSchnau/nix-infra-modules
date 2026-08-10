@@ -115,6 +115,12 @@ application-specific URLs; repository actions construct those from
 `project-context`. Descriptor v1 retains its original manifest shape for
 rolling compatibility. UDP auxiliaries are not supported by Runtime v2.
 
+The updater installs that manifest in deployment state and cuts it over
+atomically with the `current` package symlink. Rollback restores the previous
+package and manifest together. A NixOS generation may therefore change the
+Runtime Context interface without ever starting an older repository artifact
+against the newer interface.
+
 An optional `activationExecutable` is run once when a different store output is
 cut over, before the service starts and with the same manifest and credentials.
 It is not part of ordinary process startup. Failed activation or health checks

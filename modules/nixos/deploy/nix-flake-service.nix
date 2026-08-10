@@ -161,6 +161,7 @@ let
   expectedProjectDescriptor = pkgs.writeText "project-release-descriptor-${name}.json" (
     builtins.toJSON cfg.project.descriptor + "\n"
   );
+  deployedProjectRuntimeManifest = "${stateDir}/project-runtime.json";
 
   shellPath = lib.makeBinPath [
     pkgs.bash
@@ -332,6 +333,8 @@ let
     gcroots_dir="/nix/var/nix/gcroots/app-deployments/${name}"
     lock_file="$state_dir/update.lock"
     metadata_file="$state_dir/metadata.json"
+    runtime_manifest="$state_dir/project-runtime.json"
+    previous_runtime_manifest="$state_dir/previous-project-runtime.json"
     git_config_file=""
 
     cleanup() {
@@ -400,6 +403,11 @@ let
         [ -f "$descriptor" ] || return 1
         record_matching_descriptor "$descriptor"
       }
+
+      runtime_manifest_matches() {
+        [ -f "$runtime_manifest" ] \
+          && cmp -s ${lib.escapeShellArg projectRuntimeManifest} "$runtime_manifest"
+      }
     ''}
 
     ${gitTokenSetup}
@@ -424,7 +432,7 @@ let
       sync_gcroots
       if ${
         if isService then
-          "systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && [ -x \"$current_link/bin/${cfg.executable}\" ] && ${lib.optionalString isProject "current_descriptor_matches && "}check_service_health"
+          "systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && [ -x \"$current_link/bin/${cfg.executable}\" ] && ${lib.optionalString isProject "current_descriptor_matches && runtime_manifest_matches && "}check_service_health"
         else
           "[ -d \"$current_link\" ] && ${lib.optionalString isProject "current_descriptor_matches && "}check_static_health \"$current_link\""
       }; then
@@ -477,7 +485,7 @@ let
       old_store_path="$(readlink "$current_link")"
       if [ "$new_store_path" = "$old_store_path" ] && ${
         if isService then
-          "systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && check_service_health"
+          "${lib.optionalString isProject "runtime_manifest_matches && "}systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && check_service_health"
         else
           "check_static_health \"$current_link\""
       }; then
@@ -492,8 +500,21 @@ let
       if [ -f "$current_revision_file" ]; then
         cp "$current_revision_file" "$previous_revision_file"
       fi
+      ${lib.optionalString isProject ''
+        if [ -f "$runtime_manifest" ]; then
+          cp "$runtime_manifest" "$previous_runtime_manifest.next"
+          mv -f "$previous_runtime_manifest.next" "$previous_runtime_manifest"
+        else
+          rm -f "$previous_runtime_manifest"
+        fi
+      ''}
     fi
 
+    ${lib.optionalString isProject ''
+      cp ${lib.escapeShellArg projectRuntimeManifest} "$runtime_manifest.next"
+      chmod 0600 "$runtime_manifest.next"
+      mv -f "$runtime_manifest.next" "$runtime_manifest"
+    ''}
     ln -sfn "$new_store_path" "$current_link.next"
     mv -Tf "$current_link.next" "$current_link"
     printf '%s\n' "$resolved_revision" > "$current_revision_file"
@@ -511,6 +532,14 @@ let
             if [ -f "$previous_revision_file" ]; then
               cp "$previous_revision_file" "$current_revision_file"
             fi
+            ${lib.optionalString isProject ''
+              if [ -f "$previous_runtime_manifest" ]; then
+                cp "$previous_runtime_manifest" "$runtime_manifest.next"
+                mv -f "$runtime_manifest.next" "$runtime_manifest"
+              else
+                rm -f "$runtime_manifest"
+              fi
+            ''}
             sync_gcroots
             if ! systemctl start ${lib.escapeShellArg "${activationUnitName}.service"}; then
               echo "app-deployment/${name}: rollback activation also failed" >&2
@@ -538,6 +567,14 @@ let
       ) "systemctl stop ${lib.escapeShellArg "${unitName}.service"}"}
       ln -sfn "$old_store_path" "$current_link.next"
       mv -Tf "$current_link.next" "$current_link"
+      ${lib.optionalString isProject ''
+        if [ -f "$previous_runtime_manifest" ]; then
+          cp "$previous_runtime_manifest" "$runtime_manifest.next"
+          mv -f "$runtime_manifest.next" "$runtime_manifest"
+        else
+          rm -f "$runtime_manifest"
+        fi
+      ''}
       if [ -f "$previous_revision_file" ]; then
         cp "$previous_revision_file" "$current_revision_file"
       fi
@@ -575,7 +612,7 @@ let
     fi
 
     ${lib.optionalString isProject ''
-      export PROJECT_RUNTIME_FILE=${lib.escapeShellArg projectRuntimeManifest}
+      export PROJECT_RUNTIME_FILE=${lib.escapeShellArg deployedProjectRuntimeManifest}
       export PROJECT_SECRETS_DIR="''${CREDENTIALS_DIRECTORY:-${runtimeDir}/secrets}"
     ''}
     exec "$executable"
@@ -587,7 +624,7 @@ let
     executable="$current/bin/${cfg.executable}"
     descriptor="$current/share/project/descriptor.json"
 
-    if [ ! -x "$executable" ] || [ ! -f "$descriptor" ]; then
+    if [ ! -x "$executable" ] || [ ! -f "$descriptor" ]${lib.optionalString isProject " || [ ! -f ${lib.escapeShellArg deployedProjectRuntimeManifest} ]"}; then
       echo "app-deployment/${name}: no descriptor-compatible Project artifact is deployed" >&2
       exit 1
     fi
@@ -614,7 +651,7 @@ let
       exit 1
     fi
 
-    export PROJECT_RUNTIME_FILE=${lib.escapeShellArg projectRuntimeManifest}
+    export PROJECT_RUNTIME_FILE=${lib.escapeShellArg deployedProjectRuntimeManifest}
     export PROJECT_SECRETS_DIR="''${CREDENTIALS_DIRECTORY:-${runtimeDir}/secrets}"
     exec "$executable"
   '';
@@ -633,7 +670,7 @@ let
         exit 1
       fi
 
-      export PROJECT_RUNTIME_FILE=${lib.escapeShellArg projectRuntimeManifest}
+      export PROJECT_RUNTIME_FILE=${lib.escapeShellArg deployedProjectRuntimeManifest}
       export PROJECT_SECRETS_DIR="''${CREDENTIALS_DIRECTORY:-${runtimeDir}/secrets}"
       exec "$executable" ${lib.escapeShellArg action}
     ''

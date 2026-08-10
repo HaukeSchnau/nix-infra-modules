@@ -554,6 +554,10 @@ in
     grep -Fq 'rollback activation' ${projectUpdateScript}
     grep -Fq 'PROJECT_RUNTIME_FILE=' ${projectStartScript}
     grep -Fq 'PROJECT_SECRETS_DIR=' ${projectStartScript}
+    grep -Fq '/project-runtime.json' ${projectStartScript}
+    ! grep -Fq -- '-project-release-runtime-demo-project.json' ${projectStartScript}
+    grep -Fq 'runtime_manifest.next' ${projectUpdateScript}
+    grep -Fq 'previous_runtime_manifest' ${projectUpdateScript}
     ! grep -Fq 'activate-release' ${projectStartScript}
     grep -Fq '.release.activationExecutable // empty' ${projectActivationScript}
     grep -Fq ' cleanup' ${projectJobScript}
