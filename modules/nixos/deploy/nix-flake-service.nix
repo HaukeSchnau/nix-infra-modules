@@ -512,7 +512,7 @@ let
 
     ${lib.optionalString isProject ''
       cp ${lib.escapeShellArg projectRuntimeManifest} "$runtime_manifest.next"
-      chmod 0600 "$runtime_manifest.next"
+      chmod 0644 "$runtime_manifest.next"
       mv -f "$runtime_manifest.next" "$runtime_manifest"
     ''}
     ln -sfn "$new_store_path" "$current_link.next"

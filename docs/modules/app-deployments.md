@@ -119,7 +119,9 @@ The updater installs that manifest in deployment state and cuts it over
 atomically with the `current` package symlink. Rollback restores the previous
 package and manifest together. A NixOS generation may therefore change the
 Runtime Context interface without ever starting an older repository artifact
-against the newer interface.
+against the newer interface. The manifest is readable by the isolated service
+user but contains only Secret names; values remain exclusively in systemd's
+credential directory.
 
 An optional `activationExecutable` is run once when a different store output is
 cut over, before the service starts and with the same manifest and credentials.
