@@ -465,7 +465,7 @@ in
     test '${toString (builtins.elemAt normalizedProjectDescriptor.release.ingress.redirects 0).status}' = 307
     test '${normalizedProjectDescriptor.release.ociAuxiliaries.database.ports.postgres.protocol}' = tcp
     test '${toString normalizedDevelopmentHealthDescriptor.development.endpoints.web.health.intervalSec}' = 1
-    test '${toString normalizedDevelopmentHealthDescriptor.development.endpoints.web.health.requestTimeoutSec}' = 2
+    test '${toString normalizedDevelopmentHealthDescriptor.development.endpoints.web.health.requestTimeoutSec}' = 15
     test '${toString normalizedDevelopmentHealthDescriptor.release.health.intervalSec}' = 2
     test '${toString normalizedDevelopmentHealthDescriptor.release.health.requestTimeoutSec}' = 5
 

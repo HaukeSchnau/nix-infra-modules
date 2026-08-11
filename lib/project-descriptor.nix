@@ -275,7 +275,7 @@ let
                     context = "${itemContext}.health";
                     defaults = {
                       intervalSec = 1;
-                      requestTimeoutSec = 2;
+                      requestTimeoutSec = 15;
                     };
                     inherit protocol;
                     value = item.health or { };
