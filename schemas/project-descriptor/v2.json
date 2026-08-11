@@ -6,7 +6,8 @@
   "required": ["schemaVersion", "project", "development", "release"],
   "properties": {
     "$schema": {
-      "const": "https://raw.githubusercontent.com/HaukeSchnau/nix-infra-modules/main/schemas/project-descriptor/v2.json"
+      "type": "string",
+      "format": "uri"
     },
     "schemaVersion": { "const": 2 },
     "project": { "$ref": "#/$defs/name" },
