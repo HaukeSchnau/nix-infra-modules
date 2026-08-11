@@ -224,6 +224,12 @@ let
   normalizedProjectDescriptor = self.lib.projectDescriptor.normalize {
     descriptor = conciseProjectDescriptor;
   };
+  normalizedDevelopmentHealthDescriptor = self.lib.projectDescriptor.normalize {
+    descriptor = conciseProjectDescriptor // {
+      schemaVersion = 2;
+      development.endpoints.web = { };
+    };
+  };
   projectPolicy = {
     project = "demo-project";
     source = {
@@ -288,6 +294,8 @@ let
   projectJobScript = projectJobService.serviceConfig.ExecStart;
   pairedProjectStartScript =
     pairedProjectSystem.config.systemd.services.app-deployment-demo-project.serviceConfig.ExecStart;
+  pairedProjectUpdateScript =
+    pairedProjectSystem.config.systemd.services.app-deployment-demo-project-update.serviceConfig.ExecStart;
   staticProjectDescriptor = {
     schemaVersion = 1;
     project = "static-project";
@@ -456,6 +464,10 @@ in
     }' = required
     test '${toString (builtins.elemAt normalizedProjectDescriptor.release.ingress.redirects 0).status}' = 307
     test '${normalizedProjectDescriptor.release.ociAuxiliaries.database.ports.postgres.protocol}' = tcp
+    test '${toString normalizedDevelopmentHealthDescriptor.development.endpoints.web.health.intervalSec}' = 1
+    test '${toString normalizedDevelopmentHealthDescriptor.development.endpoints.web.health.requestTimeoutSec}' = 2
+    test '${toString normalizedDevelopmentHealthDescriptor.release.health.intervalSec}' = 2
+    test '${toString normalizedDevelopmentHealthDescriptor.release.health.requestTimeoutSec}' = 5
 
     test '${
       if descriptorEvaluationSucceeds (conciseProjectDescriptor // { schemaVersion = 2; }) then
@@ -564,10 +576,10 @@ in
     grep -Fq ' cleanup' ${projectJobScript}
 
     expected_descriptor="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-descriptor-demo-project.json' ${projectUpdateScript} | head -n 1)"
-    runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-demo-project.json' ${projectStartScript} | head -n 1)"
-    paired_runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-demo-project.json' ${pairedProjectStartScript} | head -n 1)"
-    job_runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-demo-project.json' ${projectJobScript} | head -n 1)"
-    test "$runtime_manifest" = "$job_runtime_manifest"
+    runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-demo-project.json' ${projectUpdateScript} | head -n 1)"
+    paired_runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-demo-project.json' ${pairedProjectUpdateScript} | head -n 1)"
+    grep -Fq '/project-runtime.json' ${projectStartScript}
+    grep -Fq '/project-runtime.json' ${projectJobScript}
     ${pkgs.check-jsonschema}/bin/check-jsonschema \
       --schemafile ${../../../schemas/project-runtime/v2.json} \
       "$paired_runtime_manifest"

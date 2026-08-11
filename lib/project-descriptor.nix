@@ -109,6 +109,7 @@ let
   normalizeHealth =
     {
       context,
+      defaults ? { },
       protocol ? "http",
       value,
     }:
@@ -122,9 +123,9 @@ let
       ++ lib.optional (protocol == "http") "paths";
       checked = checkKeys context allowedFields attrs;
       paths = if protocol == "http" then checked.paths or [ "/" ] else null;
-      startupTimeoutSec = checked.startupTimeoutSec or 60;
-      intervalSec = checked.intervalSec or 2;
-      requestTimeoutSec = checked.requestTimeoutSec or 5;
+      startupTimeoutSec = checked.startupTimeoutSec or (defaults.startupTimeoutSec or 60);
+      intervalSec = checked.intervalSec or (defaults.intervalSec or 2);
+      requestTimeoutSec = checked.requestTimeoutSec or (defaults.requestTimeoutSec or 5);
     in
     ensure context
       (
@@ -272,6 +273,10 @@ let
                   inherit protocol workload;
                   health = normalizeHealth {
                     context = "${itemContext}.health";
+                    defaults = {
+                      intervalSec = 1;
+                      requestTimeoutSec = 2;
+                    };
                     inherit protocol;
                     value = item.health or { };
                   };

@@ -102,7 +102,11 @@ references must name declarations at the descriptor root.
 Development contains a preparation action, acyclic Workload dependency graph,
 and HTTP or TCP Endpoints with health policy. HTTP health defaults to path `/`;
 TCP health is a connect-only probe and therefore has no paths. Both share
-`startupTimeoutSec`, `intervalSec`, and `requestTimeoutSec`. Release contains
+`startupTimeoutSec`, `intervalSec`, and `requestTimeoutSec`. Development probes
+default to a two-second request timeout and one-second retry interval so an
+early connection to a compiling dev server does not add a long retry penalty;
+Release retains the more conservative five-second timeout and two-second
+interval. Release contains
 backend/package/executable, health policy, safe relative state directories,
 structured ingress, maintenance-job action declarations, an optional activation
 executable, and explicitly approved digest-pinned OCI auxiliaries. Ingress
