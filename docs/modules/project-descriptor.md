@@ -29,6 +29,7 @@ realization is placed:
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/HaukeSchnau/nix-infra-modules/main/schemas/project-descriptor/v2.json",
   "schemaVersion": 2,
   "project": "example",
   "secrets": {
@@ -71,6 +72,11 @@ realization is placed:
   }
 }
 ```
+
+Repository `project.json` files should declare the v2 schema through the
+standard `$schema` property shown above. Editors can then validate the file and
+offer completion directly from the public schema. The property is authoring
+metadata and is omitted from the normalized descriptor.
 
 Schema v1 remains supported without semantic changes: only `schemaVersion` and
 `project` are always required, and a v1 descriptor may define either or both

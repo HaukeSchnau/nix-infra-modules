@@ -616,6 +616,7 @@ let
       context = "root";
       attrs = ensure context (isAttrs descriptor) "must be an attribute set" descriptor;
       checked = checkKeys context [
+        "$schema"
         "development"
         "parameters"
         "project"

@@ -1,10 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.schnau.dev/project-descriptor/v2.json",
+  "$id": "https://raw.githubusercontent.com/HaukeSchnau/nix-infra-modules/main/schemas/project-descriptor/v2.json",
   "title": "Project Descriptor v2",
   "type": "object",
   "required": ["schemaVersion", "project", "development", "release"],
   "properties": {
+    "$schema": {
+      "const": "https://raw.githubusercontent.com/HaukeSchnau/nix-infra-modules/main/schemas/project-descriptor/v2.json"
+    },
     "schemaVersion": { "const": 2 },
     "project": { "$ref": "#/$defs/name" },
     "secrets": { "type": "object" },
