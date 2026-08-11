@@ -17,7 +17,7 @@ let
       route.extraConfig
     else
       ''
-        reverse_proxy ${route.upstream}
+        reverse_proxy ${route.backend.scheme}://${route.backend.address}:${toString route.backend.port}
       '';
 
   mkRouteConfig =
@@ -103,11 +103,36 @@ in
                 description = "Hostname served by this Caddy virtual host.";
               };
 
-              upstream = lib.mkOption {
-                type = lib.types.nullOr lib.types.str;
+              backend = lib.mkOption {
+                type = lib.types.nullOr (
+                  lib.types.submodule {
+                    options = {
+                      scheme = lib.mkOption {
+                        type = lib.types.enum [
+                          "http"
+                          "https"
+                        ];
+                        default = "http";
+                        description = "Protocol used from Caddy to the backend listener.";
+                      };
+                      address = lib.mkOption {
+                        type = lib.types.str;
+                        default = "127.0.0.1";
+                        description = "Backend listener address or hostname.";
+                      };
+                      port = lib.mkOption {
+                        type = lib.types.port;
+                        description = "Backend listener port.";
+                      };
+                    };
+                  }
+                );
                 default = null;
-                example = "127.0.0.1:3000";
-                description = "Reverse proxy upstream used when extraConfig is not set.";
+                example = {
+                  address = "127.0.0.1";
+                  port = 3000;
+                };
+                description = "Typed reverse-proxy backend used when extraConfig is not set.";
               };
 
               tailscaleOnly = lib.mkOption {
@@ -185,8 +210,8 @@ in
   config = lib.mkIf (vps.enable && cfg.enable) {
     assertions = [
       {
-        assertion = lib.all (route: (route.extraConfig != "") != (route.upstream != null)) virtualHostList;
-        message = "Each vps.services.caddy.virtualHosts entry must set exactly one of upstream or extraConfig.";
+        assertion = lib.all (route: (route.extraConfig != "") != (route.backend != null)) virtualHostList;
+        message = "Each vps.services.caddy.virtualHosts entry must set exactly one of backend or extraConfig.";
       }
       {
         assertion = lib.length virtualHostNames == lib.length (lib.unique virtualHostNames);

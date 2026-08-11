@@ -946,7 +946,10 @@ let
           ${cfg.domain} =
             if isService && !isProject then
               {
-                upstream = "${cfg.host}:${toString cfg.port}";
+                backend = {
+                  address = cfg.host;
+                  inherit (cfg) port;
+                };
                 tailscaleOnly = !cfg.public;
               }
             else if isService then

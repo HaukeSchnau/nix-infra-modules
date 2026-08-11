@@ -21,7 +21,7 @@ let
         enable = true;
         publicVirtualHosts.enable = false;
         internalIngress.enable = true;
-        virtualHosts."app.example.net".upstream = "127.0.0.1:8080";
+        virtualHosts."app.example.net".backend.port = 8080;
       };
     }
   ];

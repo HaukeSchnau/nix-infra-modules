@@ -78,6 +78,9 @@ There is deliberately no silent empty fallback for malformed platform roots.
 Inference is structural. It does not parse shell, Caddy text, command lines, or
 arbitrary configuration strings, and it does not guess semantic ownership from
 unit names. Owning fleet modules can add semantic facts in later fragments.
+The shared Caddy interface models reverse-proxy backends as typed scheme,
+address, and port fields so topology adapters can infer routing without parsing
+an upstream string.
 
 ## Identity and graph invariants
 
