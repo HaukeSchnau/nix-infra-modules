@@ -43,6 +43,10 @@ let
       builtins.isBool value
     else if type == "port" then
       builtins.isInt value && value >= 1 && value <= 65535
+    else if type == "strings" then
+      builtins.isList value && lib.all builtins.isString value
+    else if type == "nonEmptyStrings" then
+      builtins.isList value && value != [ ] && lib.all (item: builtins.isString item && item != "") value
     else
       false;
   validateData =
@@ -59,6 +63,7 @@ let
           && (
             !(typeMatches fields.${name}.type data.${name})
             || (fields.${name}.required && fields.${name}.type == "string" && data.${name} == "")
+            || (fields.${name} ? values && !(builtins.elem data.${name} fields.${name}.values))
           )
         ) names;
       in
@@ -67,7 +72,9 @@ let
       ++ map (
         name:
         at (path ++ [ name ]) (
-          if fields.${name}.required && fields.${name}.type == "string" then
+          if fields.${name} ? values then
+            "must be one of ${lib.concatStringsSep ", " fields.${name}.values}"
+          else if fields.${name}.required && fields.${name}.type == "string" then
             "must be a non-empty string"
           else
             "must have type ${fields.${name}.type}"
@@ -115,7 +122,11 @@ let
       )
       ++
         lib.optionals
-          (kindIsKnown && node.kind == "firewallExposure" && builtins.isAttrs (node.data or null))
+          (
+            kindIsKnown
+            && builtins.elem node.kind ((schema.invariants or { }).portSelectionKinds or [ "firewallExposure" ])
+            && builtins.isAttrs (node.data or null)
+          )
           (
             let
               data = node.data;
@@ -323,6 +334,16 @@ in
           "node ${node.id} belongs to fleet ${identity.fleetId}, expected ${graph.fleetId}"
         )
       ) graph.nodes;
+      fleetScopeErrors = lib.concatMap (
+        node:
+        let
+          identity = ids.parseId node.id;
+          fleetScopedKinds = (schema.invariants or { }).fleetScopedKinds or [ ];
+        in
+        lib.optional (
+          identity != null && builtins.elem node.kind fleetScopedKinds && identity.scope != "fleet"
+        ) "node ${node.id} kind ${node.kind} must use fleet scope"
+      ) graph.nodes;
       dangling = lib.concatMap (
         relation:
         lib.optional (!(builtins.hasAttr relation.from nodeById)) (
@@ -377,6 +398,17 @@ in
           "node ${node.id} must have exactly ${toString expected} contains parents, got ${toString (builtins.length parents)}"
         )
       ) graph.nodes;
+      fleetParentErrors = lib.concatMap (
+        node:
+        let
+          fleetContainedKinds = (schema.invariants or { }).fleetContainedKinds or [ ];
+        in
+        lib.optional (
+          fleetRoot != null
+          && builtins.elem node.kind fleetContainedKinds
+          && parentsOf node.id != [ fleetRoot ]
+        ) "node ${node.id} kind ${node.kind} must be contained by the fleet root"
+      ) graph.nodes;
       walk =
         visited: frontier:
         let
@@ -426,9 +458,11 @@ in
         "fleet root must use fleetId as both fleet identity and key with scope fleet"
       )
       ++ identityErrors
+      ++ fleetScopeErrors
       ++ dangling
       ++ endpointErrors
       ++ parentErrors
+      ++ fleetParentErrors
       ++ orphans
       ++ coverageErrors
     );

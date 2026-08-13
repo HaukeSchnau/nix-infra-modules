@@ -93,7 +93,10 @@ let
   idFor = unitName: mkId (kindFor unitName) "systemd:${unitName}";
   dataFor =
     unitName:
-    if kindFor unitName == "unit" then { unitType = "systemd-${suffixFor unitName}"; } else { };
+    (if kindFor unitName == "unit" then { unitType = "systemd-${suffixFor unitName}"; } else { })
+    // lib.optionalAttrs (topology.schema.version >= 2) {
+      management = if builtins.hasAttr unitName units then "managed" else "reference";
+    };
 
   unitNames = builtins.attrNames units;
   serviceNames = builtins.attrNames services;
@@ -371,5 +374,11 @@ in
     (collectionCoverage "config.systemd.services" serviceNames serviceUnitNames)
     (collectionCoverage "config.systemd.sockets" socketNames socketUnitNames)
     (collectionCoverage "config.systemd.timers" timerNames timerUnitNames)
-  ];
+  ]
+  ++ lib.optional (topology.schema.version >= 2) {
+    domain = "derived.systemd.references";
+    discovered = referencedUnitNames;
+    represented = lib.genAttrs referencedUnitNames idFor;
+    excluded = { };
+  };
 }

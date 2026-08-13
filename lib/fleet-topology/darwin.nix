@@ -67,7 +67,12 @@ let
       id = jobId collection.unitType name;
       kind = "unit";
       label = name;
-      data.unitType = collection.unitType;
+      data = {
+        unitType = collection.unitType;
+      }
+      // lib.optionalAttrs (topology.schema.version >= 2) {
+        management = "managed";
+      };
     }) (builtins.attrNames collection.jobs)
   ) collections;
 in

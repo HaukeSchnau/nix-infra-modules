@@ -1,6 +1,7 @@
 {
   lib,
   schema,
+  identityVersion ? schema.version,
 }:
 let
   rawCharacters = [
@@ -93,7 +94,7 @@ let
       if
         builtins.length prefix != 3
         || builtins.elemAt prefix 0 != "ft"
-        || builtins.elemAt prefix 1 != "v${toString schema.version}"
+        || builtins.elemAt prefix 1 != "v${toString identityVersion}"
         || !(builtins.hasAttr kind schema.nodeKinds)
         || !(lib.all canonicalSegment segments)
       then
@@ -131,7 +132,7 @@ in
     if !(builtins.hasAttr checkedKind schema.nodeKinds) then
       throw "fleet topology identity has unknown node kind ${checkedKind}"
     else
-      "ft:v${toString schema.version}:${checkedKind}/${encodeSegment "fleetId" fleetId}/${encodeSegment "scope" scope}/${encodeSegment "key" key}";
+      "ft:v${toString identityVersion}:${checkedKind}/${encodeSegment "fleetId" fleetId}/${encodeSegment "scope" scope}/${encodeSegment "key" key}";
 
   validId =
     kind: value:
