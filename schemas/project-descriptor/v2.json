@@ -58,6 +58,7 @@
           "type": "array",
           "items": { "$ref": "#/$defs/name" }
         },
+        "kind": { "enum": ["service", "task"] },
         "secrets": {
           "type": "array",
           "items": { "type": "string" }

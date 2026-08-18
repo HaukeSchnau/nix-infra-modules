@@ -220,20 +220,30 @@ let
           item = checkKeys itemContext [
             "action"
             "dependsOn"
+            "kind"
             "secrets"
           ] (ensure itemContext (isAttrs workload) "must be an attribute set" workload);
           action = if (item.action or null) == null then name else item.action;
           dependsOn = item.dependsOn or [ ];
+          kind = item.kind or "service";
           secretNames = item.secrets or [ ];
           checkedDependsOn = checkStringList "${itemContext}.dependsOn" dependsOn;
           checkedSecrets = checkStringList "${itemContext}.secrets" secretNames;
         in
         builtins.seq checkedName (
-          ensure itemContext (isString action && action != "") "action must be a non-empty string" {
-            inherit action;
-            dependsOn = checkedDependsOn;
-            secrets = checkedSecrets;
-          }
+          ensure itemContext (isString action && action != "") "action must be a non-empty string" (
+            ensure itemContext
+              (builtins.elem kind [
+                "service"
+                "task"
+              ])
+              "kind must be service or task"
+              {
+                inherit action kind;
+                dependsOn = checkedDependsOn;
+                secrets = checkedSecrets;
+              }
+          )
         )
       ) mergedWorkloads;
       endpoints = lib.mapAttrs (
@@ -306,6 +316,9 @@ let
         lib.all (dependency: builtins.hasAttr dependency workloads) workload.dependsOn
         && lib.all (secret: builtins.hasAttr secret secrets) workload.secrets
       ) (builtins.attrValues workloads);
+      endpointTargetsServices = lib.all (endpoint: workloads.${endpoint.workload}.kind == "service") (
+        builtins.attrValues endpoints
+      );
     in
     ensure "development.preparation" (isString preparation.action && preparation.action != "")
       "action must be a non-empty string"
@@ -319,11 +332,13 @@ let
                 ensure context (schemaVersion == 1 || graphIsAcyclic workloads)
                   "Workload dependency graph must be acyclic"
                   (
-                    ensure context (lib.all (secret: builtins.hasAttr secret secrets) preparation.secrets)
-                      "Preparation Secrets must reference declared names"
-                      {
-                        inherit endpoints preparation workloads;
-                      }
+                    ensure context endpointTargetsServices "Endpoints must target service Workloads" (
+                      ensure context (lib.all (secret: builtins.hasAttr secret secrets) preparation.secrets)
+                        "Preparation Secrets must reference declared names"
+                        {
+                          inherit endpoints preparation workloads;
+                        }
+                    )
                   )
               )
           )

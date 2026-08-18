@@ -42,10 +42,16 @@ let
       name,
       mainProgram,
       config,
+      bundle ? null,
       activationExecutable ? null,
     }:
     let
       configFile = pkgs.writeText "${name}-runtime-config.json" (builtins.toJSON config + "\n");
+      bundleFile =
+        if bundle == null then
+          null
+        else
+          pkgs.writeText "${name}-bundle.json" (builtins.toJSON bundle + "\n");
     in
     pkgs.runCommand name
       {
@@ -60,6 +66,9 @@ let
         makeWrapper ${pkgs.python3}/bin/python $out/bin/project-context \
           --add-flags "$out/libexec/project-runtime/runtime.py --config ${configFile} context" \
           --prefix PATH : "$out/bin"
+        ${lib.optionalString (bundleFile != null) ''
+          install -Dm0444 ${bundleFile} $out/share/project/bundle.json
+        ''}
         ${lib.optionalString (activationExecutable != null) ''
           makeWrapper ${pkgs.python3}/bin/python $out/bin/${activationExecutable} \
             --add-flags "$out/libexec/project-runtime/runtime.py --config ${configFile} --activate" \
@@ -130,6 +139,14 @@ rec {
         inherit pkgs;
         name = "${descriptor.project}-project-runtime";
         mainProgram = "${descriptor.project}-project-runtime";
+        bundle = {
+          schemaVersion = 1;
+          descriptorSchemaVersion = descriptor.schemaVersion;
+          inherit (descriptor) project parameters secrets;
+          realization = "development";
+          entrypoint = "bin/${descriptor.project}-project-runtime";
+          inherit development;
+        };
         config = {
           schemaVersion = 1;
           descriptorSchemaVersion = descriptor.schemaVersion;
@@ -189,6 +206,7 @@ rec {
           interface = pkgs.runCommand "${descriptor.project}-development-runtime-interface" { } ''
             test -x ${package}/bin/${descriptor.project}-project-runtime
             test -x ${package}/bin/project-context
+            test -f ${package}/share/project/bundle.json
             touch $out
           '';
         };
