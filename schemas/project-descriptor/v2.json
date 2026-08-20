@@ -42,6 +42,11 @@
         "maintenanceJobs": { "type": "object" },
         "ociAuxiliaries": { "type": "object" },
         "package": { "type": "string", "minLength": 1 },
+        "preDeployTasks": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/name" },
+          "additionalProperties": { "$ref": "#/$defs/releaseTask" }
+        },
         "stateDirectories": { "type": "array", "items": { "type": "string" } }
       },
       "additionalProperties": false
@@ -63,6 +68,22 @@
           "type": "array",
           "items": { "type": "string" }
         }
+      },
+      "additionalProperties": false
+    },
+    "releaseTask": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "minLength": 1 },
+        "dependsOn": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/name" }
+        },
+        "secrets": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "timeoutSec": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false
     },

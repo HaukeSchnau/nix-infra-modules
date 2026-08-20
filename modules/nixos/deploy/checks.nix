@@ -258,6 +258,12 @@ let
   pairedProjectDescriptor = conciseProjectDescriptor // {
     schemaVersion = 2;
     development = { };
+    release = conciseProjectDescriptor.release // {
+      preDeployTasks.migrate = {
+        secrets = [ "betterAuthSecret" ];
+        timeoutSec = 120;
+      };
+    };
   };
   pairedProjectApp = self.lib.projectDescriptor.releaseApp {
     descriptor = pairedProjectDescriptor;
@@ -296,6 +302,9 @@ let
     pairedProjectSystem.config.systemd.services.app-deployment-demo-project.serviceConfig.ExecStart;
   pairedProjectUpdateScript =
     pairedProjectSystem.config.systemd.services.app-deployment-demo-project-update.serviceConfig.ExecStart;
+  pairedProjectPreDeployService =
+    pairedProjectSystem.config.systemd.services.app-deployment-demo-project-pre-deploy-migrate;
+  pairedProjectPreDeployScript = pairedProjectPreDeployService.serviceConfig.ExecStart;
   staticProjectDescriptor = {
     schemaVersion = 1;
     project = "static-project";
@@ -397,6 +406,16 @@ let
               ;
           };
       };
+      preDeploy = {
+        inherit (pairedProjectPreDeployService) after wants;
+        inherit (pairedProjectPreDeployService.serviceConfig)
+          LoadCredential
+          NoNewPrivileges
+          TimeoutStartSec
+          Type
+          User
+          ;
+      };
       staticCaddy =
         staticProjectSystem.config.vps.services.caddy.virtualHosts."static-project.example.net";
       tmpfiles = builtins.filter (lib.hasInfix "/var/lib/app-deployments/demo-project") projectSystem.config.systemd.tmpfiles.rules;
@@ -468,9 +487,33 @@ in
     test '${toString normalizedDevelopmentHealthDescriptor.development.endpoints.web.health.requestTimeoutSec}' = 15
     test '${toString normalizedDevelopmentHealthDescriptor.release.health.intervalSec}' = 2
     test '${toString normalizedDevelopmentHealthDescriptor.release.health.requestTimeoutSec}' = 5
+    test '${
+      lib.concatStringsSep "," (
+        self.lib.projectDescriptor.releaseTaskOrder
+          (self.lib.projectDescriptor.normalize { descriptor = pairedProjectDescriptor; }).release
+      )
+    }' = migrate
 
     test '${
       if descriptorEvaluationSucceeds (conciseProjectDescriptor // { schemaVersion = 2; }) then
+        "accepted"
+      else
+        "rejected"
+    }' = rejected
+    test '${
+      if
+        descriptorEvaluationSucceeds (
+          pairedProjectDescriptor
+          // {
+            release = pairedProjectDescriptor.release // {
+              preDeployTasks = {
+                first.dependsOn = [ "second" ];
+                second.dependsOn = [ "first" ];
+              };
+            };
+          }
+        )
+      then
         "accepted"
       else
         "rejected"
@@ -558,6 +601,7 @@ in
     ${pkgs.bash}/bin/bash -n ${projectStartScript}
     ${pkgs.bash}/bin/bash -n ${projectActivationScript}
     ${pkgs.bash}/bin/bash -n ${projectJobScript}
+    ${pkgs.bash}/bin/bash -n ${pairedProjectPreDeployScript}
     grep -Fq 'share/project/descriptor.json' ${projectUpdateScript}
     grep -Fq 'current_descriptor_matches' ${projectUpdateScript}
     grep -Fq 'jq -e -S .' ${projectUpdateScript}
@@ -574,6 +618,14 @@ in
     ! grep -Fq 'activate-release' ${projectStartScript}
     grep -Fq '.release.activationExecutable // empty' ${projectActivationScript}
     grep -Fq ' cleanup' ${projectJobScript}
+    grep -Fq '/candidate-project-runtime.json' ${pairedProjectPreDeployScript}
+    grep -Fq ' migrate' ${pairedProjectPreDeployScript}
+    grep -Fq 'app-deployment-demo-project-pre-deploy-migrate.service' ${pairedProjectUpdateScript}
+    grep -Fq 'cleanup_candidate' ${pairedProjectUpdateScript}
+
+    pre_deploy_line="$(${pkgs.gnugrep}/bin/grep -nF 'systemctl start app-deployment-demo-project-pre-deploy-migrate.service' ${pairedProjectUpdateScript} | cut -d: -f1)"
+    cutover_line="$(${pkgs.gnugrep}/bin/grep -nF 'mv -Tf "$current_link.next" "$current_link"' ${pairedProjectUpdateScript} | head -n 1 | cut -d: -f1)"
+    test "$pre_deploy_line" -lt "$cutover_line"
 
     expected_descriptor="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-descriptor-demo-project.json' ${projectUpdateScript} | head -n 1)"
     runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-demo-project.json' ${projectUpdateScript} | head -n 1)"
@@ -652,6 +704,12 @@ in
       and .job.timer.OnActiveSec == "15min"
       and .job.timer.OnUnitActiveSec == "1d"
       and .job.timer.RandomizedDelaySec == "30min"
+      and .preDeploy.Type == "oneshot"
+      and .preDeploy.User == "app-demo-project"
+      and .preDeploy.NoNewPrivileges == true
+      and .preDeploy.TimeoutStartSec == "120s"
+      and (.preDeploy.LoadCredential | index("betterAuthSecret:/run/secrets/demo-better-auth"))
+      and (.preDeploy.after | index("podman-project-demo-project-database.service"))
       and (.staticCaddy.extraConfig | contains("@project_metadata path /share/project/*"))
       and (.staticCaddy.extraConfig | contains("respond @project_metadata 404"))
       and (.tmpfiles | map(contains("/runtime/data")) | any)

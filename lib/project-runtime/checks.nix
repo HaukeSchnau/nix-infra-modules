@@ -94,7 +94,11 @@ let
   pairedService = runtime.mkServiceRelease {
     inherit pkgs;
     descriptorPath = pairedDescriptor;
-    actions.serve = releaseAction "paired-release";
+    actions = {
+      serve = releaseAction "paired-release";
+      prepare-release = releaseAction "prepare-release";
+      migrate = releaseAction "migrate";
+    };
   };
   staticRoot = pkgs.runCommand "runtime-static-root" { } ''
     mkdir -p $out

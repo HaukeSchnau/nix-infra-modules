@@ -70,6 +70,9 @@ let
   projectAuxiliaries = if isProject then projectRelease.ociAuxiliaries else { };
   projectAuxiliaryPorts = if isProject then cfg.project.auxiliaryPorts else { };
   projectJobs = if isProject then cfg.project.jobs else { };
+  projectPreDeployTasks = if isProject then projectRelease.preDeployTasks else { };
+  projectPreDeployOrder =
+    if isProject then projectDescriptor.releaseTaskOrder projectRelease else [ ];
   projectMemory = if isProject then cfg.project.resources.memory else { };
   projectRuntimeSchemaVersion = if isProject then descriptor.schemaVersion else 1;
   unitName = "app-deployment-${name}";
@@ -79,7 +82,11 @@ let
   stateDir = "/var/lib/app-deployments/${name}";
   runtimeDir = "${stateDir}/runtime";
   needsRuntimeUser =
-    isService || (isProject && (projectActivationExecutable != null || projectJobs != { }));
+    isService
+    || (
+      isProject
+      && (projectActivationExecutable != null || projectJobs != { } || projectPreDeployTasks != { })
+    );
   ociBackend = config.virtualisation.oci-containers.backend;
   projectContainerName = auxiliaryName: "project-${name}-${auxiliaryName}";
   projectContainerUnits = map (
@@ -335,9 +342,20 @@ let
     metadata_file="$state_dir/metadata.json"
     runtime_manifest="$state_dir/project-runtime.json"
     previous_runtime_manifest="$state_dir/previous-project-runtime.json"
+    candidate_link="$state_dir/candidate"
+    candidate_runtime_manifest="$state_dir/candidate-project-runtime.json"
+    candidate_gcroot="$gcroots_dir/candidate"
     git_config_file=""
 
+    cleanup_candidate() {
+      rm -f \
+        "$candidate_link" "$candidate_link.next" \
+        "$candidate_runtime_manifest" "$candidate_runtime_manifest.next" \
+        "$candidate_gcroot" "$candidate_gcroot.next"
+    }
+
     cleanup() {
+      cleanup_candidate
       if [ -n "$git_config_file" ]; then
         rm -f "$git_config_file"
       fi
@@ -350,6 +368,7 @@ let
       echo "app-deployment/${name}: another update is already running"
       exit 0
     fi
+    cleanup_candidate
 
     requested_revision=""
     if [ -s "$requested_revision_file" ]; then
@@ -494,7 +513,27 @@ let
         echo "app-deployment/${name}: revision $resolved_revision already produces the active output"
         exit 0
       fi
+    fi
 
+    ${lib.optionalString (projectPreDeployOrder != [ ]) ''
+      if [ "$new_store_path" != "$old_store_path" ]; then
+        echo "app-deployment/${name}: running pre-deploy tasks for $resolved_revision"
+        mkdir -p "$gcroots_dir"
+        ln -sfn "$new_store_path" "$candidate_link.next"
+        mv -Tf "$candidate_link.next" "$candidate_link"
+        ln -sfn "$new_store_path" "$candidate_gcroot.next"
+        mv -Tf "$candidate_gcroot.next" "$candidate_gcroot"
+        cp ${lib.escapeShellArg projectRuntimeManifest} "$candidate_runtime_manifest.next"
+        chmod 0644 "$candidate_runtime_manifest.next"
+        mv -f "$candidate_runtime_manifest.next" "$candidate_runtime_manifest"
+        ${lib.concatMapStringsSep "\n" (
+          taskName: "systemctl start ${lib.escapeShellArg "${unitName}-pre-deploy-${taskName}.service"}"
+        ) projectPreDeployOrder}
+        cleanup_candidate
+      fi
+    ''}
+
+    if [ -n "$old_store_path" ]; then
       ln -sfn "$old_store_path" "$previous_link.next"
       mv -Tf "$previous_link.next" "$previous_link"
       if [ -f "$current_revision_file" ]; then
@@ -655,6 +694,47 @@ let
     export PROJECT_SECRETS_DIR="''${CREDENTIALS_DIRECTORY:-${runtimeDir}/secrets}"
     exec "$executable"
   '';
+  projectPreDeployTaskScripts = lib.mapAttrs (
+    taskName: task:
+    pkgs.writeShellScript "app-deployment-${name}-pre-deploy-${taskName}" ''
+      set -euo pipefail
+
+      candidate=${lib.escapeShellArg stateDir}/candidate
+      runtime_manifest=${lib.escapeShellArg stateDir}/candidate-project-runtime.json
+      executable="$candidate/bin/${cfg.executable}"
+      if [ ! -x "$executable" ] || [ ! -f "$runtime_manifest" ]; then
+        echo "app-deployment/${name}: no staged Project artifact for pre-deploy task ${taskName}" >&2
+        exit 1
+      fi
+
+      export PROJECT_RUNTIME_FILE="$runtime_manifest"
+      export PROJECT_SECRETS_DIR="''${CREDENTIALS_DIRECTORY:-${runtimeDir}/secrets}"
+      exec "$executable" ${lib.escapeShellArg task.action}
+    ''
+  ) projectPreDeployTasks;
+  projectPreDeployTaskServices = lib.mapAttrs' (
+    taskName: task:
+    let
+      taskSecrets = lib.filterAttrs (secretName: _: builtins.elem secretName task.secrets) projectSecrets;
+    in
+    lib.nameValuePair "${unitName}-pre-deploy-${taskName}" {
+      description = "Run Project pre-deploy task '${name}/${taskName}'";
+      after = [ "network-online.target" ] ++ projectContainerUnits;
+      wants = [ "network-online.target" ] ++ projectContainerUnits;
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = projectPreDeployTaskScripts.${taskName};
+        User = userName;
+        Group = userName;
+        WorkingDirectory = stateDir;
+        TimeoutStartSec = "${toString task.timeoutSec}s";
+      }
+      // projectHardening
+      // lib.optionalAttrs (taskSecrets != { }) {
+        LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") taskSecrets;
+      };
+    }
+  ) projectPreDeployTasks;
   projectJobScripts = lib.mapAttrs (
     jobName: _policy:
     let
@@ -809,86 +889,89 @@ let
           ++ (map (dir: "d ${dir} 0750 ${userName} ${userName} -") cfg.stateDirs)
         );
 
-        systemd.services = projectJobServices // {
-          ${unitName} = lib.mkIf isService {
-            description = "App deployment '${name}'";
-            after = [ "network-online.target" ] ++ projectContainerUnits;
-            wants = [ "network-online.target" ] ++ projectContainerUnits;
-            environment =
-              (
-                if isProject then
-                  { HOME = stateDir; }
-                else
-                  {
-                    HOST = cfg.host;
-                    PORT = toString cfg.port;
-                    HOME = stateDir;
-                  }
-              )
-              // cfg.environment;
-            path = cfg.path;
-            serviceConfig = {
-              ExecStart = startScript;
-              Restart = "always";
-              RestartSec = "15s";
-              User = userName;
-              Group = userName;
-              WorkingDirectory = stateDir;
-            }
-            // lib.optionalAttrs isProject {
-              ExecCondition = projectArtifactConditionScript;
-            }
-            // lib.optionalAttrs isProject projectHardening
-            // lib.optionalAttrs (isProject && projectSecrets != { }) {
-              LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
-            }
-            // lib.optionalAttrs (cfg.environmentFiles != [ ]) {
-              EnvironmentFile = cfg.environmentFiles;
-            }
-            // cfg.serviceConfig;
-            preStart = cfg.preStart;
-          };
-
-          ${updateUnitName} = {
-            description = "Update app deployment '${name}'";
-            after = [ "network-online.target" ] ++ projectContainerUnits;
-            wants = [ "network-online.target" ] ++ projectContainerUnits;
-            serviceConfig = {
-              Type = "oneshot";
-              ExecStart = updateScript;
+        systemd.services =
+          projectPreDeployTaskServices
+          // projectJobServices
+          // {
+            ${unitName} = lib.mkIf isService {
+              description = "App deployment '${name}'";
+              after = [ "network-online.target" ] ++ projectContainerUnits;
+              wants = [ "network-online.target" ] ++ projectContainerUnits;
+              environment =
+                (
+                  if isProject then
+                    { HOME = stateDir; }
+                  else
+                    {
+                      HOST = cfg.host;
+                      PORT = toString cfg.port;
+                      HOME = stateDir;
+                    }
+                )
+                // cfg.environment;
+              path = cfg.path;
+              serviceConfig = {
+                ExecStart = startScript;
+                Restart = "always";
+                RestartSec = "15s";
+                User = userName;
+                Group = userName;
+                WorkingDirectory = stateDir;
+              }
+              // lib.optionalAttrs isProject {
+                ExecCondition = projectArtifactConditionScript;
+              }
+              // lib.optionalAttrs isProject projectHardening
+              // lib.optionalAttrs (isProject && projectSecrets != { }) {
+                LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
+              }
+              // lib.optionalAttrs (cfg.environmentFiles != [ ]) {
+                EnvironmentFile = cfg.environmentFiles;
+              }
+              // cfg.serviceConfig;
+              preStart = cfg.preStart;
             };
-          };
 
-          ${activationUnitName} = lib.mkIf (projectActivationExecutable != null) {
-            description = "Activate Project Release '${name}'";
-            after = projectContainerUnits;
-            wants = projectContainerUnits;
-            serviceConfig = {
-              Type = "oneshot";
-              ExecStart = activationScript;
-              User = userName;
-              Group = userName;
-              WorkingDirectory = stateDir;
-            }
-            // projectHardening
-            // lib.optionalAttrs (projectSecrets != { }) {
-              LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
-            };
-          };
-
-          "${unitName}-health-recovery" =
-            lib.mkIf (isProject && isService && cfg.project.healthRecovery.enable)
-              {
-                description = "Recover unhealthy Project Release '${name}'";
-                after = [ "${unitName}.service" ];
-                serviceConfig = {
-                  Type = "oneshot";
-                  ExecCondition = projectArtifactConditionScript;
-                  ExecStart = projectHealthRecoveryScript;
-                  TimeoutStartSec = "${toString (cfg.health.startupTimeoutSec + 10)}s";
-                };
+            ${updateUnitName} = {
+              description = "Update app deployment '${name}'";
+              after = [ "network-online.target" ] ++ projectContainerUnits;
+              wants = [ "network-online.target" ] ++ projectContainerUnits;
+              serviceConfig = {
+                Type = "oneshot";
+                ExecStart = updateScript;
               };
-        };
+            };
+
+            ${activationUnitName} = lib.mkIf (projectActivationExecutable != null) {
+              description = "Activate Project Release '${name}'";
+              after = projectContainerUnits;
+              wants = projectContainerUnits;
+              serviceConfig = {
+                Type = "oneshot";
+                ExecStart = activationScript;
+                User = userName;
+                Group = userName;
+                WorkingDirectory = stateDir;
+              }
+              // projectHardening
+              // lib.optionalAttrs (projectSecrets != { }) {
+                LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
+              };
+            };
+
+            "${unitName}-health-recovery" =
+              lib.mkIf (isProject && isService && cfg.project.healthRecovery.enable)
+                {
+                  description = "Recover unhealthy Project Release '${name}'";
+                  after = [ "${unitName}.service" ];
+                  serviceConfig = {
+                    Type = "oneshot";
+                    ExecCondition = projectArtifactConditionScript;
+                    ExecStart = projectHealthRecoveryScript;
+                    TimeoutStartSec = "${toString (cfg.health.startupTimeoutSec + 10)}s";
+                  };
+                };
+          };
 
         systemd.timers =
           lib.optionalAttrs cfg.autoUpdate.enable {

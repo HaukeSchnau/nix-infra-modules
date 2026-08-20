@@ -50,6 +50,9 @@ realization is placed:
   },
   "release": {
     "action": "web",
+    "preDeployTasks": {
+      "migrate": { "timeoutSec": 300 }
+    },
     "activationExecutable": "activate-release",
     "stateDirectories": ["data"],
     "ingress": {
@@ -96,8 +99,8 @@ it explicitly whenever a repository uses another name.
 Secrets and parameters use semantic names containing letters, digits,
 underscores, dots, or hyphens. Parameter types are `string`, `boolean`,
 `integer`, and `number`. A parameter with a default is optional unless
-explicitly marked required. Workload, preparation, and maintenance-job Secret
-references must name declarations at the descriptor root.
+explicitly marked required. Workload, preparation, pre-deploy task, and
+maintenance-job Secret references must name declarations at the descriptor root.
 
 Development contains a preparation action, acyclic Workload dependency graph,
 and HTTP or TCP Endpoints with health policy. HTTP health defaults to path `/`;
@@ -110,7 +113,10 @@ without repeated client cancellations. Release retains the five-second timeout
 and two-second interval. Release contains
 backend/package/executable, health policy, safe relative state directories,
 structured ingress, maintenance-job action declarations, an optional activation
-executable, and explicitly approved digest-pinned OCI auxiliaries. Ingress
+executable, a schema v2 pre-deploy task graph, and explicitly approved
+digest-pinned OCI auxiliaries. Pre-deploy tasks default their action to their
+name and their timeout to 900 seconds. Dependencies must reference other
+pre-deploy tasks and form an acyclic graph. Ingress
 supports compression, request-body limits, response headers, redirects, and
 Cache-Control rules; it never accepts raw proxy configuration.
 

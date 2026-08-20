@@ -61,7 +61,8 @@ packages.projectRelease = release.package;
 
 The default action comes from `release.action`; an explicitly passed
 `defaultAction` must agree. Maintenance actions must exactly match the
-descriptor. `activation` must be present exactly when the descriptor declares
+descriptor. Schema v2 pre-deploy task actions must also have implementations.
+`activation` must be present exactly when the descriptor declares
 `activationExecutable`. The service artifact contains the dispatcher, payloads,
 optional activation wrapper, and the byte-for-byte repository descriptor at
 `share/project/descriptor.json`.

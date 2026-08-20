@@ -43,6 +43,16 @@
   },
   "release": {
     "action": "serve",
+    "preDeployTasks": {
+      "prepare-schema": {
+        "action": "prepare-release"
+      },
+      "migrate": {
+        "dependsOn": ["prepare-schema"],
+        "secrets": ["token"],
+        "timeoutSec": 300
+      }
+    },
     "ociAuxiliaries": {
       "database": {
         "image": "postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

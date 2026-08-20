@@ -232,7 +232,9 @@ rec {
       effectiveDefaultAction = if defaultAction == null then release.action else defaultAction;
       normalizedActions = normalizeActions actions;
       expectedActions = lib.unique (
-        [ effectiveDefaultAction ] ++ map (job: job.action) (lib.attrValues release.maintenanceJobs)
+        [ effectiveDefaultAction ]
+        ++ map (task: task.action) (lib.attrValues release.preDeployTasks)
+        ++ map (job: job.action) (lib.attrValues release.maintenanceJobs)
       );
       checkedActions =
         requireExactActions "mkServiceRelease.actions" expectedActions

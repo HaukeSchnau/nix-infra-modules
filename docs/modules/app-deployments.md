@@ -123,6 +123,17 @@ against the newer interface. The manifest is readable by the isolated service
 user but contains only Secret names; values remain exclusively in systemd's
 credential directory.
 
+Schema v2 service Releases may declare `preDeployTasks`. The updater runs their
+acyclic dependency graph from a GC-rooted candidate artifact and candidate
+Runtime Context before it changes `current`. Each task has its own timeout and
+receives only its declared systemd credentials. A failed task leaves the active
+artifact, Runtime Context, and service untouched.
+
+Pre-deploy tasks must be idempotent and backward-compatible with the active
+service. The updater does not reverse a successful task if later activation or
+HTTP health fails. Database migrations should use expand-and-contract changes
+instead of destructive changes that require the new process immediately.
+
 An optional `activationExecutable` is run once when a different store output is
 cut over, before the service starts and with the same manifest and credentials.
 It is not part of ordinary process startup. Failed activation or health checks

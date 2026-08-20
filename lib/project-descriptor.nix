@@ -156,7 +156,7 @@ let
           )
       );
 
-  graphIsAcyclic =
+  graphTraversal =
     workloads:
     let
       visit =
@@ -194,7 +194,11 @@ let
         visited = [ ];
       } (builtins.attrNames workloads);
     in
-    result.valid;
+    result;
+
+  graphIsAcyclic = workloads: (graphTraversal workloads).valid;
+
+  graphOrder = workloads: (graphTraversal workloads).visited;
 
   normalizeDevelopment =
     schemaVersion: secrets: value:
@@ -482,6 +486,36 @@ let
       )
     );
 
+  normalizePreDeployTask =
+    secrets: name: value:
+    let
+      context = "release.preDeployTasks.${name}";
+      checkedName = checkName context name;
+      attrs = ensure context (isAttrs value) "must be an attribute set" value;
+      checked = checkKeys context [
+        "action"
+        "dependsOn"
+        "secrets"
+        "timeoutSec"
+      ] attrs;
+      action = checked.action or name;
+      dependsOn = checkStringList "${context}.dependsOn" (checked.dependsOn or [ ]);
+      secretNames = checkStringList "${context}.secrets" (checked.secrets or [ ]);
+      timeoutSec = checked.timeoutSec or 900;
+    in
+    builtins.seq checkedName (
+      ensure context (isString action && action != "") "action must be a non-empty string" (
+        ensure context (isInt timeoutSec && timeoutSec > 0) "timeoutSec must be a positive integer" (
+          ensure context (lib.all (secret: builtins.hasAttr secret secrets) secretNames)
+            "Secrets must reference declared names"
+            {
+              inherit action dependsOn timeoutSec;
+              secrets = secretNames;
+            }
+        )
+      )
+    );
+
   normalizeOci =
     name: value:
     let
@@ -535,7 +569,7 @@ let
     );
 
   normalizeRelease =
-    secrets: value:
+    schemaVersion: secrets: value:
     let
       context = "release";
       attrs = ensure context (isAttrs value) "must be an attribute set" value;
@@ -549,6 +583,7 @@ let
         "maintenanceJobs"
         "ociAuxiliaries"
         "package"
+        "preDeployTasks"
         "stateDirectories"
       ] attrs;
       backend = checked.backend or "service";
@@ -559,6 +594,10 @@ let
       activationExecutable = checked.activationExecutable or null;
       stateDirectories = checked.stateDirectories or [ ];
       maintenanceJobs = lib.mapAttrs (normalizeJob secrets) (checked.maintenanceJobs or { });
+      preDeployTasks = lib.mapAttrs (normalizePreDeployTask secrets) (checked.preDeployTasks or { });
+      preDeployReferencesValid = lib.all (
+        task: lib.all (dependency: builtins.hasAttr dependency preDeployTasks) task.dependsOn
+      ) (builtins.attrValues preDeployTasks);
       validRelative =
         path:
         isString path
@@ -603,23 +642,36 @@ let
                           (
                             ensure context (backend == "service" || maintenanceJobs == { })
                               "maintenanceJobs require the service backend"
-                              {
-                                inherit action;
-                                inherit
-                                  activationExecutable
-                                  backend
-                                  executable
-                                  maintenanceJobs
-                                  package
-                                  stateDirectories
-                                  ;
-                                health = normalizeHealth {
-                                  context = "release.health";
-                                  value = checked.health or { };
-                                };
-                                ingress = normalizeIngress (checked.ingress or { });
-                                ociAuxiliaries = lib.mapAttrs normalizeOci (checked.ociAuxiliaries or { });
-                              }
+                              (
+                                ensure context (backend == "service" || preDeployTasks == { })
+                                  "preDeployTasks require the service backend"
+                                  (
+                                    ensure context (schemaVersion == 2 || preDeployTasks == { })
+                                      "preDeployTasks require schemaVersion 2"
+                                      (
+                                        ensure context preDeployReferencesValid "preDeployTask dependencies must reference declared tasks" (
+                                          ensure context (graphIsAcyclic preDeployTasks) "preDeployTask dependency graph must be acyclic" {
+                                            inherit action;
+                                            inherit
+                                              activationExecutable
+                                              backend
+                                              executable
+                                              maintenanceJobs
+                                              package
+                                              preDeployTasks
+                                              stateDirectories
+                                              ;
+                                            health = normalizeHealth {
+                                              context = "release.health";
+                                              value = checked.health or { };
+                                            };
+                                            ingress = normalizeIngress (checked.ingress or { });
+                                            ociAuxiliaries = lib.mapAttrs normalizeOci (checked.ociAuxiliaries or { });
+                                          }
+                                        )
+                                      )
+                                  )
+                              )
                           )
                       )
                   )
@@ -662,7 +714,7 @@ let
             null;
         release =
           if checked ? release && checked.release != null then
-            normalizeRelease secrets checked.release
+            normalizeRelease schemaVersion secrets checked.release
           else
             null;
       };
@@ -874,4 +926,5 @@ in
     releaseApp
     resolveParameters
     ;
+  releaseTaskOrder = release: graphOrder release.preDeployTasks;
 }
