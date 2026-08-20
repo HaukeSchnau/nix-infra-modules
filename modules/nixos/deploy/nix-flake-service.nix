@@ -28,6 +28,11 @@ let
     stateDirs = [ ];
     preStart = "";
     serviceConfig = { };
+    unitDependencies = {
+      after = [ ];
+      wants = [ ];
+      requires = [ ];
+    };
     project = null;
     static.extraConfig = "";
     source = {
@@ -92,6 +97,11 @@ let
   projectContainerUnits = map (
     auxiliaryName: "${ociBackend}-${projectContainerName auxiliaryName}.service"
   ) (builtins.attrNames projectAuxiliaries);
+  externalAfterUnits = lib.unique (
+    cfg.unitDependencies.after ++ cfg.unitDependencies.wants ++ cfg.unitDependencies.requires
+  );
+  externalWantedUnits = lib.unique cfg.unitDependencies.wants;
+  externalRequiredUnits = lib.unique cfg.unitDependencies.requires;
   auxiliaryRuntimeEndpoints = lib.listToAttrs (
     lib.concatLists (
       lib.mapAttrsToList (
@@ -719,8 +729,9 @@ let
     in
     lib.nameValuePair "${unitName}-pre-deploy-${taskName}" {
       description = "Run Project pre-deploy task '${name}/${taskName}'";
-      after = [ "network-online.target" ] ++ projectContainerUnits;
-      wants = [ "network-online.target" ] ++ projectContainerUnits;
+      after = [ "network-online.target" ] ++ projectContainerUnits ++ externalAfterUnits;
+      wants = [ "network-online.target" ] ++ projectContainerUnits ++ externalWantedUnits;
+      requires = externalRequiredUnits;
       serviceConfig = {
         Type = "oneshot";
         ExecStart = projectPreDeployTaskScripts.${taskName};
@@ -759,8 +770,9 @@ let
     jobName: policy:
     lib.nameValuePair "${unitName}-job-${jobName}" {
       description = "Run Project Release job '${name}/${jobName}'";
-      after = [ "network-online.target" ] ++ projectContainerUnits;
-      wants = [ "network-online.target" ] ++ projectContainerUnits;
+      after = [ "network-online.target" ] ++ projectContainerUnits ++ externalAfterUnits;
+      wants = [ "network-online.target" ] ++ projectContainerUnits ++ externalWantedUnits;
+      requires = externalRequiredUnits;
       serviceConfig = {
         Type = "oneshot";
         ExecCondition = projectArtifactConditionScript;
@@ -895,8 +907,9 @@ let
           // {
             ${unitName} = lib.mkIf isService {
               description = "App deployment '${name}'";
-              after = [ "network-online.target" ] ++ projectContainerUnits;
-              wants = [ "network-online.target" ] ++ projectContainerUnits;
+              after = [ "network-online.target" ] ++ projectContainerUnits ++ externalAfterUnits;
+              wants = [ "network-online.target" ] ++ projectContainerUnits ++ externalWantedUnits;
+              requires = externalRequiredUnits;
               environment =
                 (
                   if isProject then
@@ -934,8 +947,9 @@ let
 
             ${updateUnitName} = {
               description = "Update app deployment '${name}'";
-              after = [ "network-online.target" ] ++ projectContainerUnits;
-              wants = [ "network-online.target" ] ++ projectContainerUnits;
+              after = [ "network-online.target" ] ++ projectContainerUnits ++ externalAfterUnits;
+              wants = [ "network-online.target" ] ++ projectContainerUnits ++ externalWantedUnits;
+              requires = externalRequiredUnits;
               serviceConfig = {
                 Type = "oneshot";
                 ExecStart = updateScript;
@@ -944,8 +958,9 @@ let
 
             ${activationUnitName} = lib.mkIf (projectActivationExecutable != null) {
               description = "Activate Project Release '${name}'";
-              after = projectContainerUnits;
-              wants = projectContainerUnits;
+              after = projectContainerUnits ++ externalAfterUnits;
+              wants = projectContainerUnits ++ externalWantedUnits;
+              requires = externalRequiredUnits;
               serviceConfig = {
                 Type = "oneshot";
                 ExecStart = activationScript;

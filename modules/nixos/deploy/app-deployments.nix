@@ -108,6 +108,26 @@ let
           description = "Additional systemd service settings for the application.";
         };
 
+        unitDependencies = {
+          after = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = "Host units ordered before every deployment action.";
+          };
+
+          wants = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = "Host units weakly required and ordered before every deployment action.";
+          };
+
+          requires = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = "Host units strongly required and ordered before every deployment action.";
+          };
+        };
+
         project = lib.mkOption {
           default = null;
           description = ''

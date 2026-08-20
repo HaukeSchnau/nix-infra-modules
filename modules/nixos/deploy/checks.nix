@@ -282,7 +282,13 @@ let
     {
       vps.services.appDeployments = {
         enable = true;
-        apps.demo-project = pairedProjectApp;
+        apps.demo-project = pairedProjectApp // {
+          unitDependencies = {
+            after = [ "prepared.service" ];
+            wants = [ "collector.service" ];
+            requires = [ "database.service" ];
+          };
+        };
       };
       vps.appDeployments.webhook.enable = false;
     }
@@ -407,7 +413,7 @@ let
           };
       };
       preDeploy = {
-        inherit (pairedProjectPreDeployService) after wants;
+        inherit (pairedProjectPreDeployService) after requires wants;
         inherit (pairedProjectPreDeployService.serviceConfig)
           LoadCredential
           NoNewPrivileges
@@ -710,6 +716,11 @@ in
       and .preDeploy.TimeoutStartSec == "120s"
       and (.preDeploy.LoadCredential | index("betterAuthSecret:/run/secrets/demo-better-auth"))
       and (.preDeploy.after | index("podman-project-demo-project-database.service"))
+      and (.preDeploy.after | index("prepared.service"))
+      and (.preDeploy.after | index("collector.service"))
+      and (.preDeploy.after | index("database.service"))
+      and (.preDeploy.wants | index("collector.service"))
+      and (.preDeploy.requires | index("database.service"))
       and (.staticCaddy.extraConfig | contains("@project_metadata path /share/project/*"))
       and (.staticCaddy.extraConfig | contains("respond @project_metadata 404"))
       and (.tmpfiles | map(contains("/runtime/data")) | any)

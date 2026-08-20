@@ -134,6 +134,11 @@ service. The updater does not reverse a successful task if later activation or
 HTTP health fails. Database migrations should use expand-and-contract changes
 instead of destructive changes that require the new process immediately.
 
+Host-managed dependencies belong in `unitDependencies`. `after`, `wants`, and
+`requires` are applied consistently to the updater, pre-deploy tasks, service,
+activation, and maintenance actions. Wanted and required units are also ordered
+before those actions; callers do not need to repeat them in `after`.
+
 An optional `activationExecutable` is run once when a different store output is
 cut over, before the service starts and with the same manifest and credentials.
 It is not part of ordinary process startup. Failed activation or health checks
