@@ -696,47 +696,49 @@ let
                 '.preDeployTasks[$task].secrets[] as $secret | select($bindings[0] | has($secret)) | [$secret, $bindings[0][$secret]] | @tsv' \
                 "$candidate_release_plan"
             )
-            systemd-run \
-              --quiet \
-              --wait \
-              --collect \
-              --pipe \
-              --unit="${unitName}-pre-deploy-$task" \
-              --service-type=oneshot \
-              --uid=${lib.escapeShellArg userName} \
-              --gid=${lib.escapeShellArg userName} \
-              --working-directory=${lib.escapeShellArg stateDir} \
-              --property="TimeoutStartSec=''${timeout}s" \
-              --property=CapabilityBoundingSet= \
-              --property=LockPersonality=true \
-              --property=NoNewPrivileges=true \
-              --property=PrivateDevices=true \
-              --property=PrivateTmp=true \
-              --property=ProtectClock=true \
-              --property=ProtectControlGroups=true \
-              --property=ProtectHome=true \
-              --property=ProtectKernelLogs=true \
-              --property=ProtectKernelModules=true \
-              --property=ProtectKernelTunables=true \
-              --property=ProtectSystem=strict \
-              --property=ReadWritePaths=${lib.escapeShellArg runtimeDir} \
-              --property=RemoveIPC=true \
-              --property="RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX" \
-              --property=RestrictRealtime=true \
-              --property=RestrictSUIDSGID=true \
-              --property=SystemCallArchitectures=native \
-              --property=TimeoutStopSec=30s \
-              --property=UMask=0027 \
+            systemd_run_args=(
+              --quiet
+              --wait
+              --collect
+              --pipe
+              --unit="${unitName}-pre-deploy-$task"
+              --service-type=oneshot
+              --uid=${lib.escapeShellArg userName}
+              --gid=${lib.escapeShellArg userName}
+              --working-directory=${lib.escapeShellArg stateDir}
+              --property="TimeoutStartSec=''${timeout}s"
+              --property=CapabilityBoundingSet=
+              --property=LockPersonality=true
+              --property=NoNewPrivileges=true
+              --property=PrivateDevices=true
+              --property=PrivateTmp=true
+              --property=ProtectClock=true
+              --property=ProtectControlGroups=true
+              --property=ProtectHome=true
+              --property=ProtectKernelLogs=true
+              --property=ProtectKernelModules=true
+              --property=ProtectKernelTunables=true
+              --property=ProtectSystem=strict
+              --property=ReadWritePaths=${lib.escapeShellArg runtimeDir}
+              --property=RemoveIPC=true
+              --property="RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX"
+              --property=RestrictRealtime=true
+              --property=RestrictSUIDSGID=true
+              --property=SystemCallArchitectures=native
+              --property=TimeoutStopSec=30s
+              --property=UMask=0027
               ${lib.optionalString (
                 projectMemory.high != null
-              ) "--property=MemoryHigh=${lib.escapeShellArg projectMemory.high} \\"}
+              ) "--property=MemoryHigh=${lib.escapeShellArg projectMemory.high}"}
               ${lib.optionalString (
                 projectMemory.max != null
-              ) "--property=MemoryMax=${lib.escapeShellArg projectMemory.max} \\"}
+              ) "--property=MemoryMax=${lib.escapeShellArg projectMemory.max}"}
               ${lib.optionalString (
                 projectMemory.swapMax != null
-              ) "--property=MemorySwapMax=${lib.escapeShellArg projectMemory.swapMax} \\"}
-              "''${credential_args[@]}" \
+              ) "--property=MemorySwapMax=${lib.escapeShellArg projectMemory.swapMax}"}
+            )
+            systemd_run_args+=("''${credential_args[@]}")
+            systemd-run "''${systemd_run_args[@]}" \
               ${projectPreDeployTaskScript} "$task"
           done
         fi

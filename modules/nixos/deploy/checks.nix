@@ -750,6 +750,8 @@ in
     grep -Fq '/candidate-project-runtime.json' ${pairedProjectUpdateScript}
     grep -Fq '/candidate-release-plan.json' ${pairedProjectUpdateScript}
     grep -Fq 'systemd-run' ${pairedProjectUpdateScript}
+    grep -Fq 'systemd_run_args=(' ${pairedProjectUpdateScript}
+    grep -Fq 'systemd-run "''${systemd_run_args[@]}"' ${pairedProjectUpdateScript}
     grep -Fq -- '--property=LoadCredential=$secret:$path' ${pairedProjectUpdateScript}
     grep -Fq -- '--property=NoNewPrivileges=true' ${pairedProjectUpdateScript}
     grep -Fq '.preDeployOrder[]' ${pairedProjectUpdateScript}
