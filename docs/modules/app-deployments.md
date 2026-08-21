@@ -108,11 +108,12 @@ values must match the candidate type. Extra host bindings are retained so infra
 can land before the repository change and old releases remain roll-backable.
 
 Fields compiled into NixOS topology remain compatibility-sensitive: backend,
-action/executable, activation, state directories, ingress, selected maintenance
-jobs, and OCI auxiliaries. Health policy and pre-deploy tasks are resolved from
-each candidate into an immutable Release plan. Compatible changes to those
-fields therefore deploy without a NixOS switch. An incompatible candidate
-remains queued while the active release continues serving traffic.
+action/executable, state directories, ingress, the host-selected maintenance
+job names, and OCI auxiliaries. Health policy, pre-deploy tasks, activation,
+and the definitions of selected maintenance jobs are resolved from each
+candidate into an immutable Release plan. Compatible changes to those fields
+therefore deploy without a NixOS switch. An incompatible candidate remains
+queued while the active release continues serving traffic.
 
 With `delivery.mode = "cache"`, CI builds and verifies the Release, waits for
 its output in the configured binary cache, and posts both the commit revision
@@ -165,11 +166,13 @@ Host-managed dependencies belong in `unitDependencies`. `after`, `wants`, and
 activation, and maintenance actions. Wanted and required units are also ordered
 before those actions; callers do not need to repeat them in `after`.
 
-An optional `activationExecutable` is run once when a different store output is
-cut over, before the service starts and with the same manifest and credentials.
-It is not part of ordinary process startup. Failed activation or health checks
-restore the previous output; when activation changed persistent state, the
-previous activation executable is run again as part of rollback.
+An optional `activationExecutable` is resolved from the candidate Release plan
+and run once when a different store output is cut over, before the service
+starts and with the same manifest and credentials. A repository may add,
+remove, or replace it without a NixOS switch. It is not part of ordinary
+process startup. Failed activation or health checks restore the previous
+output; when activation changed persistent state, the previous Release plan's
+activation executable is run again as part of rollback.
 
 Project service units receive conservative systemd hardening and periodic
 health recovery. Forwarded HTTPS headers and the health-check Host header are
@@ -187,11 +190,14 @@ may set `randomizedDelaySec` and `persistent`. Project update, recovery, and
 interval-job timers deliberately use activation-relative delays, so adding or
 changing a Project on an already-running host never starts repository builds or
 maintenance work inside a NixOS switch.
-The generated one-shot invokes the same Release executable with the descriptor
-action as its single argument and reuses the exact runtime manifest,
-credentials, user, hardening, memory policy, and auxiliary ordering. Maintenance
-actions always run at low CPU and IO priority (`Nice=10`, idle IO scheduling);
-raw systemd overrides are not part of the Project job interface.
+The generated one-shot reads the current action from the active Release plan,
+then invokes the same Release executable with that action as its single
+argument. A repository may change the action or its Secret requirements while
+the host keeps the job's schedule. Removing a host-selected job is
+incompatible. The unit reuses the exact runtime manifest, host-bound
+credentials, user, hardening, memory policy, and auxiliary ordering.
+Maintenance actions always run at low CPU and IO priority (`Nice=10`, idle IO
+scheduling); raw systemd overrides are not part of the Project job interface.
 
 Legacy declarations keep their existing environment, ports, raw Caddy
 configuration, systemd overrides, update timer, exact-revision webhook,

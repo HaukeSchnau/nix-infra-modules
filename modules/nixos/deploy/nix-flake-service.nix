@@ -89,6 +89,7 @@ let
   runtimeDir = "${stateDir}/runtime";
   needsRuntimeUser =
     isService || (isProject && (projectActivationExecutable != null || projectJobs != { }));
+  runsProjectActivation = isProject && (isService || projectActivationExecutable != null);
   ociBackend = config.virtualisation.oci-containers.backend;
   projectContainerName = auxiliaryName: "project-${name}-${auxiliaryName}";
   projectContainerUnits = map (
@@ -629,12 +630,11 @@ let
       mv -f "$candidate_runtime_manifest.next" "$candidate_runtime_manifest"
       chmod 0644 "$candidate_release_plan.next"
       mv -f "$candidate_release_plan.next" "$candidate_release_plan"
-      ${lib.optionalString (projectActivationExecutable != null) ''
-        if [ ! -x "$new_store_path/bin/${projectActivationExecutable}" ]; then
-          echo "app-deployment/${name}: missing activation executable $new_store_path/bin/${projectActivationExecutable}" >&2
+      candidate_activation_executable="$(jq -r '.activationExecutable // empty' "$candidate_release_plan")"
+      if [ -n "$candidate_activation_executable" ] && [ ! -x "$new_store_path/bin/$candidate_activation_executable" ]; then
+          echo "app-deployment/${name}: missing activation executable $new_store_path/bin/$candidate_activation_executable" >&2
           exit 1
-        fi
-      ''}
+      fi
     ''}
     ${
       if isService then
@@ -778,7 +778,7 @@ let
     printf '%s\n' "$resolved_revision" > "$current_revision_file"
     sync_gcroots
 
-    ${lib.optionalString (projectActivationExecutable != null) ''
+    ${lib.optionalString runsProjectActivation ''
       if [ "$new_store_path" != "$old_store_path" ]; then
         ${lib.optionalString isService "systemctl stop ${lib.escapeShellArg "${unitName}.service"}"}
         if ! systemctl start ${lib.escapeShellArg "${activationUnitName}.service"}; then
@@ -837,7 +837,7 @@ let
     if [ -n "$old_store_path" ]; then
       echo "app-deployment/${name}: health failed, rolling back to $old_store_path" >&2
       ${lib.optionalString (
-        isService && projectActivationExecutable != null
+        isService && runsProjectActivation
       ) "systemctl stop ${lib.escapeShellArg "${unitName}.service"}"}
       ln -sfn "$old_store_path" "$current_link.next"
       mv -Tf "$current_link.next" "$current_link"
@@ -859,7 +859,7 @@ let
         cp "$previous_revision_file" "$current_revision_file"
       fi
       sync_gcroots
-      ${lib.optionalString (projectActivationExecutable != null) ''
+      ${lib.optionalString runsProjectActivation ''
         if ! systemctl start ${lib.escapeShellArg "${activationUnitName}.service"}; then
           echo "app-deployment/${name}: rollback activation failed" >&2
         fi
@@ -904,7 +904,7 @@ let
     descriptor="$current/share/project/descriptor.json"
     runtime=${lib.escapeShellArg deployedProjectRuntimeManifest}
     plan=${lib.escapeShellArg deployedProjectReleasePlan}
-    if [ -f "$plan" ] || [ ! -f "$descriptor" ] || [ ! -f "$runtime" ]; then
+    if [ ! -f "$descriptor" ] || [ ! -f "$runtime" ]; then
       exit 0
     fi
 
@@ -966,8 +966,8 @@ let
     set -euo pipefail
 
     current=${lib.escapeShellArg stateDir}/current
-    descriptor="$current/share/project/descriptor.json"
-    activation_executable="$(${pkgs.jq}/bin/jq -r '.release.activationExecutable // empty' "$descriptor")"
+    release_plan=${lib.escapeShellArg deployedProjectReleasePlan}
+    activation_executable="$(${pkgs.jq}/bin/jq -r '.activationExecutable // empty' "$release_plan")"
     if [ -z "$activation_executable" ]; then
       exit 0
     fi
@@ -1001,31 +1001,36 @@ let
   '';
   projectJobScripts = lib.mapAttrs (
     jobName: _policy:
-    let
-      action = projectRelease.maintenanceJobs.${jobName}.action;
-    in
     pkgs.writeShellScript "app-deployment-${name}-job-${jobName}" ''
       set -euo pipefail
 
       current=${lib.escapeShellArg stateDir}/current
+      release_plan=${lib.escapeShellArg deployedProjectReleasePlan}
       executable="$current/bin/${cfg.executable}"
-      if [ ! -x "$executable" ]; then
+      if [ ! -x "$executable" ] || [ ! -f "$release_plan" ]; then
         echo "app-deployment/${name}: no deployed Release executable at $executable" >&2
         exit 1
       fi
 
+      job=${lib.escapeShellArg jobName}
+      action="$(${pkgs.jq}/bin/jq -er --arg job "$job" '.maintenanceJobs[$job].action' "$release_plan")"
       export PROJECT_RUNTIME_FILE=${lib.escapeShellArg deployedProjectRuntimeManifest}
       export PROJECT_SECRETS_DIR="''${CREDENTIALS_DIRECTORY:-${runtimeDir}/secrets}"
-      exec "$executable" ${lib.escapeShellArg action}
+      exec "$executable" "$action"
     ''
   ) projectJobs;
   projectJobServices = lib.mapAttrs' (
     jobName: policy:
     lib.nameValuePair "${unitName}-job-${jobName}" {
       description = "Run Project Release job '${name}/${jobName}'";
-      after = [ "network-online.target" ] ++ projectContainerUnits ++ externalAfterUnits;
+      after = [
+        "network-online.target"
+        "${unitName}-release-plan.service"
+      ]
+      ++ projectContainerUnits
+      ++ externalAfterUnits;
       wants = [ "network-online.target" ] ++ projectContainerUnits ++ externalWantedUnits;
-      requires = externalRequiredUnits;
+      requires = [ "${unitName}-release-plan.service" ] ++ externalRequiredUnits;
       serviceConfig = {
         Type = "oneshot";
         ExecCondition = projectArtifactConditionScript;
@@ -1216,11 +1221,11 @@ let
             };
           };
 
-          ${activationUnitName} = lib.mkIf (projectActivationExecutable != null) {
+          ${activationUnitName} = lib.mkIf runsProjectActivation {
             description = "Activate Project Release '${name}'";
-            after = projectContainerUnits ++ externalAfterUnits;
+            after = [ "${unitName}-release-plan.service" ] ++ projectContainerUnits ++ externalAfterUnits;
             wants = projectContainerUnits ++ externalWantedUnits;
-            requires = externalRequiredUnits;
+            requires = [ "${unitName}-release-plan.service" ] ++ externalRequiredUnits;
             serviceConfig = {
               Type = "oneshot";
               ExecStart = activationScript;
@@ -1235,7 +1240,7 @@ let
           };
 
           "${unitName}-release-plan" = lib.mkIf (isProject && isService) {
-            description = "Bootstrap the active Project Release plan for '${name}'";
+            description = "Reconcile the active Project Release plan for '${name}'";
             before = [ "${unitName}.service" ];
             serviceConfig = {
               Type = "oneshot";

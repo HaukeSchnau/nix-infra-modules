@@ -300,6 +300,20 @@ let
       vps.appDeployments.webhook.enable = false;
     }
   ];
+  noActivationProjectSystem = mkFleetSystem "no-activation-project-01" [
+    {
+      vps.services.appDeployments = {
+        enable = true;
+        apps.demo-project = self.lib.projectDescriptor.releaseApp {
+          descriptor = pairedProjectDescriptor // {
+            release = builtins.removeAttrs pairedProjectDescriptor.release [ "activationExecutable" ];
+          };
+          policy = projectPolicy;
+        };
+      };
+      vps.appDeployments.webhook.enable = false;
+    }
+  ];
   projectService = projectSystem.config.systemd.services.app-deployment-demo-project;
   projectActivationService =
     projectSystem.config.systemd.services.app-deployment-demo-project-activate;
@@ -507,6 +521,33 @@ let
       }
     )
   );
+  changedActionsCandidate = pkgs.writeText "project-release-changed-actions-candidate.json" (
+    builtins.toJSON (
+      pairedProjectDescriptor
+      // {
+        secrets = pairedProjectDescriptor.secrets // {
+          futureSecret.description = "Used by the new maintenance implementation.";
+        };
+        release = pairedProjectDescriptor.release // {
+          activationExecutable = "activate-v2";
+          maintenanceJobs.cleanup = {
+            action = "prune";
+            secrets = [ "futureSecret" ];
+          };
+        };
+      }
+    )
+  );
+  missingManagedJobCandidate = pkgs.writeText "project-release-missing-managed-job-candidate.json" (
+    builtins.toJSON (
+      pairedProjectDescriptor
+      // {
+        release = pairedProjectDescriptor.release // {
+          maintenanceJobs = { };
+        };
+      }
+    )
+  );
 in
 {
   app-deployments-contract = pkgs.runCommand "app-deployments-contract" { } ''
@@ -679,6 +720,14 @@ in
     ${pkgs.bash}/bin/bash -n ${projectJobScript}
     ${pkgs.bash}/bin/bash -n ${projectReleasePlanService.serviceConfig.ExecStart}
     grep -Fq 'share/project/descriptor.json' ${projectUpdateScript}
+    test '${
+      if
+        builtins.hasAttr "app-deployment-demo-project-activate" noActivationProjectSystem.config.systemd.services
+      then
+        "present"
+      else
+        "absent"
+    }' = present
     grep -Fq 'current_descriptor_matches' ${projectUpdateScript}
     grep -Fq -- '-diffutils-' ${projectUpdateScript}
     grep -Fq 'project-release-compatibility.jq' ${projectUpdateScript}
@@ -694,8 +743,10 @@ in
     grep -Fq '/release-plan.json' ${projectReleasePlanService.serviceConfig.ExecStart}
     grep -Fq '.releasePlan' ${projectReleasePlanService.serviceConfig.ExecStart}
     ! grep -Fq 'activate-release' ${projectStartScript}
-    grep -Fq '.release.activationExecutable // empty' ${projectActivationScript}
-    grep -Fq ' cleanup' ${projectJobScript}
+    grep -Fq '.activationExecutable // empty' ${projectActivationScript}
+    grep -Fq '.maintenanceJobs[$job].action' ${projectJobScript}
+    ! grep -Fq 'activate-release' ${projectActivationScript}
+    ! grep -Fq 'exec "$executable" cleanup' ${projectJobScript}
     grep -Fq '/candidate-project-runtime.json' ${pairedProjectUpdateScript}
     grep -Fq '/candidate-release-plan.json' ${pairedProjectUpdateScript}
     grep -Fq 'systemd-run' ${pairedProjectUpdateScript}
@@ -758,6 +809,20 @@ in
       and .releasePlan.preDeployTasks.migrate.timeoutSec == 120
       and .releasePlan.preDeployTasks.warmup.action == "warm-cache"
     ' health.json >/dev/null
+    compatibility ${changedActionsCandidate} > actions.json
+    ${pkgs.jq}/bin/jq -e '
+      .compatible
+      and .releasePlan.activationExecutable == "activate-v2"
+      and .releasePlan.maintenanceJobs.cleanup.action == "prune"
+      and .releasePlan.maintenanceJobs.cleanup.secrets == ["futureSecret"]
+      and (.candidateContract.release | has("activationExecutable") | not)
+      and (.candidateContract.release | has("maintenanceJobs") | not)
+    ' actions.json >/dev/null
+    compatibility ${missingManagedJobCandidate} > missing-job.json
+    ${pkgs.jq}/bin/jq -e '
+      (.compatible | not)
+      and (.reasons | index("host-managed maintenance job is not declared by the candidate: cleanup"))
+    ' missing-job.json >/dev/null
     ${pkgs.jq}/bin/jq -e '
       .schemaVersion == 1
       and .project == "demo-project"
@@ -808,6 +873,7 @@ in
       and (.releasePlan.before | index("app-deployment-demo-project.service"))
       and .activation.Type == "oneshot"
       and .activation.User == "app-demo-project"
+      and (.activation.after | index("app-deployment-demo-project-release-plan.service"))
       and .updateTimer.OnActiveSec == "2min"
       and .updateTimer.OnUnitActiveSec == "10min"
       and .updateTimer.hasOnBootSec == false
@@ -825,6 +891,7 @@ in
       and .job.Nice == 10
       and .job.IOSchedulingClass == "idle"
       and (.job.condition | endswith("-app-deployment-demo-project-artifact-condition"))
+      and (.job.after | index("app-deployment-demo-project-release-plan.service"))
       and (.job.LoadCredential | index("betterAuthSecret:/run/secrets/demo-better-auth"))
       and .job.timer.OnActiveSec == "15min"
       and .job.timer.OnUnitActiveSec == "1d"

@@ -81,23 +81,23 @@ def normalized_oci:
       }
     );
 
-def release_contract($managed_jobs):
+def release_contract:
   . as $descriptor
   | ($descriptor.release // {}) as $release
   | ($release.backend // "service") as $backend
   | {
       schemaVersion: $descriptor.schemaVersion,
       project: $descriptor.project,
-      release: {
+      release: ({
         backend: $backend,
         action: ($release.action // (if $backend == "service" then "web" else null end)),
         executable: ($release.executable // (if $backend == "service" then "project-release-runtime" else null end)),
-        activationExecutable: ($release.activationExecutable // null),
         stateDirectories: ($release.stateDirectories // []),
         ingress: ($release.ingress | normalized_ingress),
-        maintenanceJobs: ($release.maintenanceJobs | normalized_jobs($managed_jobs)),
         ociAuxiliaries: ($release.ociAuxiliaries | normalized_oci)
-      }
+      } + if $backend == "static" then {
+        activationExecutable: ($release.activationExecutable // null)
+      } else {} end)
     };
 
 def parameter_type_matches($definition; $value):
@@ -110,10 +110,11 @@ def parameter_type_matches($definition; $value):
 
 ($host[0]) as $host_policy
 | ($candidate[0]) as $candidate_descriptor
-| ($host_policy.descriptor | release_contract($host_policy.managedJobs)) as $expected_contract
-| ($candidate_descriptor | release_contract($host_policy.managedJobs)) as $candidate_contract
+| ($host_policy.descriptor | release_contract) as $expected_contract
+| ($candidate_descriptor | release_contract) as $candidate_contract
 | ($candidate_descriptor.release.health | normalized_health) as $health
 | ($candidate_descriptor.release.preDeployTasks | normalized_tasks) as $tasks
+| ($candidate_descriptor.release.maintenanceJobs | normalized_jobs($host_policy.managedJobs)) as $jobs
 | (task_plan($tasks)) as $task_plan
 | [
     $tasks
@@ -133,6 +134,21 @@ def parameter_type_matches($definition; $value):
     | select(($candidate_descriptor.secrets // {}) | has($secret) | not)
     | "pre-deploy task " + $name + " references undeclared Secret: " + $secret
   ] as $missing_task_secrets
+| [
+    $host_policy.managedJobs[]
+    | . as $name
+    | select($jobs | has($name) | not)
+    | "host-managed maintenance job is not declared by the candidate: " + $name
+  ] as $missing_managed_jobs
+| [
+    $jobs
+    | to_entries[]
+    | .key as $name
+    | .value.secrets[]
+    | . as $secret
+    | select(($candidate_descriptor.secrets // {}) | has($secret) | not)
+    | "maintenance job " + $name + " references undeclared Secret: " + $secret
+  ] as $missing_job_secrets
 | reduce (($candidate_descriptor.parameters // {}) | to_entries[]) as $parameter (
     {values: {}, reasons: []};
     ($parameter.value // {}) as $definition
@@ -170,6 +186,8 @@ def parameter_type_matches($definition; $value):
   ]
   + $missing_task_dependencies
   + $missing_task_secrets
+  + $missing_managed_jobs
+  + $missing_job_secrets
   + (if ($task_plan.remaining | length) == 0 then [] else ["pre-deploy task dependency graph contains a cycle"] end)
   + $parameters.reasons
   + $secrets.reasons) as $reasons
@@ -179,7 +197,9 @@ def parameter_type_matches($definition; $value):
     parameters: $parameters.values,
     secrets: $secrets.values,
     releasePlan: {
+      activationExecutable: ($candidate_descriptor.release.activationExecutable // null),
       health: $health,
+      maintenanceJobs: $jobs,
       preDeployTasks: $tasks,
       preDeployOrder: $task_plan.order
     },
