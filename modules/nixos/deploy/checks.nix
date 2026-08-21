@@ -315,9 +315,6 @@ let
     pairedProjectSystem.config.systemd.services.app-deployment-demo-project.serviceConfig.ExecStart;
   pairedProjectUpdateScript =
     pairedProjectSystem.config.systemd.services.app-deployment-demo-project-update.serviceConfig.ExecStart;
-  pairedProjectPreDeployService =
-    pairedProjectSystem.config.systemd.services.app-deployment-demo-project-pre-deploy-migrate;
-  pairedProjectPreDeployScript = pairedProjectPreDeployService.serviceConfig.ExecStart;
   staticProjectDescriptor = {
     schemaVersion = 1;
     project = "static-project";
@@ -419,16 +416,6 @@ let
               ;
           };
       };
-      preDeploy = {
-        inherit (pairedProjectPreDeployService) after requires wants;
-        inherit (pairedProjectPreDeployService.serviceConfig)
-          LoadCredential
-          NoNewPrivileges
-          TimeoutStartSec
-          Type
-          User
-          ;
-      };
       staticCaddy =
         staticProjectSystem.config.vps.services.caddy.virtualHosts."static-project.example.net";
       tmpfiles = builtins.filter (lib.hasInfix "/var/lib/app-deployments/demo-project") projectSystem.config.systemd.tmpfiles.rules;
@@ -487,12 +474,29 @@ let
       }
     )
   );
-  changedTopologyCandidate = pkgs.writeText "project-release-changed-topology-candidate.json" (
+  changedHealthCandidate = pkgs.writeText "project-release-changed-health-candidate.json" (
     builtins.toJSON (
       pairedProjectDescriptor
       // {
         release = pairedProjectDescriptor.release // {
           health.paths = [ "/different" ];
+          preDeployTasks = pairedProjectDescriptor.release.preDeployTasks // {
+            warmup = {
+              action = "warm-cache";
+              dependsOn = [ "migrate" ];
+              timeoutSec = 30;
+            };
+          };
+        };
+      }
+    )
+  );
+  changedTopologyCandidate = pkgs.writeText "project-release-changed-topology-candidate.json" (
+    builtins.toJSON (
+      pairedProjectDescriptor
+      // {
+        release = pairedProjectDescriptor.release // {
+          ingress.compression = true;
         };
       }
     )
@@ -667,7 +671,6 @@ in
     ${pkgs.bash}/bin/bash -n ${projectStartScript}
     ${pkgs.bash}/bin/bash -n ${projectActivationScript}
     ${pkgs.bash}/bin/bash -n ${projectJobScript}
-    ${pkgs.bash}/bin/bash -n ${pairedProjectPreDeployScript}
     grep -Fq 'share/project/descriptor.json' ${projectUpdateScript}
     grep -Fq 'current_descriptor_matches' ${projectUpdateScript}
     grep -Fq -- '-diffutils-' ${projectUpdateScript}
@@ -684,16 +687,19 @@ in
     ! grep -Fq 'activate-release' ${projectStartScript}
     grep -Fq '.release.activationExecutable // empty' ${projectActivationScript}
     grep -Fq ' cleanup' ${projectJobScript}
-    grep -Fq '/candidate-project-runtime.json' ${pairedProjectPreDeployScript}
-    grep -Fq ' migrate' ${pairedProjectPreDeployScript}
-    grep -Fq 'app-deployment-demo-project-pre-deploy-migrate.service' ${pairedProjectUpdateScript}
+    grep -Fq '/candidate-project-runtime.json' ${pairedProjectUpdateScript}
+    grep -Fq '/candidate-release-plan.json' ${pairedProjectUpdateScript}
+    grep -Fq 'systemd-run' ${pairedProjectUpdateScript}
+    grep -Fq -- '--property=LoadCredential=$secret:$path' ${pairedProjectUpdateScript}
+    grep -Fq -- '--property=NoNewPrivileges=true' ${pairedProjectUpdateScript}
+    grep -Fq '.preDeployOrder[]' ${pairedProjectUpdateScript}
     grep -Fq 'cleanup_candidate' ${pairedProjectUpdateScript}
     grep -Fq 'requested-release.json' ${pairedProjectUpdateScript}
     grep -Fq 'nix-store --realise "$requested_store_path"' ${pairedProjectUpdateScript}
     ! grep -Fq 'nix build --no-link' ${pairedProjectUpdateScript}
     ! grep -Fq 'nix flake metadata' ${pairedProjectUpdateScript}
 
-    pre_deploy_line="$(${pkgs.gnugrep}/bin/grep -nF 'systemctl start app-deployment-demo-project-pre-deploy-migrate.service' ${pairedProjectUpdateScript} | cut -d: -f1)"
+    pre_deploy_line="$(${pkgs.gnugrep}/bin/grep -nF 'systemd-run' ${pairedProjectUpdateScript} | cut -d: -f1)"
     cutover_line="$(${pkgs.gnugrep}/bin/grep -nF 'mv -Tf "$current_link.next" "$current_link"' ${pairedProjectUpdateScript} | head -n 1 | cut -d: -f1)"
     test "$pre_deploy_line" -lt "$cutover_line"
 
@@ -734,6 +740,15 @@ in
       (.compatible | not)
       and (.reasons | index("Release topology differs from the host-compatible contract"))
     ' topology.json >/dev/null
+    compatibility ${changedHealthCandidate} > health.json
+    ${pkgs.jq}/bin/jq -e '
+      .compatible
+      and .releasePlan.health.paths == ["/different"]
+      and .releasePlan.preDeployOrder == ["migrate", "warmup"]
+      and .releasePlan.preDeployTasks.migrate.action == "migrate"
+      and .releasePlan.preDeployTasks.migrate.timeoutSec == 120
+      and .releasePlan.preDeployTasks.warmup.action == "warm-cache"
+    ' health.json >/dev/null
     ${pkgs.jq}/bin/jq -e '
       .schemaVersion == 1
       and .project == "demo-project"
@@ -785,7 +800,7 @@ in
       and .updateTimer.OnUnitActiveSec == "10min"
       and .updateTimer.hasOnBootSec == false
       and (.recovery.condition | endswith("-app-deployment-demo-project-artifact-condition"))
-      and .recovery.TimeoutStartSec == "70s"
+      and .recovery.TimeoutStartSec == "infinity"
       and .recoveryTimer.OnActiveSec == "4min"
       and (.caddy.extraConfig | contains("reverse_proxy 127.0.0.1:18200"))
       and (.caddy.extraConfig | contains("redir \"/old\" \"/new\" 307"))
@@ -802,17 +817,6 @@ in
       and .job.timer.OnActiveSec == "15min"
       and .job.timer.OnUnitActiveSec == "1d"
       and .job.timer.RandomizedDelaySec == "30min"
-      and .preDeploy.Type == "oneshot"
-      and .preDeploy.User == "app-demo-project"
-      and .preDeploy.NoNewPrivileges == true
-      and .preDeploy.TimeoutStartSec == "120s"
-      and (.preDeploy.LoadCredential | index("betterAuthSecret:/run/secrets/demo-better-auth"))
-      and (.preDeploy.after | index("podman-project-demo-project-database.service"))
-      and (.preDeploy.after | index("prepared.service"))
-      and (.preDeploy.after | index("collector.service"))
-      and (.preDeploy.after | index("database.service"))
-      and (.preDeploy.wants | index("collector.service"))
-      and (.preDeploy.requires | index("database.service"))
       and (.staticCaddy.extraConfig | contains("@project_metadata path /share/project/*"))
       and (.staticCaddy.extraConfig | contains("respond @project_metadata 404"))
       and (.tmpfiles | map(contains("/runtime/data")) | any)

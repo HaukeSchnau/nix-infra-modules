@@ -1,0 +1,91 @@
+name: Publish Project Release
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: Flake package containing the immutable Project Release
+        required: false
+        type: string
+        default: projectRelease
+
+permissions:
+  contents: read
+
+env:
+  NIX_CONFIG: experimental-features = nix-command flakes
+
+jobs:
+  publish:
+    name: Verify, publish, and promote
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@v4
+
+      - name: Verify Project
+        run: |
+          set -euo pipefail
+          nix --version
+          nix flake check --print-build-logs
+
+      - name: Build immutable Release
+        run: |
+          set -euo pipefail
+          project="$(nix eval --raw .#lib.project.project)"
+          release="$(nix build ".#${{ inputs.package }}" --no-link --print-out-paths --print-build-logs)"
+          test "$(printf '%s\n' "$release" | wc -l)" -eq 1
+          printf 'PROJECT_NAME=%s\n' "$project" >> "$GITHUB_ENV"
+          printf 'RELEASE_STORE_PATH=%s\n' "$release" >> "$GITHUB_ENV"
+
+      - name: Wait for cache publication
+        run: |
+          set -euo pipefail
+          : "${PROJECT_RELEASE_CACHE_URL:?runner does not provide PROJECT_RELEASE_CACHE_URL}"
+          basename="${RELEASE_STORE_PATH#/nix/store/}"
+          store_hash="${basename%%-*}"
+          for _ in $(seq 1 60); do
+            if curl --fail --silent --show-error \
+              "${PROJECT_RELEASE_CACHE_URL%/}/${store_hash}.narinfo" >/dev/null; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Release was not published to the configured cache within ten minutes" >&2
+          exit 1
+
+      - name: Promote exact Release
+        run: |
+          set -euo pipefail
+          : "${PROJECT_RELEASE_PROMOTION_URL:?runner does not provide PROJECT_RELEASE_PROMOTION_URL}"
+          : "${PROJECT_RELEASE_PROMOTION_TOKEN:?runner does not provide PROJECT_RELEASE_PROMOTION_TOKEN}"
+          printf -v payload \
+            '{"revision":"%s","storePath":"%s","source":"gitea-actions"}' \
+            "$GITHUB_SHA" "$RELEASE_STORE_PATH"
+
+          for _ in $(seq 1 30); do
+            status="$(curl --silent --show-error \
+              --output promotion.json \
+              --write-out '%{http_code}' \
+              --request POST \
+              --header "Authorization: Bearer ${PROJECT_RELEASE_PROMOTION_TOKEN}" \
+              --header "Content-Type: application/json" \
+              --data "$payload" \
+              "${PROJECT_RELEASE_PROMOTION_URL%/}/deploy/${PROJECT_NAME}")"
+            if [ "$status" = 202 ]; then
+              cat promotion.json
+              exit 0
+            fi
+            cat promotion.json >&2
+            if [ "$status" != 503 ]; then
+              if [ "$status" = 409 ]; then
+                echo "Release is valid but incompatible with the current infra bindings" >&2
+              else
+                echo "Promotion was rejected with HTTP ${status}" >&2
+              fi
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "Release could not be substituted and activated within five minutes" >&2
+          exit 1

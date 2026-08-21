@@ -41,6 +41,19 @@ def normalized_tasks:
         }
     );
 
+def task_plan($tasks):
+  reduce range(0; (($tasks | length) + 1)) as $_ (
+    {order: [], remaining: ($tasks | keys | sort)};
+    . as $state
+    | [
+        $state.remaining[]
+        | . as $name
+        | select((($tasks[$name].dependsOn - $state.order) | length) == 0)
+      ] as $ready
+    | .order += $ready
+    | .remaining -= $ready
+  );
+
 def normalized_jobs($managed_jobs):
   (. // {})
   | with_entries(
@@ -81,10 +94,8 @@ def release_contract($managed_jobs):
         executable: ($release.executable // (if $backend == "service" then "project-release-runtime" else null end)),
         activationExecutable: ($release.activationExecutable // null),
         stateDirectories: ($release.stateDirectories // []),
-        health: ($release.health | normalized_health),
         ingress: ($release.ingress | normalized_ingress),
         maintenanceJobs: ($release.maintenanceJobs | normalized_jobs($managed_jobs)),
-        preDeployTasks: ($release.preDeployTasks | normalized_tasks),
         ociAuxiliaries: ($release.ociAuxiliaries | normalized_oci)
       }
     };
@@ -101,6 +112,27 @@ def parameter_type_matches($definition; $value):
 | ($candidate[0]) as $candidate_descriptor
 | ($host_policy.descriptor | release_contract($host_policy.managedJobs)) as $expected_contract
 | ($candidate_descriptor | release_contract($host_policy.managedJobs)) as $candidate_contract
+| ($candidate_descriptor.release.health | normalized_health) as $health
+| ($candidate_descriptor.release.preDeployTasks | normalized_tasks) as $tasks
+| (task_plan($tasks)) as $task_plan
+| [
+    $tasks
+    | to_entries[]
+    | .key as $name
+    | .value.dependsOn[]
+    | . as $dependency
+    | select($tasks | has($dependency) | not)
+    | "pre-deploy task " + $name + " depends on undeclared task: " + $dependency
+  ] as $missing_task_dependencies
+| [
+    $tasks
+    | to_entries[]
+    | .key as $name
+    | .value.secrets[]
+    | . as $secret
+    | select(($candidate_descriptor.secrets // {}) | has($secret) | not)
+    | "pre-deploy task " + $name + " references undeclared Secret: " + $secret
+  ] as $missing_task_secrets
 | reduce (($candidate_descriptor.parameters // {}) | to_entries[]) as $parameter (
     {values: {}, reasons: []};
     ($parameter.value // {}) as $definition
@@ -135,12 +167,22 @@ def parameter_type_matches($definition; $value):
     if $candidate_contract == $expected_contract then empty
     else "Release topology differs from the host-compatible contract"
     end
-  ] + $parameters.reasons + $secrets.reasons) as $reasons
+  ]
+  + $missing_task_dependencies
+  + $missing_task_secrets
+  + (if ($task_plan.remaining | length) == 0 then [] else ["pre-deploy task dependency graph contains a cycle"] end)
+  + $parameters.reasons
+  + $secrets.reasons) as $reasons
 | {
     compatible: ($reasons | length == 0),
     reasons: $reasons,
     parameters: $parameters.values,
     secrets: $secrets.values,
+    releasePlan: {
+      health: $health,
+      preDeployTasks: $tasks,
+      preDeployOrder: $task_plan.order
+    },
     expectedContract: $expected_contract,
     candidateContract: $candidate_contract
   }

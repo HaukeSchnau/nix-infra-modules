@@ -79,9 +79,6 @@ let
   projectAuxiliaries = if isProject then projectRelease.ociAuxiliaries else { };
   projectAuxiliaryPorts = if isProject then cfg.project.auxiliaryPorts else { };
   projectJobs = if isProject then cfg.project.jobs else { };
-  projectPreDeployTasks = if isProject then projectRelease.preDeployTasks else { };
-  projectPreDeployOrder =
-    if isProject then projectDescriptor.releaseTaskOrder projectRelease else [ ];
   projectMemory = if isProject then cfg.project.resources.memory else { };
   projectRuntimeSchemaVersion = if isProject then descriptor.schemaVersion else 1;
   unitName = "app-deployment-${name}";
@@ -91,11 +88,7 @@ let
   stateDir = "/var/lib/app-deployments/${name}";
   runtimeDir = "${stateDir}/runtime";
   needsRuntimeUser =
-    isService
-    || (
-      isProject
-      && (projectActivationExecutable != null || projectJobs != { } || projectPreDeployTasks != { })
-    );
+    isService || (isProject && (projectActivationExecutable != null || projectJobs != { }));
   ociBackend = config.virtualisation.oci-containers.backend;
   projectContainerName = auxiliaryName: "project-${name}-${auxiliaryName}";
   projectContainerUnits = map (
@@ -188,8 +181,12 @@ let
     }
     + "\n"
   );
+  projectSecretBindings = pkgs.writeText "project-release-secret-bindings-${name}.json" (
+    builtins.toJSON projectSecrets + "\n"
+  );
   projectCompatibilityJq = ./project-release-compatibility.jq;
   deployedProjectRuntimeManifest = "${stateDir}/project-runtime.json";
+  deployedProjectReleasePlan = "${stateDir}/release-plan.json";
 
   shellPath = lib.makeBinPath [
     pkgs.bash
@@ -274,52 +271,113 @@ let
         ++ responseHeaders
       );
 
-  serviceHealthScript = ''
-    check_service_health() {
-      local deadline now path
-      deadline=$((SECONDS + ${toString cfg.health.startupTimeoutSec}))
+  serviceHealthScript =
+    if isProject then
+      ''
+        check_service_health() {
+          local plan="$1"
+          local deadline startup_timeout interval request_timeout now path
+          local -a paths
 
-      while true; do
-        for path in ${lib.escapeShellArgs cfg.health.paths}; do
-          if ! ${pkgs.curl}/bin/curl -fsS --max-time ${toString cfg.health.requestTimeoutSec} \
-            ${lib.escapeShellArgs healthCurlArgs} \
-            "http://${cfg.health.host}:${toString cfg.port}$path" >/dev/null; then
-            now=$SECONDS
-            if [ "$now" -ge "$deadline" ]; then
-              echo "health check failed for http://${cfg.health.host}:${toString cfg.port}$path" >&2
+          IFS=$'\t' read -r startup_timeout interval request_timeout < <(
+            ${pkgs.jq}/bin/jq -er '[.health.startupTimeoutSec, .health.intervalSec, .health.requestTimeoutSec] | @tsv' "$plan"
+          )
+          mapfile -t paths < <(${pkgs.jq}/bin/jq -er '.health.paths[]' "$plan")
+          deadline=$((SECONDS + startup_timeout))
+
+          while true; do
+            for path in "''${paths[@]}"; do
+              if ! ${pkgs.curl}/bin/curl -fsS --max-time "$request_timeout" \
+                ${lib.escapeShellArgs healthCurlArgs} \
+                "http://${cfg.health.host}:${toString cfg.port}$path" >/dev/null; then
+                now=$SECONDS
+                if [ "$now" -ge "$deadline" ]; then
+                  echo "health check failed for http://${cfg.health.host}:${toString cfg.port}$path" >&2
+                  return 1
+                fi
+                sleep "$interval"
+                continue 2
+              fi
+            done
+            return 0
+          done
+        }
+      ''
+    else
+      ''
+        check_service_health() {
+          local deadline now path
+          deadline=$((SECONDS + ${toString cfg.health.startupTimeoutSec}))
+
+          while true; do
+            for path in ${lib.escapeShellArgs cfg.health.paths}; do
+              if ! ${pkgs.curl}/bin/curl -fsS --max-time ${toString cfg.health.requestTimeoutSec} \
+                ${lib.escapeShellArgs healthCurlArgs} \
+                "http://${cfg.health.host}:${toString cfg.port}$path" >/dev/null; then
+                now=$SECONDS
+                if [ "$now" -ge "$deadline" ]; then
+                  echo "health check failed for http://${cfg.health.host}:${toString cfg.port}$path" >&2
+                  return 1
+                fi
+                sleep ${toString cfg.health.intervalSec}
+                continue 2
+              fi
+            done
+            return 0
+          done
+        }
+      '';
+
+  staticHealthScript =
+    if isProject then
+      ''
+        check_static_health() {
+          local root="$1"
+          local plan="$2"
+          local path relative candidate
+          local -a paths
+
+          mapfile -t paths < <(${pkgs.jq}/bin/jq -er '.health.paths[]' "$plan")
+          for path in "''${paths[@]}"; do
+            relative="''${path#/}"
+            candidate="$root/$relative"
+
+            if [ -d "$candidate" ]; then
+              candidate="$candidate/index.html"
+            elif [ "$path" = "/" ] || [[ "$path" == */ ]]; then
+              candidate="$candidate/index.html"
+            fi
+
+            if [ ! -f "$candidate" ]; then
+              echo "static health check failed: $path does not resolve to a file under $root" >&2
               return 1
             fi
-            sleep ${toString cfg.health.intervalSec}
-            continue 2
-          fi
-        done
-        return 0
-      done
-    }
-  '';
+          done
+        }
+      ''
+    else
+      ''
+        check_static_health() {
+          local root path relative candidate
+          root="$1"
 
-  staticHealthScript = ''
-    check_static_health() {
-      local root path relative candidate
-      root="$1"
+          for path in ${lib.escapeShellArgs cfg.health.paths}; do
+            relative="''${path#/}"
+            candidate="$root/$relative"
 
-      for path in ${lib.escapeShellArgs cfg.health.paths}; do
-        relative="''${path#/}"
-        candidate="$root/$relative"
+            if [ -d "$candidate" ]; then
+              candidate="$candidate/index.html"
+            elif [ "$path" = "/" ] || [[ "$path" == */ ]]; then
+              candidate="$candidate/index.html"
+            fi
 
-        if [ -d "$candidate" ]; then
-          candidate="$candidate/index.html"
-        elif [ "$path" = "/" ] || [[ "$path" == */ ]]; then
-          candidate="$candidate/index.html"
-        fi
-
-        if [ ! -f "$candidate" ]; then
-          echo "static health check failed: $path does not resolve to a file under $root" >&2
-          return 1
-        fi
-      done
-    }
-  '';
+            if [ ! -f "$candidate" ]; then
+              echo "static health check failed: $path does not resolve to a file under $root" >&2
+              return 1
+            fi
+          done
+        }
+      '';
 
   gitTokenSetup =
     if cfg.source.giteaTokenSecretName == null then
@@ -369,8 +427,11 @@ let
     metadata_file="$state_dir/metadata.json"
     runtime_manifest="$state_dir/project-runtime.json"
     previous_runtime_manifest="$state_dir/previous-project-runtime.json"
+    release_plan="$state_dir/release-plan.json"
+    previous_release_plan="$state_dir/previous-release-plan.json"
     candidate_link="$state_dir/candidate"
     candidate_runtime_manifest="$state_dir/candidate-project-runtime.json"
+    candidate_release_plan="$state_dir/candidate-release-plan.json"
     candidate_gcroot="$gcroots_dir/candidate"
     git_config_file=""
 
@@ -378,6 +439,7 @@ let
       rm -f \
         "$candidate_link" "$candidate_link.next" \
         "$candidate_runtime_manifest" "$candidate_runtime_manifest.next" \
+        "$candidate_release_plan" "$candidate_release_plan.next" \
         "$candidate_gcroot" "$candidate_gcroot.next"
       rm -f "$requested_release_snapshot"
     }
@@ -442,7 +504,8 @@ let
     ${lib.optionalString isProject ''
       bind_descriptor() {
         local descriptor="$1"
-        local manifest="$2"
+        local runtime="$2"
+        local plan="$3"
         local result="$state_dir/compatibility.json.next"
 
         if ! jq -n \
@@ -464,24 +527,26 @@ let
           return 1
         fi
 
-        jq -s '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}' \
-          ${lib.escapeShellArg projectRuntimeBaseManifest} "$result" > "$manifest"
+        jq -S -s '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}' \
+          ${lib.escapeShellArg projectRuntimeBaseManifest} "$result" > "$runtime"
+        jq -S '.releasePlan' "$result" > "$plan"
         mv -f "$result" "$state_dir/compatibility.json"
         mv -f "$state_dir/expected-descriptor.json.next" "$state_dir/expected-descriptor.json"
         mv -f "$state_dir/artifact-descriptor.json.next" "$state_dir/artifact-descriptor.json"
       }
 
       current_descriptor_matches() {
-        local descriptor expected_runtime
+        local descriptor expected_runtime expected_plan
         descriptor="$current_link/share/project/descriptor.json"
         expected_runtime="$state_dir/current-project-runtime.json.next"
+        expected_plan="$state_dir/current-release-plan.json.next"
         [ -f "$descriptor" ] || return 1
-        bind_descriptor "$descriptor" "$expected_runtime" || return 1
-        if cmp -s "$expected_runtime" "$runtime_manifest"; then
-          rm -f "$expected_runtime"
+        bind_descriptor "$descriptor" "$expected_runtime" "$expected_plan" || return 1
+        if cmp -s "$expected_runtime" "$runtime_manifest" && cmp -s "$expected_plan" "$release_plan"; then
+          rm -f "$expected_runtime" "$expected_plan"
           return 0
         fi
-        rm -f "$expected_runtime"
+        rm -f "$expected_runtime" "$expected_plan"
         return 1
       }
 
@@ -520,9 +585,9 @@ let
       sync_gcroots
       if ${
         if isService then
-          "systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && [ -x \"$current_link/bin/${cfg.executable}\" ] && ${lib.optionalString isProject "current_descriptor_matches && "}check_service_health"
+          "systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && [ -x \"$current_link/bin/${cfg.executable}\" ] && ${lib.optionalString isProject "current_descriptor_matches && "}check_service_health${lib.optionalString isProject " \"$release_plan\""}"
         else
-          "[ -d \"$current_link\" ] && ${lib.optionalString isProject "current_descriptor_matches && "}check_static_health \"$current_link\""
+          "[ -d \"$current_link\" ] && ${lib.optionalString isProject "current_descriptor_matches && "}check_static_health \"$current_link\"${lib.optionalString isProject " \"$release_plan\""}"
       }; then
         if [ -n "$requested_store_path" ]; then
           if cmp -s "$requested_release_snapshot" "$requested_release_file"; then
@@ -556,12 +621,14 @@ let
         echo "app-deployment/${name}: Project artifact is missing $descriptor_file" >&2
         exit 1
       fi
-      if ! bind_descriptor "$descriptor_file" "$candidate_runtime_manifest.next"; then
+      if ! bind_descriptor "$descriptor_file" "$candidate_runtime_manifest.next" "$candidate_release_plan.next"; then
         echo "app-deployment/${name}: Project artifact is waiting for compatible host bindings" >&2
         exit 1
       fi
       chmod 0644 "$candidate_runtime_manifest.next"
       mv -f "$candidate_runtime_manifest.next" "$candidate_runtime_manifest"
+      chmod 0644 "$candidate_release_plan.next"
+      mv -f "$candidate_release_plan.next" "$candidate_release_plan"
       ${lib.optionalString (projectActivationExecutable != null) ''
         if [ ! -x "$new_store_path/bin/${projectActivationExecutable}" ]; then
           echo "app-deployment/${name}: missing activation executable $new_store_path/bin/${projectActivationExecutable}" >&2
@@ -583,7 +650,7 @@ let
             echo "app-deployment/${name}: static package is not a directory: $new_store_path" >&2
             exit 1
           fi
-          check_static_health "$new_store_path"
+          check_static_health "$new_store_path"${lib.optionalString isProject " \"$candidate_release_plan\""}
         ''
     }
 
@@ -592,9 +659,9 @@ let
       old_store_path="$(readlink "$current_link")"
       if [ "$new_store_path" = "$old_store_path" ] && ${
         if isService then
-          "${lib.optionalString isProject "current_descriptor_matches && "}systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && check_service_health"
+          "${lib.optionalString isProject "current_descriptor_matches && "}systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && check_service_health${lib.optionalString isProject " \"$release_plan\""}"
         else
-          "check_static_health \"$current_link\""
+          "check_static_health \"$current_link\"${lib.optionalString isProject " \"$release_plan\""}"
       }; then
         printf '%s\n' "$resolved_revision" > "$current_revision_file"
         if [ -n "$requested_store_path" ]; then
@@ -608,17 +675,71 @@ let
       fi
     fi
 
-    ${lib.optionalString (projectPreDeployOrder != [ ]) ''
+    ${lib.optionalString (isProject && isService) ''
       if [ "$new_store_path" != "$old_store_path" ]; then
-        echo "app-deployment/${name}: running pre-deploy tasks for $resolved_revision"
-        mkdir -p "$gcroots_dir"
-        ln -sfn "$new_store_path" "$candidate_link.next"
-        mv -Tf "$candidate_link.next" "$candidate_link"
-        ln -sfn "$new_store_path" "$candidate_gcroot.next"
-        mv -Tf "$candidate_gcroot.next" "$candidate_gcroot"
-        ${lib.concatMapStringsSep "\n" (
-          taskName: "systemctl start ${lib.escapeShellArg "${unitName}-pre-deploy-${taskName}.service"}"
-        ) projectPreDeployOrder}
+        mapfile -t pre_deploy_tasks < <(jq -er '.preDeployOrder[]' "$candidate_release_plan")
+        if [ "''${#pre_deploy_tasks[@]}" -gt 0 ]; then
+          echo "app-deployment/${name}: running pre-deploy tasks for $resolved_revision"
+          mkdir -p "$gcroots_dir"
+          ln -sfn "$new_store_path" "$candidate_link.next"
+          mv -Tf "$candidate_link.next" "$candidate_link"
+          ln -sfn "$new_store_path" "$candidate_gcroot.next"
+          mv -Tf "$candidate_gcroot.next" "$candidate_gcroot"
+          for task in "''${pre_deploy_tasks[@]}"; do
+            timeout="$(jq -er --arg task "$task" '.preDeployTasks[$task].timeoutSec' "$candidate_release_plan")"
+            credential_args=()
+            while IFS=$'\t' read -r secret path; do
+              credential_args+=("--property=LoadCredential=$secret:$path")
+            done < <(
+              jq -er --arg task "$task" \
+                --slurpfile bindings ${lib.escapeShellArg projectSecretBindings} \
+                '.preDeployTasks[$task].secrets[] as $secret | select($bindings[0] | has($secret)) | [$secret, $bindings[0][$secret]] | @tsv' \
+                "$candidate_release_plan"
+            )
+            systemd-run \
+              --quiet \
+              --wait \
+              --collect \
+              --pipe \
+              --unit="${unitName}-pre-deploy-$task" \
+              --service-type=oneshot \
+              --uid=${lib.escapeShellArg userName} \
+              --gid=${lib.escapeShellArg userName} \
+              --working-directory=${lib.escapeShellArg stateDir} \
+              --property="TimeoutStartSec=''${timeout}s" \
+              --property=CapabilityBoundingSet= \
+              --property=LockPersonality=true \
+              --property=NoNewPrivileges=true \
+              --property=PrivateDevices=true \
+              --property=PrivateTmp=true \
+              --property=ProtectClock=true \
+              --property=ProtectControlGroups=true \
+              --property=ProtectHome=true \
+              --property=ProtectKernelLogs=true \
+              --property=ProtectKernelModules=true \
+              --property=ProtectKernelTunables=true \
+              --property=ProtectSystem=strict \
+              --property=ReadWritePaths=${lib.escapeShellArg runtimeDir} \
+              --property=RemoveIPC=true \
+              --property="RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX" \
+              --property=RestrictRealtime=true \
+              --property=RestrictSUIDSGID=true \
+              --property=SystemCallArchitectures=native \
+              --property=TimeoutStopSec=30s \
+              --property=UMask=0027 \
+              ${lib.optionalString (
+                projectMemory.high != null
+              ) "--property=MemoryHigh=${lib.escapeShellArg projectMemory.high} \\"}
+              ${lib.optionalString (
+                projectMemory.max != null
+              ) "--property=MemoryMax=${lib.escapeShellArg projectMemory.max} \\"}
+              ${lib.optionalString (
+                projectMemory.swapMax != null
+              ) "--property=MemorySwapMax=${lib.escapeShellArg projectMemory.swapMax} \\"}
+              "''${credential_args[@]}" \
+              ${projectPreDeployTaskScript} "$task"
+          done
+        fi
       fi
     ''}
 
@@ -635,6 +756,12 @@ let
         else
           rm -f "$previous_runtime_manifest"
         fi
+        if [ -f "$release_plan" ]; then
+          cp "$release_plan" "$previous_release_plan.next"
+          mv -f "$previous_release_plan.next" "$previous_release_plan"
+        else
+          rm -f "$previous_release_plan"
+        fi
       ''}
     fi
 
@@ -642,6 +769,9 @@ let
       cp "$candidate_runtime_manifest" "$runtime_manifest.next"
       chmod 0644 "$runtime_manifest.next"
       mv -f "$runtime_manifest.next" "$runtime_manifest"
+      cp "$candidate_release_plan" "$release_plan.next"
+      chmod 0644 "$release_plan.next"
+      mv -f "$release_plan.next" "$release_plan"
     ''}
     ln -sfn "$new_store_path" "$current_link.next"
     mv -Tf "$current_link.next" "$current_link"
@@ -667,6 +797,12 @@ let
               else
                 rm -f "$runtime_manifest"
               fi
+              if [ -f "$previous_release_plan" ]; then
+                cp "$previous_release_plan" "$release_plan.next"
+                mv -f "$release_plan.next" "$release_plan"
+              else
+                rm -f "$release_plan"
+              fi
             ''}
             sync_gcroots
             if ! systemctl start ${lib.escapeShellArg "${activationUnitName}.service"}; then
@@ -683,7 +819,12 @@ let
     ''}
     ${lib.optionalString isService "systemctl restart ${lib.escapeShellArg "${unitName}.service"}"}
 
-    if ${if isService then "check_service_health" else "check_static_health \"$current_link\""}; then
+    if ${
+      if isService then
+        "check_service_health${lib.optionalString isProject " \"$release_plan\""}"
+      else
+        "check_static_health \"$current_link\"${lib.optionalString isProject " \"$release_plan\""}"
+    }; then
       if [ -n "$requested_store_path" ]; then
         if cmp -s "$requested_release_snapshot" "$requested_release_file"; then
           rm -f "$requested_release_file"
@@ -707,6 +848,12 @@ let
         else
           rm -f "$runtime_manifest"
         fi
+        if [ -f "$previous_release_plan" ]; then
+          cp "$previous_release_plan" "$release_plan.next"
+          mv -f "$release_plan.next" "$release_plan"
+        else
+          rm -f "$release_plan"
+        fi
       ''}
       if [ -f "$previous_revision_file" ]; then
         cp "$previous_revision_file" "$current_revision_file"
@@ -721,11 +868,11 @@ let
         if isService then
           ''
             systemctl restart ${lib.escapeShellArg "${unitName}.service"}
-            check_service_health
+            check_service_health${lib.optionalString isProject " \"$release_plan\""}
           ''
         else
           ''
-            check_static_health "$current_link"
+            check_static_health "$current_link"${lib.optionalString isProject " \"$release_plan\""}
           ''
       }
     fi
@@ -757,7 +904,7 @@ let
     executable="$current/bin/${cfg.executable}"
     descriptor="$current/share/project/descriptor.json"
 
-    if [ ! -x "$executable" ] || [ ! -f "$descriptor" ]${lib.optionalString isProject " || [ ! -f ${lib.escapeShellArg deployedProjectRuntimeManifest} ]"}; then
+    if [ ! -x "$executable" ] || [ ! -f "$descriptor" ]${lib.optionalString isProject " || [ ! -f ${lib.escapeShellArg deployedProjectRuntimeManifest} ] || [ ! -f ${lib.escapeShellArg deployedProjectReleasePlan} ]"}; then
       echo "app-deployment/${name}: no descriptor-compatible Project artifact is deployed" >&2
       exit 1
     fi
@@ -774,9 +921,11 @@ let
     expected_runtime="$(${pkgs.jq}/bin/jq -S -s \
       '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}' \
       ${lib.escapeShellArg projectRuntimeBaseManifest} <(printf '%s\n' "$result"))"
+    expected_release_plan="$(${pkgs.jq}/bin/jq -S '.releasePlan' <<<"$result")"
     actual_runtime="$(${pkgs.jq}/bin/jq -S . ${lib.escapeShellArg deployedProjectRuntimeManifest})"
-    if [ "$expected_runtime" != "$actual_runtime" ]; then
-      echo "app-deployment/${name}: deployed Runtime Context is stale" >&2
+    actual_release_plan="$(${pkgs.jq}/bin/jq -S . ${lib.escapeShellArg deployedProjectReleasePlan})"
+    if [ "$expected_runtime" != "$actual_runtime" ] || [ "$expected_release_plan" != "$actual_release_plan" ]; then
+      echo "app-deployment/${name}: deployed Runtime Context or Release plan is stale" >&2
       exit 1
     fi
   '';
@@ -799,48 +948,24 @@ let
     export PROJECT_SECRETS_DIR="''${CREDENTIALS_DIRECTORY:-${runtimeDir}/secrets}"
     exec "$executable"
   '';
-  projectPreDeployTaskScripts = lib.mapAttrs (
-    taskName: task:
-    pkgs.writeShellScript "app-deployment-${name}-pre-deploy-${taskName}" ''
-      set -euo pipefail
+  projectPreDeployTaskScript = pkgs.writeShellScript "app-deployment-${name}-pre-deploy" ''
+    set -euo pipefail
 
-      candidate=${lib.escapeShellArg stateDir}/candidate
-      runtime_manifest=${lib.escapeShellArg stateDir}/candidate-project-runtime.json
-      executable="$candidate/bin/${cfg.executable}"
-      if [ ! -x "$executable" ] || [ ! -f "$runtime_manifest" ]; then
-        echo "app-deployment/${name}: no staged Project artifact for pre-deploy task ${taskName}" >&2
-        exit 1
-      fi
+    candidate=${lib.escapeShellArg stateDir}/candidate
+    runtime_manifest=${lib.escapeShellArg stateDir}/candidate-project-runtime.json
+    release_plan=${lib.escapeShellArg stateDir}/candidate-release-plan.json
+    executable="$candidate/bin/${cfg.executable}"
+    if [ ! -x "$executable" ] || [ ! -f "$runtime_manifest" ] || [ ! -f "$release_plan" ]; then
+      echo "app-deployment/${name}: no complete staged Project artifact for a pre-deploy task" >&2
+      exit 1
+    fi
 
-      export PROJECT_RUNTIME_FILE="$runtime_manifest"
-      export PROJECT_SECRETS_DIR="''${CREDENTIALS_DIRECTORY:-${runtimeDir}/secrets}"
-      exec "$executable" ${lib.escapeShellArg task.action}
-    ''
-  ) projectPreDeployTasks;
-  projectPreDeployTaskServices = lib.mapAttrs' (
-    taskName: task:
-    let
-      taskSecrets = lib.filterAttrs (secretName: _: builtins.elem secretName task.secrets) projectSecrets;
-    in
-    lib.nameValuePair "${unitName}-pre-deploy-${taskName}" {
-      description = "Run Project pre-deploy task '${name}/${taskName}'";
-      after = [ "network-online.target" ] ++ projectContainerUnits ++ externalAfterUnits;
-      wants = [ "network-online.target" ] ++ projectContainerUnits ++ externalWantedUnits;
-      requires = externalRequiredUnits;
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = projectPreDeployTaskScripts.${taskName};
-        User = userName;
-        Group = userName;
-        WorkingDirectory = stateDir;
-        TimeoutStartSec = "${toString task.timeoutSec}s";
-      }
-      // projectHardening
-      // lib.optionalAttrs (taskSecrets != { }) {
-        LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") taskSecrets;
-      };
-    }
-  ) projectPreDeployTasks;
+    task="$1"
+    action="$(${pkgs.jq}/bin/jq -er --arg task "$task" '.preDeployTasks[$task].action' "$release_plan")"
+    export PROJECT_RUNTIME_FILE="$runtime_manifest"
+    export PROJECT_SECRETS_DIR="''${CREDENTIALS_DIRECTORY:-${runtimeDir}/secrets}"
+    exec "$executable" "$action"
+  '';
   projectJobScripts = lib.mapAttrs (
     jobName: _policy:
     let
@@ -921,10 +1046,15 @@ let
   projectHealthRecoveryScript = pkgs.writeShellScript "app-deployment-${name}-health-recovery" ''
     set -euo pipefail
 
+    release_plan=${lib.escapeShellArg deployedProjectReleasePlan}
+
     check_once() {
-      local path
-      for path in ${lib.escapeShellArgs cfg.health.paths}; do
-        ${pkgs.curl}/bin/curl -fsS --max-time ${toString cfg.health.requestTimeoutSec} \
+      local request_timeout path
+      local -a paths
+      request_timeout="$(${pkgs.jq}/bin/jq -er '.health.requestTimeoutSec' "$release_plan")"
+      mapfile -t paths < <(${pkgs.jq}/bin/jq -er '.health.paths[]' "$release_plan")
+      for path in "''${paths[@]}"; do
+        ${pkgs.curl}/bin/curl -fsS --max-time "$request_timeout" \
           ${lib.escapeShellArgs healthCurlArgs} \
           "http://${cfg.health.host}:${toString cfg.port}$path" >/dev/null || return 1
       done
@@ -937,7 +1067,7 @@ let
     echo "app-deployment/${name}: periodic health failed; restarting" >&2
     ${pkgs.systemd}/bin/systemctl restart --no-block ${lib.escapeShellArg "${unitName}.service"}
     ${serviceHealthScript}
-    check_service_health
+    check_service_health "$release_plan"
   '';
   projectHardening = {
     CapabilityBoundingSet = "";
@@ -996,92 +1126,89 @@ let
           ++ (map (dir: "d ${dir} 0750 ${userName} ${userName} -") cfg.stateDirs)
         );
 
-        systemd.services =
-          projectPreDeployTaskServices
-          // projectJobServices
-          // {
-            ${unitName} = lib.mkIf isService {
-              description = "App deployment '${name}'";
-              after = [ "network-online.target" ] ++ projectContainerUnits ++ externalAfterUnits;
-              wants = [ "network-online.target" ] ++ projectContainerUnits ++ externalWantedUnits;
-              requires = externalRequiredUnits;
-              environment =
-                (
-                  if isProject then
-                    { HOME = stateDir; }
-                  else
-                    {
-                      HOST = cfg.host;
-                      PORT = toString cfg.port;
-                      HOME = stateDir;
-                    }
-                )
-                // cfg.environment;
-              path = cfg.path;
-              serviceConfig = {
-                ExecStart = startScript;
-                Restart = "always";
-                RestartSec = "15s";
-                User = userName;
-                Group = userName;
-                WorkingDirectory = stateDir;
-              }
-              // lib.optionalAttrs isProject {
-                ExecCondition = projectArtifactConditionScript;
-              }
-              // lib.optionalAttrs isProject projectHardening
-              // lib.optionalAttrs (isProject && projectSecrets != { }) {
-                LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
-              }
-              // lib.optionalAttrs (cfg.environmentFiles != [ ]) {
-                EnvironmentFile = cfg.environmentFiles;
-              }
-              // cfg.serviceConfig;
-              preStart = cfg.preStart;
-            };
-
-            ${updateUnitName} = {
-              description = "Update app deployment '${name}'";
-              after = [ "network-online.target" ] ++ projectContainerUnits ++ externalAfterUnits;
-              wants = [ "network-online.target" ] ++ projectContainerUnits ++ externalWantedUnits;
-              requires = externalRequiredUnits;
-              serviceConfig = {
-                Type = "oneshot";
-                ExecStart = updateScript;
-              };
-            };
-
-            ${activationUnitName} = lib.mkIf (projectActivationExecutable != null) {
-              description = "Activate Project Release '${name}'";
-              after = projectContainerUnits ++ externalAfterUnits;
-              wants = projectContainerUnits ++ externalWantedUnits;
-              requires = externalRequiredUnits;
-              serviceConfig = {
-                Type = "oneshot";
-                ExecStart = activationScript;
-                User = userName;
-                Group = userName;
-                WorkingDirectory = stateDir;
-              }
-              // projectHardening
-              // lib.optionalAttrs (projectSecrets != { }) {
-                LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
-              };
-            };
-
-            "${unitName}-health-recovery" =
-              lib.mkIf (isProject && isService && cfg.project.healthRecovery.enable)
-                {
-                  description = "Recover unhealthy Project Release '${name}'";
-                  after = [ "${unitName}.service" ];
-                  serviceConfig = {
-                    Type = "oneshot";
-                    ExecCondition = projectArtifactConditionScript;
-                    ExecStart = projectHealthRecoveryScript;
-                    TimeoutStartSec = "${toString (cfg.health.startupTimeoutSec + 10)}s";
-                  };
-                };
+        systemd.services = projectJobServices // {
+          ${unitName} = lib.mkIf isService {
+            description = "App deployment '${name}'";
+            after = [ "network-online.target" ] ++ projectContainerUnits ++ externalAfterUnits;
+            wants = [ "network-online.target" ] ++ projectContainerUnits ++ externalWantedUnits;
+            requires = externalRequiredUnits;
+            environment =
+              (
+                if isProject then
+                  { HOME = stateDir; }
+                else
+                  {
+                    HOST = cfg.host;
+                    PORT = toString cfg.port;
+                    HOME = stateDir;
+                  }
+              )
+              // cfg.environment;
+            path = cfg.path;
+            serviceConfig = {
+              ExecStart = startScript;
+              Restart = "always";
+              RestartSec = "15s";
+              User = userName;
+              Group = userName;
+              WorkingDirectory = stateDir;
+            }
+            // lib.optionalAttrs isProject {
+              ExecCondition = projectArtifactConditionScript;
+            }
+            // lib.optionalAttrs isProject projectHardening
+            // lib.optionalAttrs (isProject && projectSecrets != { }) {
+              LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
+            }
+            // lib.optionalAttrs (cfg.environmentFiles != [ ]) {
+              EnvironmentFile = cfg.environmentFiles;
+            }
+            // cfg.serviceConfig;
+            preStart = cfg.preStart;
           };
+
+          ${updateUnitName} = {
+            description = "Update app deployment '${name}'";
+            after = [ "network-online.target" ] ++ projectContainerUnits ++ externalAfterUnits;
+            wants = [ "network-online.target" ] ++ projectContainerUnits ++ externalWantedUnits;
+            requires = externalRequiredUnits;
+            serviceConfig = {
+              Type = "oneshot";
+              ExecStart = updateScript;
+            };
+          };
+
+          ${activationUnitName} = lib.mkIf (projectActivationExecutable != null) {
+            description = "Activate Project Release '${name}'";
+            after = projectContainerUnits ++ externalAfterUnits;
+            wants = projectContainerUnits ++ externalWantedUnits;
+            requires = externalRequiredUnits;
+            serviceConfig = {
+              Type = "oneshot";
+              ExecStart = activationScript;
+              User = userName;
+              Group = userName;
+              WorkingDirectory = stateDir;
+            }
+            // projectHardening
+            // lib.optionalAttrs (projectSecrets != { }) {
+              LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
+            };
+          };
+
+          "${unitName}-health-recovery" =
+            lib.mkIf (isProject && isService && cfg.project.healthRecovery.enable)
+              {
+                description = "Recover unhealthy Project Release '${name}'";
+                after = [ "${unitName}.service" ];
+                serviceConfig = {
+                  Type = "oneshot";
+                  ExecCondition = projectArtifactConditionScript;
+                  ExecStart = projectHealthRecoveryScript;
+                  TimeoutStartSec = "infinity";
+                };
+              };
+        };
 
         systemd.timers =
           lib.optionalAttrs cfg.autoUpdate.enable {

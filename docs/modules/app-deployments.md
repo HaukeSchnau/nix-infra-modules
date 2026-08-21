@@ -108,10 +108,11 @@ values must match the candidate type. Extra host bindings are retained so infra
 can land before the repository change and old releases remain roll-backable.
 
 Fields compiled into NixOS topology remain compatibility-sensitive: backend,
-action/executable, activation, state directories, health, ingress, pre-deploy
-tasks, selected maintenance jobs, and OCI auxiliaries. A change to those fields
-waits for an infra update. An incompatible candidate remains queued while the
-active release continues serving traffic.
+action/executable, activation, state directories, ingress, selected maintenance
+jobs, and OCI auxiliaries. Health policy and pre-deploy tasks are resolved from
+each candidate into an immutable Release plan. Compatible changes to those
+fields therefore deploy without a NixOS switch. An incompatible candidate
+remains queued while the active release continues serving traffic.
 
 With `delivery.mode = "cache"`, CI builds and verifies the Release, waits for
 its output in the configured binary cache, and posts both the commit revision
@@ -148,6 +149,11 @@ acyclic dependency graph from a GC-rooted candidate artifact and candidate
 Runtime Context before it changes `current`. Each task has its own timeout and
 receives only its declared systemd credentials. A failed task leaves the active
 artifact, Runtime Context, and service untouched.
+
+The reusable Gitea workflow at `.gitea/workflows/project-release.yml` verifies
+a Project, builds its immutable Release, waits for cache publication, and
+promotes the exact store path. Cache and promotion endpoints plus the promotion
+credential are bindings supplied by the runner's infrastructure.
 
 Pre-deploy tasks must be idempotent and backward-compatible with the active
 service. The updater does not reverse a successful task if later activation or
