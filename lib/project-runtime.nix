@@ -1,7 +1,21 @@
 { lib }:
 let
   projectDescriptor = import ./project-descriptor.nix { inherit lib; };
-  runtimeImplementation = ./project-runtime/runtime.py;
+  developmentRuntimeImplementation = ./project-runtime/runtime.py;
+  releaseRuntimeImplementation =
+    pkgs:
+    pkgs.buildGoModule {
+      pname = "project-release-runtime";
+      version = "1";
+      src = ./project-release-runtime;
+      vendorHash = null;
+      env.CGO_ENABLED = 0;
+      ldflags = [
+        "-s"
+        "-w"
+      ];
+      meta.mainProgram = "project-release-runtime";
+    };
 
   fail = context: message: throw "project runtime ${context}: ${message}";
   executableFor =
@@ -47,6 +61,14 @@ let
     }:
     let
       configFile = pkgs.writeText "${name}-runtime-config.json" (builtins.toJSON config + "\n");
+      isRelease = config.realization == "release";
+      runtimeExecutable =
+        if isRelease then lib.getExe (releaseRuntimeImplementation pkgs) else "${pkgs.python3}/bin/python";
+      runtimeArguments =
+        if isRelease then
+          "--config ${configFile}"
+        else
+          "$out/libexec/project-runtime/runtime.py --config ${configFile}";
       bundleFile =
         if bundle == null then
           null
@@ -59,19 +81,21 @@ let
         meta.mainProgram = mainProgram;
       }
       ''
-        install -Dm0555 ${runtimeImplementation} $out/libexec/project-runtime/runtime.py
-        makeWrapper ${pkgs.python3}/bin/python $out/bin/${mainProgram} \
-          --add-flags "$out/libexec/project-runtime/runtime.py --config ${configFile}" \
+        ${lib.optionalString (!isRelease) ''
+          install -Dm0555 ${developmentRuntimeImplementation} $out/libexec/project-runtime/runtime.py
+        ''}
+        makeWrapper ${runtimeExecutable} $out/bin/${mainProgram} \
+          --add-flags "${runtimeArguments}" \
           --prefix PATH : "$out/bin"
-        makeWrapper ${pkgs.python3}/bin/python $out/bin/project-context \
-          --add-flags "$out/libexec/project-runtime/runtime.py --config ${configFile} context" \
+        makeWrapper ${runtimeExecutable} $out/bin/project-context \
+          --add-flags "${runtimeArguments} context" \
           --prefix PATH : "$out/bin"
         ${lib.optionalString (bundleFile != null) ''
           install -Dm0444 ${bundleFile} $out/share/project/bundle.json
         ''}
         ${lib.optionalString (activationExecutable != null) ''
-          makeWrapper ${pkgs.python3}/bin/python $out/bin/${activationExecutable} \
-            --add-flags "$out/libexec/project-runtime/runtime.py --config ${configFile} --activate" \
+          makeWrapper ${runtimeExecutable} $out/bin/${activationExecutable} \
+            --add-flags "${runtimeArguments} --activate" \
             --prefix PATH : "$out/bin"
         ''}
       '';

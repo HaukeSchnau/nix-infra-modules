@@ -109,6 +109,9 @@ let
     descriptorPath = staticDescriptor;
     root = staticRoot;
   };
+  serviceClosure = pkgs.closureInfo {
+    rootPaths = [ service.package ];
+  };
 in
 {
   project-runtime =
@@ -366,9 +369,28 @@ in
             test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
               ${pairedService.package}/bin/project-context endpoint serve url)" = https://paired.example
             test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
+              ${pairedService.package}/bin/project-context endpoint serve host-names --json)" = '[]'
+            test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
+              ${pairedService.package}/bin/project-context parameter flavour)" = release
+            test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
               ${pairedService.package}/bin/project-context auxiliary database postgres listen-port)" = 33104
             assert_status 66 env PROJECT_RUNTIME_FILE="$paired_release_manifest" \
               ${pairedService.package}/bin/project-context auxiliary database missing listen-port
+            assert_status 1 env PROJECT_RUNTIME_FILE="$paired_release_manifest" \
+              ${pairedService.package}/bin/project-context secret-file token
+            assert_status 66 env PROJECT_RUNTIME_FILE="$paired_release_manifest" \
+              ${pairedService.package}/bin/project-context secret-file token --required
+            invalid_release_project="$root/invalid-release-project.json"
+            ${pkgs.jq}/bin/jq '.project = "wrong-project"' "$paired_release_manifest" \
+              > "$invalid_release_project"
+            assert_status 65 env PROJECT_RUNTIME_FILE="$invalid_release_project" \
+              ${pairedService.package}/bin/project-context endpoint serve url
+            invalid_release_protocol="$root/invalid-release-protocol.json"
+            ${pkgs.jq}/bin/jq '.endpoints["database-postgres"].protocol = "http" 
+              | .endpoints["database-postgres"].url = "http://127.0.0.1:33104"' \
+              "$paired_release_manifest" > "$invalid_release_protocol"
+            assert_status 65 env PROJECT_RUNTIME_FILE="$invalid_release_protocol" \
+              ${pairedService.package}/bin/project-context endpoint serve url
             rm -f "$state/release.log"
             PROJECT_RUNTIME_FILE="$paired_release_manifest" \
               ${pairedService.package}/bin/project-release-runtime
@@ -397,6 +419,14 @@ in
             test -x ${development.package}/bin/runtime-fixture-project-runtime
             test -x ${pairedDevelopment.package}/bin/runtime-paired-fixture-project-runtime
             test -x ${service.package}/bin/project-release-runtime
+            test -f ${development.package}/libexec/project-runtime/runtime.py
+            test ! -e ${service.package}/libexec/project-runtime/runtime.py
+            grep -Fq -- '-project-release-runtime-1/bin/project-release-runtime' \
+              ${service.package}/bin/project-release-runtime
+            if grep -Eq '/[^/]*python3[^/]*/?$' ${serviceClosure}/store-paths; then
+              echo "service Release closure still contains Python" >&2
+              exit 1
+            fi
             touch $out
       '';
 }

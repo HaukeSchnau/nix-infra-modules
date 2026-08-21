@@ -36,6 +36,10 @@ The generated dispatcher serializes Preparation by physical Checkout. The same
 lock covers canonical Checkouts, ad-hoc git worktrees, jj workspaces, and local
 flake apps.
 
+Development keeps the Python controller because it owns port allocation,
+locking, and multi-process supervision. Development packages are tooling and
+do not enter a production Release closure.
+
 `dev --only <workload>` retains dependency-recursive local behavior. Managed
 infrastructure uses `project-runtime workload <name>` to execute exactly one
 Workload while it realizes the repository-declared dependency graph itself.
@@ -66,6 +70,12 @@ descriptor. Schema v2 pre-deploy task actions must also have implementations.
 `activationExecutable`. The service artifact contains the dispatcher, payloads,
 optional activation wrapper, and the byte-for-byte repository descriptor at
 `share/project/descriptor.json`.
+
+Service Releases use a small statically linked Go dispatcher. The Go compiler
+is only a build input, and neither Go nor Python enters the Release closure.
+The compiled dispatcher implements the same Runtime manifest validation,
+`project-context` queries, action selection, and failure statuses as the
+Development controller.
 
 Static Releases use `mkStaticRelease { descriptorPath; root; ...; }`. It combines
 the site root with the same exact descriptor artifact and adds no service
