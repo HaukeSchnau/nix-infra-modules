@@ -65,6 +65,7 @@ in
       test '${runner.name}' = 'gitea-ci'
       test '${toString runner.tokenFile}' = '/run/secrets/gitea-runner-token'
       test '${unit.environment.DOCKER_HOST}' = 'unix:///run/docker.sock'
+      test '${builtins.concatStringsSep ":" unit.serviceConfig.ExecPaths}' = '/var/lib/gitea-runner'
       test '${unit.serviceConfig.MemoryMax}' = '4G'
       test '${
         if builtins.elem "gitea-runner-gitea\\x2dci.service" healthUnits then "yes" else "no"

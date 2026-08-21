@@ -100,6 +100,10 @@ in
         SupplementaryGroups = lib.mkAfter [ "podman" ];
         PrivateUsers = false;
         ProtectProc = "default";
+        # DynamicUser protects the id-mapped StateDirectory with noexec. The
+        # host executor checks repositories out there, so repository tools and
+        # package-manager shims need an explicit executable path.
+        ExecPaths = [ "/var/lib/gitea-runner" ];
         Restart = lib.mkForce "on-failure";
         RestartSec = lib.mkForce "5s";
         MemoryHigh = "2.5G";
