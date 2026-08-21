@@ -23,10 +23,18 @@ jobs:
       - name: Checkout exact revision
         uses: actions/checkout@v4
 
+      - name: Add Nix to PATH
+        run: |
+          set -euo pipefail
+          if [ -x /run/current-system/sw/bin/nix ]; then
+            echo /run/current-system/sw/bin >> "$GITHUB_PATH"
+            export PATH="/run/current-system/sw/bin:$PATH"
+          fi
+          nix --version
+
       - name: Verify Project
         run: |
           set -euo pipefail
-          nix --version
           nix flake check --print-build-logs
 
       - name: Build immutable Release
