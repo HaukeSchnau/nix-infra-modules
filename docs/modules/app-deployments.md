@@ -69,6 +69,10 @@ in
       policy = {
         project = "studienbuch";
         source.url = "git+https://git.example.net/example/studienbuch.git";
+        delivery = {
+          mode = "cache";
+          cacheStore = "https://cache.example.net/nix";
+        };
         domain = "studienbuch.example.net";
         public = true;
         secrets.betterAuthSecret = config.sops.secrets."studienbuch/better-auth".path;
@@ -96,10 +100,26 @@ application or auxiliary port. `projectPortRange` and
 configuration.
 
 The built Release package must carry the repository-authored descriptor at
-`share/project/descriptor.json`. Before cutover, the updater compares its
-JSON value with the raw descriptor pinned by host evaluation. Normalization is
-used internally but is deliberately not used for that identity check, so a
-concise descriptor that relies on defaults remains valid.
+`share/project/descriptor.json`. Before cutover, the updater binds that
+candidate descriptor against host policy. Development-only and descriptive
+changes do not affect Release compatibility. Parameters and Secrets are
+requirements: every required candidate binding must be available and parameter
+values must match the candidate type. Extra host bindings are retained so infra
+can land before the repository change and old releases remain roll-backable.
+
+Fields compiled into NixOS topology remain compatibility-sensitive: backend,
+action/executable, activation, state directories, health, ingress, pre-deploy
+tasks, selected maintenance jobs, and OCI auxiliaries. A change to those fields
+waits for an infra update. An incompatible candidate remains queued while the
+active release continues serving traffic.
+
+With `delivery.mode = "cache"`, CI builds and verifies the Release, waits for
+its output in the configured binary cache, and posts both the commit revision
+and immutable `/nix/store` path to the webhook. The host realizes that concrete
+path with local and remote builders disabled. It neither evaluates repository
+source nor falls back to a production build. The durable request is removed
+only after successful activation and health checks; timer reconciliation retries
+cache lag and transient failures.
 
 Service Releases receive one generated JSON file through
 `PROJECT_RUNTIME_FILE`. It contains the Project identity, realization,
@@ -148,9 +168,9 @@ previous activation executable is run again as part of rollback.
 Project service units receive conservative systemd hardening and periodic
 health recovery. Forwarded HTTPS headers and the health-check Host header are
 inferred when a domain is bound. OCI auxiliaries must use digest-pinned images
-and private host policy must approve exactly the descriptor's named auxiliary
-set, so both missing and stale approvals fail evaluation; their ports bind only
-to localhost. Host policy may also set typed Release memory thresholds through
+and private host policy must approve every descriptor-requested auxiliary.
+Stale approvals are retained harmlessly for forward changes and rollback; their
+ports bind only to localhost. Host policy may also set typed Release memory thresholds through
 `resources.memory.high`, `max`, and `swapMax`, which map to the corresponding
 systemd controls for repository-owned Release actions.
 
@@ -195,7 +215,7 @@ health-check and rollback flow, Project runtime manifest, port allocation,
 generic service hardening, structured ingress rendering, approved OCI runtime,
 and tailnet webhook plumbing.
 
-Private repos own app instances, repository URLs, credential secret names,
+Private repos own app instances, repository URLs, delivery/cache policy, credential secret names,
 webhook token secrets, domains/visibility, parameter values, OCI approval,
 maintenance-job schedules/resource policy, branch/revision policy, and
 placement on real hosts. A descriptor owns maintenance job names and actions;
@@ -206,10 +226,11 @@ policy.
 
 - App state lives under `/var/lib/app-deployments`.
 - The webhook is tailnet-only by default and requires a token when enabled.
-- The update service records requested revisions separately from deployed
-  revisions.
+- Cache-delivered requests record both the exact revision and immutable store
+  path separately from the deployed revision.
 - A failed health check keeps or restores the previous working profile.
-- Project artifacts must contain the exact pinned descriptor JSON value.
+- Project artifacts must satisfy the pinned Release topology and current host
+  bindings; extra infra bindings are allowed.
 - Project activation runs on a new cutover, never on an ordinary restart.
 - Project and OCI listener ports are deterministically allocated and remain on
   loopback.

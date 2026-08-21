@@ -755,6 +755,7 @@ let
 
   resolveParameters =
     {
+      allowUnknown ? false,
       descriptor,
       values ? { },
     }:
@@ -776,7 +777,7 @@ let
       ) normalized.parameters;
     in
     ensure "parameters" (
-      unknown == [ ]
+      allowUnknown || unknown == [ ]
     ) "unknown values: ${lib.concatStringsSep ", " unknown}" resolved;
 
   load =
@@ -839,6 +840,7 @@ let
       ) "descriptor does not define a Release realization" normalized.release;
       allowedPolicy = [
         "approvedOci"
+        "delivery"
         "domain"
         "healthRecovery"
         "jobs"
@@ -852,6 +854,7 @@ let
       ];
       checkedPolicy = checkKeys "release policy" allowedPolicy policy;
       parameters = resolveParameters {
+        allowUnknown = true;
         descriptor = normalized;
         values = checkedPolicy.parameters or { };
       };
@@ -859,62 +862,46 @@ let
       missingSecrets = lib.filter (
         name: normalized.secrets.${name}.required && !(builtins.hasAttr name secretBindings)
       ) (builtins.attrNames normalized.secrets);
-      unknownSecrets = lib.subtractLists (builtins.attrNames normalized.secrets) (
-        builtins.attrNames secretBindings
-      );
       approvedOci = checkStringList "release policy.approvedOci" (checkedPolicy.approvedOci or [ ]);
       requestedOci = builtins.attrNames release.ociAuxiliaries;
       unapprovedOci = lib.subtractLists approvedOci requestedOci;
-      staleOciApprovals = lib.subtractLists requestedOci approvedOci;
       jobs = ensure "release policy.jobs" (isAttrs (
         checkedPolicy.jobs or { }
       )) "must be an attribute set" (checkedPolicy.jobs or { });
-      unknownJobs = lib.subtractLists (builtins.attrNames release.maintenanceJobs) (
-        builtins.attrNames jobs
-      );
+      activeJobs = lib.filterAttrs (name: _: builtins.hasAttr name release.maintenanceJobs) jobs;
       resources = normalizeReleaseResources (checkedPolicy.resources or { });
     in
     ensure "release policy" (missingSecrets == [ ])
       "missing required Secret bindings: ${lib.concatStringsSep ", " missingSecrets}"
       (
-        ensure "release policy" (unknownSecrets == [ ])
-          "unknown Secret bindings: ${lib.concatStringsSep ", " unknownSecrets}"
+        ensure "release policy" (unapprovedOci == [ ])
+          "OCI auxiliaries require explicit approval: ${lib.concatStringsSep ", " unapprovedOci}"
           (
-            ensure "release policy" (unapprovedOci == [ ])
-              "OCI auxiliaries require explicit approval: ${lib.concatStringsSep ", " unapprovedOci}"
-              (
-                ensure "release policy" (staleOciApprovals == [ ])
-                  "OCI approvals do not match descriptor auxiliaries: ${lib.concatStringsSep ", " staleOciApprovals}"
-                  (
-                    ensure "release policy" (unknownJobs == [ ])
-                      "unknown maintenance jobs: ${lib.concatStringsSep ", " unknownJobs}"
-                      (
-                        {
-                          inherit (release)
-                            backend
-                            executable
-                            package
-                            ;
-                          health = release.health;
-                          project = {
-                            # Preserve the repository-authored representation so the
-                            # built artifact can be checked against exactly what host
-                            # policy pinned. The adapter normalizes this internally.
-                            inherit descriptor jobs;
-                            healthRecovery = checkedPolicy.healthRecovery or { };
-                            inherit parameters;
-                            approvedOci = approvedOci;
-                            inherit resources;
-                            secrets = secretBindings;
-                          };
-                          source = checkedPolicy.source;
-                        }
-                        // lib.optionalAttrs (checkedPolicy ? domain) { inherit (checkedPolicy) domain; }
-                        // lib.optionalAttrs (checkedPolicy ? port) { inherit (checkedPolicy) port; }
-                        // lib.optionalAttrs (checkedPolicy ? public) { inherit (checkedPolicy) public; }
-                      )
-                  )
-              )
+            {
+              inherit (release)
+                backend
+                executable
+                package
+                ;
+              health = release.health;
+              project = {
+                # Keep the repository form for artifact compatibility;
+                # deployment bindings remain a separate host-owned input.
+                inherit descriptor;
+                jobs = activeJobs;
+                parameterBindings = checkedPolicy.parameters or { };
+                healthRecovery = checkedPolicy.healthRecovery or { };
+                inherit parameters;
+                approvedOci = approvedOci;
+                inherit resources;
+                secrets = secretBindings;
+              };
+              source = checkedPolicy.source;
+            }
+            // lib.optionalAttrs (checkedPolicy ? delivery) { inherit (checkedPolicy) delivery; }
+            // lib.optionalAttrs (checkedPolicy ? domain) { inherit (checkedPolicy) domain; }
+            // lib.optionalAttrs (checkedPolicy ? port) { inherit (checkedPolicy) port; }
+            // lib.optionalAttrs (checkedPolicy ? public) { inherit (checkedPolicy) public; }
           )
       );
 in

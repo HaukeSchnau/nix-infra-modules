@@ -265,10 +265,17 @@ let
       };
     };
   };
-  pairedProjectApp = self.lib.projectDescriptor.releaseApp {
-    descriptor = pairedProjectDescriptor;
-    policy = projectPolicy;
-  };
+  pairedProjectApp =
+    self.lib.projectDescriptor.releaseApp {
+      descriptor = pairedProjectDescriptor;
+      policy = projectPolicy;
+    }
+    // {
+      delivery = {
+        mode = "cache";
+        cacheStore = "https://cache.example.net/nix";
+      };
+    };
   projectSystem = mkFleetSystem "project-01" [
     {
       vps.services.appDeployments = {
@@ -437,6 +444,59 @@ let
     (builtins.tryEval (
       builtins.deepSeq (self.lib.projectDescriptor.releaseApp { inherit descriptor policy; }) true
     )).success;
+  compatibilityPolicy = pkgs.writeText "project-release-compatibility-policy.json" (
+    builtins.toJSON {
+      descriptor = self.lib.projectDescriptor.normalize { descriptor = pairedProjectDescriptor; };
+      managedJobs = [ "cleanup" ];
+      bindings = {
+        parameters.futureInteger = 42;
+        secrets = [
+          "betterAuthSecret"
+          "futureSecret"
+        ];
+      };
+    }
+  );
+  compatibleCandidate = pkgs.writeText "project-release-compatible-candidate.json" (
+    builtins.toJSON (
+      pairedProjectDescriptor
+      // {
+        development.endpoints.preview = { };
+        parameters = pairedProjectDescriptor.parameters // {
+          futureInteger = {
+            type = "integer";
+            description = "Added after the host binding was declared.";
+          };
+        };
+        secrets = pairedProjectDescriptor.secrets // {
+          futureSecret.description = "Added after the host binding was declared.";
+        };
+      }
+    )
+  );
+  missingBindingCandidate = pkgs.writeText "project-release-missing-binding-candidate.json" (
+    builtins.toJSON (
+      pairedProjectDescriptor
+      // {
+        parameters = pairedProjectDescriptor.parameters // {
+          unbound = {
+            type = "string";
+            required = true;
+          };
+        };
+      }
+    )
+  );
+  changedTopologyCandidate = pkgs.writeText "project-release-changed-topology-candidate.json" (
+    builtins.toJSON (
+      pairedProjectDescriptor
+      // {
+        release = pairedProjectDescriptor.release // {
+          health.paths = [ "/different" ];
+        };
+      }
+    )
+  );
 in
 {
   app-deployments-contract = pkgs.runCommand "app-deployments-contract" { } ''
@@ -539,7 +599,7 @@ in
         "accepted"
       else
         "rejected"
-    }' = rejected
+    }' = accepted
     test '${
       if descriptorEvaluationSucceeds (conciseProjectDescriptor // { project = "Bad Project"; }) then
         "accepted"
@@ -601,7 +661,7 @@ in
         "accepted"
       else
         "rejected"
-    }' = rejected
+    }' = accepted
 
     ${pkgs.bash}/bin/bash -n ${projectUpdateScript}
     ${pkgs.bash}/bin/bash -n ${projectStartScript}
@@ -610,8 +670,8 @@ in
     ${pkgs.bash}/bin/bash -n ${pairedProjectPreDeployScript}
     grep -Fq 'share/project/descriptor.json' ${projectUpdateScript}
     grep -Fq 'current_descriptor_matches' ${projectUpdateScript}
-    grep -Fq 'jq -e -S .' ${projectUpdateScript}
     grep -Fq -- '-diffutils-' ${projectUpdateScript}
+    grep -Fq 'project-release-compatibility.jq' ${projectUpdateScript}
     grep -Fq 'app-deployment-demo-project-activate.service' ${projectUpdateScript}
     grep -Fq 'rollback activation' ${projectUpdateScript}
     grep -Fq 'PROJECT_RUNTIME_FILE=' ${projectStartScript}
@@ -628,25 +688,52 @@ in
     grep -Fq ' migrate' ${pairedProjectPreDeployScript}
     grep -Fq 'app-deployment-demo-project-pre-deploy-migrate.service' ${pairedProjectUpdateScript}
     grep -Fq 'cleanup_candidate' ${pairedProjectUpdateScript}
+    grep -Fq 'requested-release.json' ${pairedProjectUpdateScript}
+    grep -Fq 'nix-store --realise "$requested_store_path"' ${pairedProjectUpdateScript}
+    ! grep -Fq 'nix build --no-link' ${pairedProjectUpdateScript}
+    ! grep -Fq 'nix flake metadata' ${pairedProjectUpdateScript}
 
     pre_deploy_line="$(${pkgs.gnugrep}/bin/grep -nF 'systemctl start app-deployment-demo-project-pre-deploy-migrate.service' ${pairedProjectUpdateScript} | cut -d: -f1)"
     cutover_line="$(${pkgs.gnugrep}/bin/grep -nF 'mv -Tf "$current_link.next" "$current_link"' ${pairedProjectUpdateScript} | head -n 1 | cut -d: -f1)"
     test "$pre_deploy_line" -lt "$cutover_line"
 
-    expected_descriptor="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-descriptor-demo-project.json' ${projectUpdateScript} | head -n 1)"
-    runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-demo-project.json' ${projectUpdateScript} | head -n 1)"
-    paired_runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-demo-project.json' ${pairedProjectUpdateScript} | head -n 1)"
+    binding_policy="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-bindings-demo-project.json' ${projectUpdateScript} | head -n 1)"
+    runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-base-demo-project.json' ${projectUpdateScript} | head -n 1)"
+    paired_runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-base-demo-project.json' ${pairedProjectUpdateScript} | head -n 1)"
     grep -Fq '/project-runtime.json' ${projectStartScript}
     grep -Fq '/project-runtime.json' ${projectJobScript}
     ${pkgs.check-jsonschema}/bin/check-jsonschema \
       --schemafile ${../../../schemas/project-runtime/v2.json} \
       "$paired_runtime_manifest"
     ${pkgs.jq}/bin/jq -e '
-      .schemaVersion == 1
-      and .project == "demo-project"
-      and .release.activationExecutable == "activate-release"
-      and (.release | has("backend") | not)
-    ' "$expected_descriptor" >/dev/null
+      .descriptor.schemaVersion == 1
+      and .descriptor.project == "demo-project"
+      and .descriptor.release.activationExecutable == "activate-release"
+      and .descriptor.release.backend == "service"
+    ' "$binding_policy" >/dev/null
+
+    compatibility() {
+      ${pkgs.jq}/bin/jq -n \
+        --slurpfile host ${compatibilityPolicy} \
+        --slurpfile candidate "$1" \
+        -f ${./project-release-compatibility.jq}
+    }
+    compatibility ${compatibleCandidate} > compatible.json
+    ${pkgs.jq}/bin/jq -e '
+      .compatible
+      and .parameters.futureInteger == 42
+      and .secrets.futureSecret == "futureSecret"
+    ' compatible.json >/dev/null
+    compatibility ${missingBindingCandidate} > missing.json
+    ${pkgs.jq}/bin/jq -e '
+      (.compatible | not)
+      and (.reasons | index("missing required parameter binding: unbound"))
+    ' missing.json >/dev/null
+    compatibility ${changedTopologyCandidate} > topology.json
+    ${pkgs.jq}/bin/jq -e '
+      (.compatible | not)
+      and (.reasons | index("Release topology differs from the host-compatible contract"))
+    ' topology.json >/dev/null
     ${pkgs.jq}/bin/jq -e '
       .schemaVersion == 1
       and .project == "demo-project"
@@ -655,8 +742,8 @@ in
       and .endpoints.default.listen.host == "127.0.0.1"
       and .endpoints.default.listen.port == 18200
       and .endpoints["database-postgres"].url == "tcp://127.0.0.1:22000"
-      and .parameters.maxStorageMb == 512
-      and .secrets.betterAuthSecret == "betterAuthSecret"
+      and (.parameters | not)
+      and (.secrets | not)
     ' "$runtime_manifest" >/dev/null
     ${pkgs.jq}/bin/jq -e '
       .schemaVersion == 2
@@ -674,6 +761,11 @@ in
       and (.endpoints["database-postgres"] | has("url") | not)
       and (.endpoints["database-postgres"] | has("visibility") | not)
     ' "$paired_runtime_manifest" >/dev/null
+    ${pkgs.jq}/bin/jq -e '
+      .bindings.parameters == {}
+      and .bindings.secrets == ["betterAuthSecret"]
+      and .descriptor.parameters.maxStorageMb.default == 512
+    ' "$binding_policy" >/dev/null
 
     ${pkgs.jq}/bin/jq -e '
       .service.environment.HOME == "/var/lib/app-deployments/demo-project"

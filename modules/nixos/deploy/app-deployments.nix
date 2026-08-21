@@ -149,6 +149,13 @@ let
                   description = "Validated, non-secret Release parameter values.";
                 };
 
+                parameterBindings = lib.mkOption {
+                  type = lib.types.attrs;
+                  default = { };
+                  internal = true;
+                  description = "Unfiltered host parameter bindings retained for future compatible descriptors.";
+                };
+
                 secrets = lib.mkOption {
                   type = lib.types.attrsOf (lib.types.strMatching "^/.*");
                   default = { };
@@ -290,6 +297,27 @@ let
             type = lib.types.nullOr lib.types.str;
             default = null;
             description = "Optional SOPS secret containing a Git read token.";
+          };
+        };
+
+        delivery = {
+          mode = lib.mkOption {
+            type = lib.types.enum [
+              "source"
+              "cache"
+            ];
+            default = "source";
+            description = ''
+              Source delivery evaluates the configured flake on this host.
+              Cache delivery accepts an immutable store path from the
+              promotion webhook and only substitutes its closure.
+            '';
+          };
+
+          cacheStore = lib.mkOption {
+            type = lib.types.str;
+            default = "https://cache.example.net/nix";
+            description = "Binary cache containing promoted immutable outputs.";
           };
         };
 
@@ -476,6 +504,7 @@ let
   webhookServer = pkgs.writeText "app-deployments-webhook.py" ''
     import json
     import os
+    import re
     import subprocess
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -540,6 +569,28 @@ let
           if not all(ch in "0123456789abcdefABCDEF" for ch in revision) or len(revision) < 7:
             self.send_json(400, {"error": "invalid revision"})
             return
+        store_path = str(payload.get("storePath", "")).strip()
+        if store_path and re.fullmatch(r"/nix/store/[0-9a-df-np-sv-z]{32}-[^/]+", store_path) is None:
+          self.send_json(400, {"error": "invalid storePath"})
+          return
+
+        if app["deliveryMode"] == "cache":
+          if not revision or not store_path:
+            self.send_json(400, {"error": "cache delivery requires revision and storePath"})
+            return
+          release = {
+            "schemaVersion": 1,
+            "revision": revision,
+            "storePath": store_path,
+            "source": str(payload.get("source", "promotion-webhook")),
+          }
+          tmp_path = app["requestedReleaseFile"] + ".next"
+          os.makedirs(os.path.dirname(app["requestedReleaseFile"]), exist_ok=True)
+          with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(release, handle, sort_keys=True)
+            handle.write("\n")
+          os.replace(tmp_path, app["requestedReleaseFile"])
+        elif revision:
           tmp_path = app["requestedRevisionFile"] + ".next"
           os.makedirs(os.path.dirname(app["requestedRevisionFile"]), exist_ok=True)
           with open(tmp_path, "w", encoding="utf-8") as handle:
@@ -549,10 +600,27 @@ let
         try:
           subprocess.run(["systemctl", "start", app["updateUnit"]], check=True)
         except subprocess.CalledProcessError as error:
-          self.send_json(500, {"accepted": False, "app": app_name, "exitCode": error.returncode})
+          compatibility = None
+          try:
+            with open(app["compatibilityFile"], "r", encoding="utf-8") as handle:
+              compatibility = json.load(handle)
+          except (FileNotFoundError, json.JSONDecodeError):
+            pass
+          status = 409 if compatibility is not None and not compatibility.get("compatible", True) else 503
+          self.send_json(status, {
+            "accepted": False,
+            "app": app_name,
+            "exitCode": error.returncode,
+            "compatibility": compatibility,
+          })
           return
 
-        self.send_json(202, {"accepted": True, "app": app_name, "revision": revision or None})
+        self.send_json(202, {
+          "accepted": True,
+          "app": app_name,
+          "revision": revision or None,
+          "storePath": store_path or None,
+        })
 
     host = os.environ.get("APP_DEPLOYMENTS_WEBHOOK_HOST", "0.0.0.0")
     port = int(os.environ["APP_DEPLOYMENTS_WEBHOOK_PORT"])
@@ -626,6 +694,14 @@ in
       type = lib.types.attrsOf (
         lib.types.submodule {
           options = {
+            compatibilityFile = lib.mkOption { type = lib.types.str; };
+            deliveryMode = lib.mkOption {
+              type = lib.types.enum [
+                "source"
+                "cache"
+              ];
+            };
+            requestedReleaseFile = lib.mkOption { type = lib.types.str; };
             updateUnit = lib.mkOption { type = lib.types.str; };
             requestedRevisionFile = lib.mkOption { type = lib.types.str; };
           };

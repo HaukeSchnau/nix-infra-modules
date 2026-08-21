@@ -35,6 +35,10 @@ let
     };
     project = null;
     static.extraConfig = "";
+    delivery = {
+      mode = "source";
+      cacheStore = "https://cache.example.net/nix";
+    };
     source = {
       branch = "main";
       netrcHost = "git.example.net";
@@ -157,7 +161,7 @@ let
   };
   primaryRuntimeEndpointName =
     if projectRuntimeSchemaVersion == 2 then projectRelease.action else "default";
-  projectRuntimeManifest = pkgs.writeText "project-release-runtime-${name}.json" (
+  projectRuntimeBaseManifest = pkgs.writeText "project-release-runtime-base-${name}.json" (
     builtins.toJSON {
       schemaVersion = projectRuntimeSchemaVersion;
       project = name;
@@ -170,14 +174,21 @@ let
         ${primaryRuntimeEndpointName} = defaultRuntimeEndpoint;
       }
       // auxiliaryRuntimeEndpoints;
-      parameters = if isProject then cfg.project.parameters else { };
-      secrets = lib.mapAttrs (secretName: _: secretName) projectSecrets;
     }
     + "\n"
   );
-  expectedProjectDescriptor = pkgs.writeText "project-release-descriptor-${name}.json" (
-    builtins.toJSON cfg.project.descriptor + "\n"
+  projectBindingPolicy = pkgs.writeText "project-release-bindings-${name}.json" (
+    builtins.toJSON {
+      descriptor = descriptor;
+      managedJobs = builtins.attrNames projectJobs;
+      bindings = {
+        parameters = cfg.project.parameterBindings;
+        secrets = builtins.attrNames projectSecrets;
+      };
+    }
+    + "\n"
   );
+  projectCompatibilityJq = ./project-release-compatibility.jq;
   deployedProjectRuntimeManifest = "${stateDir}/project-runtime.json";
 
   shellPath = lib.makeBinPath [
@@ -339,9 +350,15 @@ let
     set -euo pipefail
 
     export PATH=${lib.escapeShellArg shellPath}:$PATH
-    export NIX_CONFIG=$'experimental-features = nix-command flakes\nwarn-dirty = false'
+    export NIX_CONFIG=$'experimental-features = nix-command flakes\nwarn-dirty = false${
+      lib.optionalString (
+        cfg.delivery.mode == "cache"
+      ) "\\nextra-substituters = ${cfg.delivery.cacheStore}\\nbuilders = \\nmax-jobs = 0"
+    }'
 
     state_dir=${lib.escapeShellArg stateDir}
+    requested_release_file="$state_dir/requested-release.json"
+    requested_release_snapshot="$state_dir/requested-release.active.json"
     requested_revision_file="$state_dir/requested-revision"
     current_revision_file="$state_dir/current-revision"
     previous_revision_file="$state_dir/previous-revision"
@@ -362,6 +379,7 @@ let
         "$candidate_link" "$candidate_link.next" \
         "$candidate_runtime_manifest" "$candidate_runtime_manifest.next" \
         "$candidate_gcroot" "$candidate_gcroot.next"
+      rm -f "$requested_release_snapshot"
     }
 
     cleanup() {
@@ -381,12 +399,20 @@ let
     cleanup_candidate
 
     requested_revision=""
-    if [ -s "$requested_revision_file" ]; then
+    requested_store_path=""
+    if [ -s "$requested_release_file" ]; then
+      cp "$requested_release_file" "$requested_release_snapshot"
+      requested_revision="$(jq -er '.revision' "$requested_release_snapshot")"
+      requested_store_path="$(jq -er '.storePath' "$requested_release_snapshot")"
+    elif [ -s "$requested_revision_file" ]; then
       requested_revision="$(head -n 1 "$requested_revision_file" | tr -d '\r\n')"
       rm -f "$requested_revision_file"
     fi
 
-    if [ -n "$requested_revision" ]; then
+    if [ ${lib.escapeShellArg cfg.delivery.mode} = cache ] && [ -z "$requested_store_path" ]; then
+      echo "app-deployment/${name}: no promoted cache Release is waiting"
+      exit 0
+    elif [ -n "$requested_revision" ]; then
       flake_ref=${lib.escapeShellArg (mkFlakeRef "__REVISION__")}
       flake_ref="''${flake_ref/__REVISION__/$requested_revision}"
     else
@@ -414,57 +440,95 @@ let
     }
 
     ${lib.optionalString isProject ''
-      record_matching_descriptor() {
+      bind_descriptor() {
         local descriptor="$1"
-        jq -e -S . ${lib.escapeShellArg expectedProjectDescriptor} > "$state_dir/expected-descriptor.json.next"
-        if ! jq -e -S . "$descriptor" > "$state_dir/artifact-descriptor.json.next" \
-          || ! cmp -s "$state_dir/expected-descriptor.json.next" "$state_dir/artifact-descriptor.json.next"; then
-          rm -f "$state_dir/expected-descriptor.json.next" "$state_dir/artifact-descriptor.json.next"
+        local manifest="$2"
+        local result="$state_dir/compatibility.json.next"
+
+        if ! jq -n \
+          --slurpfile host ${lib.escapeShellArg projectBindingPolicy} \
+          --slurpfile candidate "$descriptor" \
+          -f ${lib.escapeShellArg projectCompatibilityJq} > "$result"; then
+          rm -f "$result"
           return 1
         fi
+
+        jq -S . "$descriptor" > "$state_dir/artifact-descriptor.json.next"
+        jq -S '.descriptor' ${lib.escapeShellArg projectBindingPolicy} \
+          > "$state_dir/expected-descriptor.json.next"
+        if ! jq -e '.compatible' "$result" >/dev/null; then
+          jq -r '.reasons[] | "app-deployment/${name}: " + .' "$result" >&2
+          mv -f "$result" "$state_dir/compatibility.json"
+          mv -f "$state_dir/expected-descriptor.json.next" "$state_dir/expected-descriptor.json"
+          mv -f "$state_dir/artifact-descriptor.json.next" "$state_dir/artifact-descriptor.json"
+          return 1
+        fi
+
+        jq -s '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}' \
+          ${lib.escapeShellArg projectRuntimeBaseManifest} "$result" > "$manifest"
+        mv -f "$result" "$state_dir/compatibility.json"
         mv -f "$state_dir/expected-descriptor.json.next" "$state_dir/expected-descriptor.json"
         mv -f "$state_dir/artifact-descriptor.json.next" "$state_dir/artifact-descriptor.json"
       }
 
       current_descriptor_matches() {
-        local descriptor
+        local descriptor expected_runtime
         descriptor="$current_link/share/project/descriptor.json"
+        expected_runtime="$state_dir/current-project-runtime.json.next"
         [ -f "$descriptor" ] || return 1
-        record_matching_descriptor "$descriptor"
+        bind_descriptor "$descriptor" "$expected_runtime" || return 1
+        if cmp -s "$expected_runtime" "$runtime_manifest"; then
+          rm -f "$expected_runtime"
+          return 0
+        fi
+        rm -f "$expected_runtime"
+        return 1
       }
 
-      runtime_manifest_matches() {
-        [ -f "$runtime_manifest" ] \
-          && cmp -s ${lib.escapeShellArg projectRuntimeManifest} "$runtime_manifest"
-      }
     ''}
 
-    ${gitTokenSetup}
+    ${lib.optionalString (cfg.delivery.mode == "source") gitTokenSetup}
 
-    echo "app-deployment/${name}: resolving $flake_ref"
-    nix flake metadata --refresh --json "$flake_ref" > "$metadata_file"
-    resolved_revision="$(jq -r '.revision // .locked.rev // empty' "$metadata_file")"
-    if [ -z "$resolved_revision" ]; then
-      resolved_revision="$requested_revision"
-    fi
-    build_flake_ref="$flake_ref"
-    if [ -n "$resolved_revision" ]; then
-      build_flake_ref=${lib.escapeShellArg (mkFlakeRef "__REVISION__")}
-      build_flake_ref="''${build_flake_ref/__REVISION__/$resolved_revision}"
-    fi
+    ${
+      if cfg.delivery.mode == "cache" then
+        ''
+          resolved_revision="$requested_revision"
+          build_flake_ref=""
+        ''
+      else
+        ''
+          echo "app-deployment/${name}: resolving $flake_ref"
+          nix flake metadata --refresh --json "$flake_ref" > "$metadata_file"
+          resolved_revision="$(jq -r '.revision // .locked.rev // empty' "$metadata_file")"
+          if [ -z "$resolved_revision" ]; then
+            resolved_revision="$requested_revision"
+          fi
+          build_flake_ref="$flake_ref"
+          if [ -n "$resolved_revision" ]; then
+            build_flake_ref=${lib.escapeShellArg (mkFlakeRef "__REVISION__")}
+            build_flake_ref="''${build_flake_ref/__REVISION__/$resolved_revision}"
+          fi
+        ''
+    }
 
     ${if isService then serviceHealthScript else staticHealthScript}
 
     if [ -n "$resolved_revision" ] \
       && [ -f "$current_revision_file" ] \
-      && [ "$(cat "$current_revision_file")" = "$resolved_revision" ]; then
+      && [ "$(cat "$current_revision_file")" = "$resolved_revision" ] \
+      && { [ -z "$requested_store_path" ] || [ "$(readlink "$current_link")" = "$requested_store_path" ]; }; then
       sync_gcroots
       if ${
         if isService then
-          "systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && [ -x \"$current_link/bin/${cfg.executable}\" ] && ${lib.optionalString isProject "current_descriptor_matches && runtime_manifest_matches && "}check_service_health"
+          "systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && [ -x \"$current_link/bin/${cfg.executable}\" ] && ${lib.optionalString isProject "current_descriptor_matches && "}check_service_health"
         else
           "[ -d \"$current_link\" ] && ${lib.optionalString isProject "current_descriptor_matches && "}check_static_health \"$current_link\""
       }; then
+        if [ -n "$requested_store_path" ]; then
+          if cmp -s "$requested_release_snapshot" "$requested_release_file"; then
+            rm -f "$requested_release_file"
+          fi
+        fi
         echo "app-deployment/${name}: already active at $resolved_revision"
         exit 0
       fi
@@ -472,18 +536,32 @@ let
       echo "app-deployment/${name}: $resolved_revision is active but failed deployment checks; redeploying"
     fi
 
-    echo "app-deployment/${name}: building $build_flake_ref#${cfg.package}"
-    new_store_path="$(nix build --no-link --print-out-paths "$build_flake_ref#${cfg.package}")"
+    ${
+      if cfg.delivery.mode == "cache" then
+        ''
+          echo "app-deployment/${name}: substituting promoted output $requested_store_path"
+          rm -f "$state_dir/compatibility.json"
+          nix-store --realise "$requested_store_path" >/dev/null
+          new_store_path="$requested_store_path"
+        ''
+      else
+        ''
+          echo "app-deployment/${name}: building $build_flake_ref#${cfg.package}"
+          new_store_path="$(nix build --no-link --print-out-paths "$build_flake_ref#${cfg.package}")"
+        ''
+    }
     ${lib.optionalString isProject ''
       descriptor_file="$new_store_path/share/project/descriptor.json"
       if [ ! -f "$descriptor_file" ]; then
         echo "app-deployment/${name}: Project artifact is missing $descriptor_file" >&2
         exit 1
       fi
-      if ! record_matching_descriptor "$descriptor_file"; then
-        echo "app-deployment/${name}: Project artifact descriptor does not match host policy" >&2
+      if ! bind_descriptor "$descriptor_file" "$candidate_runtime_manifest.next"; then
+        echo "app-deployment/${name}: Project artifact is waiting for compatible host bindings" >&2
         exit 1
       fi
+      chmod 0644 "$candidate_runtime_manifest.next"
+      mv -f "$candidate_runtime_manifest.next" "$candidate_runtime_manifest"
       ${lib.optionalString (projectActivationExecutable != null) ''
         if [ ! -x "$new_store_path/bin/${projectActivationExecutable}" ]; then
           echo "app-deployment/${name}: missing activation executable $new_store_path/bin/${projectActivationExecutable}" >&2
@@ -514,11 +592,16 @@ let
       old_store_path="$(readlink "$current_link")"
       if [ "$new_store_path" = "$old_store_path" ] && ${
         if isService then
-          "${lib.optionalString isProject "runtime_manifest_matches && "}systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && check_service_health"
+          "${lib.optionalString isProject "current_descriptor_matches && "}systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && check_service_health"
         else
           "check_static_health \"$current_link\""
       }; then
         printf '%s\n' "$resolved_revision" > "$current_revision_file"
+        if [ -n "$requested_store_path" ]; then
+          if cmp -s "$requested_release_snapshot" "$requested_release_file"; then
+            rm -f "$requested_release_file"
+          fi
+        fi
         sync_gcroots
         echo "app-deployment/${name}: revision $resolved_revision already produces the active output"
         exit 0
@@ -533,13 +616,9 @@ let
         mv -Tf "$candidate_link.next" "$candidate_link"
         ln -sfn "$new_store_path" "$candidate_gcroot.next"
         mv -Tf "$candidate_gcroot.next" "$candidate_gcroot"
-        cp ${lib.escapeShellArg projectRuntimeManifest} "$candidate_runtime_manifest.next"
-        chmod 0644 "$candidate_runtime_manifest.next"
-        mv -f "$candidate_runtime_manifest.next" "$candidate_runtime_manifest"
         ${lib.concatMapStringsSep "\n" (
           taskName: "systemctl start ${lib.escapeShellArg "${unitName}-pre-deploy-${taskName}.service"}"
         ) projectPreDeployOrder}
-        cleanup_candidate
       fi
     ''}
 
@@ -560,7 +639,7 @@ let
     fi
 
     ${lib.optionalString isProject ''
-      cp ${lib.escapeShellArg projectRuntimeManifest} "$runtime_manifest.next"
+      cp "$candidate_runtime_manifest" "$runtime_manifest.next"
       chmod 0644 "$runtime_manifest.next"
       mv -f "$runtime_manifest.next" "$runtime_manifest"
     ''}
@@ -605,6 +684,11 @@ let
     ${lib.optionalString isService "systemctl restart ${lib.escapeShellArg "${unitName}.service"}"}
 
     if ${if isService then "check_service_health" else "check_static_health \"$current_link\""}; then
+      if [ -n "$requested_store_path" ]; then
+        if cmp -s "$requested_release_snapshot" "$requested_release_file"; then
+          rm -f "$requested_release_file"
+        fi
+      fi
       echo "app-deployment/${name}: deployed $resolved_revision"
       exit 0
     fi
@@ -678,10 +762,21 @@ let
       exit 1
     fi
 
-    actual="$(${pkgs.jq}/bin/jq -e -S . "$descriptor")"
-    expected="$(${pkgs.jq}/bin/jq -e -S . ${lib.escapeShellArg expectedProjectDescriptor})"
-    if [ "$actual" != "$expected" ]; then
-      echo "app-deployment/${name}: deployed Project artifact does not match host policy" >&2
+    result="$(${pkgs.jq}/bin/jq -n \
+      --slurpfile host ${lib.escapeShellArg projectBindingPolicy} \
+      --slurpfile candidate "$descriptor" \
+      -f ${lib.escapeShellArg projectCompatibilityJq})"
+    if ! ${pkgs.jq}/bin/jq -e '.compatible' <<<"$result" >/dev/null; then
+      ${pkgs.jq}/bin/jq -r '.reasons[] | "app-deployment/${name}: " + .' <<<"$result" >&2
+      exit 1
+    fi
+
+    expected_runtime="$(${pkgs.jq}/bin/jq -S -s \
+      '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}' \
+      ${lib.escapeShellArg projectRuntimeBaseManifest} <(printf '%s\n' "$result"))"
+    actual_runtime="$(${pkgs.jq}/bin/jq -S . ${lib.escapeShellArg deployedProjectRuntimeManifest})"
+    if [ "$expected_runtime" != "$actual_runtime" ]; then
+      echo "app-deployment/${name}: deployed Runtime Context is stale" >&2
       exit 1
     fi
   '';
@@ -1019,6 +1114,9 @@ let
           // projectJobTimers;
 
         vps.appDeployments.webhookApps.${name} = {
+          compatibilityFile = "${stateDir}/compatibility.json";
+          deliveryMode = cfg.delivery.mode;
+          requestedReleaseFile = "${stateDir}/requested-release.json";
           updateUnit = "${updateUnitName}.service";
           requestedRevisionFile = "${stateDir}/requested-revision";
         };

@@ -12,11 +12,12 @@ The public helper is exported as `lib.projectDescriptor`:
 - `requireRealizations { descriptor; expectedProject?; }` additionally requires
   both Development and Release. It supports auditing v1 repositories during a
   rolling migration; v2 enforces this invariant directly.
-- `resolveParameters { descriptor; values?; }` type-checks host values and
-  applies repository defaults.
+- `resolveParameters { descriptor; values?; allowUnknown?; }` type-checks host
+  values and applies repository defaults. Release adapters retain unknown
+  values as forward bindings when `allowUnknown` is enabled.
 - `releaseApp { descriptor; policy; }` projects a Release into the typed
-  `appDeployments` interface while preserving the raw descriptor for artifact
-  identity.
+  `appDeployments` interface while keeping repository requirements separate
+  from host bindings.
 - `lib.projectRuntime` turns the descriptor into conventional repository
   Runtime packages, local flake apps, and exact-descriptor Release artifacts;
   see [Project Runtime](./project-runtime.md).
@@ -134,6 +135,11 @@ visibility, parameter values, credential paths, and explicit OCI approval.
 Host Release policy may additionally bind typed memory high/max/swap limits;
 these remain outside the portable descriptor because they depend on machine
 capacity and placement.
+
+Release bindings are deliberately monotonic. Infra may declare a parameter,
+Secret, job schedule, or OCI approval before the pinned descriptor uses it;
+stale bindings do not invalidate an older artifact. A promoted candidate may
+add a required parameter or Secret only when the binding already exists.
 
 An Endpoint protocol describes only the portable network contract. Use `http`
 for HTTP applications and `tcp` for local socket dependencies. Do not encode
