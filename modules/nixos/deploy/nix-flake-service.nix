@@ -897,6 +897,39 @@ let
     ''}
     exec "$executable"
   '';
+  projectReleasePlanBootstrapScript = pkgs.writeShellScript "app-deployment-${name}-release-plan" ''
+    set -euo pipefail
+
+    current=${lib.escapeShellArg stateDir}/current
+    descriptor="$current/share/project/descriptor.json"
+    runtime=${lib.escapeShellArg deployedProjectRuntimeManifest}
+    plan=${lib.escapeShellArg deployedProjectReleasePlan}
+    if [ -f "$plan" ] || [ ! -f "$descriptor" ] || [ ! -f "$runtime" ]; then
+      exit 0
+    fi
+
+    result="$(${pkgs.jq}/bin/jq -n \
+      --slurpfile host ${lib.escapeShellArg projectBindingPolicy} \
+      --slurpfile candidate "$descriptor" \
+      -f ${lib.escapeShellArg projectCompatibilityJq})"
+    if ! ${pkgs.jq}/bin/jq -e '.compatible' <<<"$result" >/dev/null; then
+      ${pkgs.jq}/bin/jq -r '.reasons[] | "app-deployment/${name}: " + .' <<<"$result" >&2
+      exit 1
+    fi
+
+    expected_runtime="$(${pkgs.jq}/bin/jq -S -s \
+      '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}' \
+      ${lib.escapeShellArg projectRuntimeBaseManifest} <(printf '%s\n' "$result"))"
+    actual_runtime="$(${pkgs.jq}/bin/jq -S . "$runtime")"
+    if [ "$expected_runtime" != "$actual_runtime" ]; then
+      echo "app-deployment/${name}: cannot bootstrap a Release plan for a stale Runtime Context" >&2
+      exit 1
+    fi
+
+    ${pkgs.jq}/bin/jq -S '.releasePlan' <<<"$result" > "$plan.next"
+    chmod 0644 "$plan.next"
+    mv -f "$plan.next" "$plan"
+  '';
   projectArtifactConditionScript = pkgs.writeShellScript "app-deployment-${name}-artifact-condition" ''
     set -euo pipefail
 
@@ -1129,9 +1162,14 @@ let
         systemd.services = projectJobServices // {
           ${unitName} = lib.mkIf isService {
             description = "App deployment '${name}'";
-            after = [ "network-online.target" ] ++ projectContainerUnits ++ externalAfterUnits;
+            after = [
+              "network-online.target"
+            ]
+            ++ lib.optional isProject "${unitName}-release-plan.service"
+            ++ projectContainerUnits
+            ++ externalAfterUnits;
             wants = [ "network-online.target" ] ++ projectContainerUnits ++ externalWantedUnits;
-            requires = externalRequiredUnits;
+            requires = lib.optional isProject "${unitName}-release-plan.service" ++ externalRequiredUnits;
             environment =
               (
                 if isProject then
@@ -1196,6 +1234,15 @@ let
             };
           };
 
+          "${unitName}-release-plan" = lib.mkIf (isProject && isService) {
+            description = "Bootstrap the active Project Release plan for '${name}'";
+            before = [ "${unitName}.service" ];
+            serviceConfig = {
+              Type = "oneshot";
+              ExecStart = projectReleasePlanBootstrapScript;
+            };
+          };
+
           "${unitName}-health-recovery" =
             lib.mkIf (isProject && isService && cfg.project.healthRecovery.enable)
               {
@@ -1225,6 +1272,7 @@ let
                 OnBootSec = cfg.autoUpdate.onBootSec;
               };
             };
+
           }
           // lib.optionalAttrs (isProject && isService && cfg.project.healthRecovery.enable) {
             "${unitName}-health-recovery" = {

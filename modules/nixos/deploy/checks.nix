@@ -305,6 +305,8 @@ let
     projectSystem.config.systemd.services.app-deployment-demo-project-activate;
   projectRecoveryService =
     projectSystem.config.systemd.services.app-deployment-demo-project-health-recovery;
+  projectReleasePlanService =
+    projectSystem.config.systemd.services.app-deployment-demo-project-release-plan;
   projectUpdateScript =
     projectSystem.config.systemd.services.app-deployment-demo-project-update.serviceConfig.ExecStart;
   projectStartScript = projectService.serviceConfig.ExecStart;
@@ -390,6 +392,10 @@ let
         inherit (projectRecoveryService.serviceConfig) TimeoutStartSec;
       };
       recoveryScript = projectRecoveryService.serviceConfig.ExecStart;
+      releasePlan = {
+        inherit (projectReleasePlanService) before;
+        inherit (projectReleasePlanService.serviceConfig) ExecStart Type;
+      };
       job = {
         inherit (projectJobService) after wants;
         condition = projectJobService.serviceConfig.ExecCondition;
@@ -671,6 +677,7 @@ in
     ${pkgs.bash}/bin/bash -n ${projectStartScript}
     ${pkgs.bash}/bin/bash -n ${projectActivationScript}
     ${pkgs.bash}/bin/bash -n ${projectJobScript}
+    ${pkgs.bash}/bin/bash -n ${projectReleasePlanService.serviceConfig.ExecStart}
     grep -Fq 'share/project/descriptor.json' ${projectUpdateScript}
     grep -Fq 'current_descriptor_matches' ${projectUpdateScript}
     grep -Fq -- '-diffutils-' ${projectUpdateScript}
@@ -684,6 +691,8 @@ in
     grep -Fq 'runtime_manifest.next' ${projectUpdateScript}
     grep -Fq 'chmod 0644 "$runtime_manifest.next"' ${projectUpdateScript}
     grep -Fq 'previous_runtime_manifest' ${projectUpdateScript}
+    grep -Fq '/release-plan.json' ${projectReleasePlanService.serviceConfig.ExecStart}
+    grep -Fq '.releasePlan' ${projectReleasePlanService.serviceConfig.ExecStart}
     ! grep -Fq 'activate-release' ${projectStartScript}
     grep -Fq '.release.activationExecutable // empty' ${projectActivationScript}
     grep -Fq ' cleanup' ${projectJobScript}
@@ -794,6 +803,9 @@ in
       and (.service.condition | endswith("-app-deployment-demo-project-artifact-condition"))
       and (.service.LoadCredential | index("betterAuthSecret:/run/secrets/demo-better-auth"))
       and (.service.after | index("podman-project-demo-project-database.service"))
+      and (.service.after | index("app-deployment-demo-project-release-plan.service"))
+      and .releasePlan.Type == "oneshot"
+      and (.releasePlan.before | index("app-deployment-demo-project.service"))
       and .activation.Type == "oneshot"
       and .activation.User == "app-demo-project"
       and .updateTimer.OnActiveSec == "2min"
