@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: projectRelease
+      verification_check:
+        description: Optional flake check that covers the deployment-specific Release contract
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -36,7 +41,13 @@ jobs:
       - name: Verify Project
         run: |
           set -euo pipefail
-          nix flake check --print-build-logs
+          check='${{ inputs.verification_check }}'
+          if [ -z "$check" ]; then
+            nix flake check --print-build-logs
+          else
+            system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+            nix build ".#checks.${system}.${check}" --no-link --print-build-logs
+          fi
 
       - name: Build immutable Release
         run: |
