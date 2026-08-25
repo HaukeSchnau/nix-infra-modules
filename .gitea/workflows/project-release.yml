@@ -84,10 +84,19 @@ jobs:
 
           promotion_urls=()
           if [ -n "${PROJECT_RELEASE_PROMOTION_TARGETS:-}" ]; then
+            export PROJECT_NAME
             mapfile -t promotion_urls < <(
-              jq -er --arg project "$PROJECT_NAME" \
-                '(.[$project] // .["*"] // [])[]' \
-                <<<"$PROJECT_RELEASE_PROMOTION_TARGETS"
+              nix eval --impure --raw --expr '
+                let
+                  targets = builtins.fromJSON (builtins.getEnv "PROJECT_RELEASE_PROMOTION_TARGETS");
+                  project = builtins.getEnv "PROJECT_NAME";
+                  urls =
+                    if builtins.hasAttr project targets
+                    then builtins.getAttr project targets
+                    else targets."*" or [];
+                in
+                builtins.concatStringsSep "\n" urls
+              '
             )
           elif [ -n "${PROJECT_RELEASE_PROMOTION_URL:-}" ]; then
             promotion_urls+=("$PROJECT_RELEASE_PROMOTION_URL")
