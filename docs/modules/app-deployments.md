@@ -153,8 +153,8 @@ artifact, Runtime Context, and service untouched. Tasks with
 `failureMode = "defer"` also leave the requested Release queued and report a
 successful reconciliation, so the update timer can retry a safe cutover later.
 
-The reusable Gitea and GitHub workflows verify a Project, build its immutable
-Release, wait for cache publication, and promote the exact store path. Runner
+The reusable Gitea workflow verifies a Project, builds its immutable
+Release, waits for cache publication, and promotes the exact store path. Runner
 infrastructure supplies cache and promotion bindings. A project may map to
 multiple promotion URLs when the same Release has several placements.
 
