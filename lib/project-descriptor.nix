@@ -359,10 +359,12 @@ let
         "redirects"
         "requestBodyMaxBytes"
         "responseHeaders"
+        "streamCloseDelaySec"
       ] attrs;
       compression = checked.compression or false;
       requestBodyMaxBytes = checked.requestBodyMaxBytes or null;
       responseHeaders = checked.responseHeaders or { };
+      streamCloseDelaySec = checked.streamCloseDelaySec or null;
       redirects = lib.imap0 (
         index: redirect:
         let
@@ -449,15 +451,21 @@ let
               )
             )
             "responseHeaders must map header names to strings"
-            {
-              inherit
-                cacheRules
-                compression
-                redirects
-                requestBodyMaxBytes
-                responseHeaders
-                ;
-            }
+            (
+              ensure context
+                (streamCloseDelaySec == null || (isInt streamCloseDelaySec && streamCloseDelaySec > 0))
+                "streamCloseDelaySec must be null or a positive integer"
+                {
+                  inherit
+                    cacheRules
+                    compression
+                    redirects
+                    requestBodyMaxBytes
+                    responseHeaders
+                    streamCloseDelaySec
+                    ;
+                }
+            )
         )
     );
 
@@ -495,24 +503,39 @@ let
       checked = checkKeys context [
         "action"
         "dependsOn"
+        "failureMode"
         "secrets"
         "timeoutSec"
       ] attrs;
       action = checked.action or name;
       dependsOn = checkStringList "${context}.dependsOn" (checked.dependsOn or [ ]);
       secretNames = checkStringList "${context}.secrets" (checked.secrets or [ ]);
+      failureMode = checked.failureMode or "fail";
       timeoutSec = checked.timeoutSec or 900;
     in
     builtins.seq checkedName (
       ensure context (isString action && action != "") "action must be a non-empty string" (
-        ensure context (isInt timeoutSec && timeoutSec > 0) "timeoutSec must be a positive integer" (
-          ensure context (lib.all (secret: builtins.hasAttr secret secrets) secretNames)
-            "Secrets must reference declared names"
-            {
-              inherit action dependsOn timeoutSec;
-              secrets = secretNames;
-            }
-        )
+        ensure context
+          (builtins.elem failureMode [
+            "fail"
+            "defer"
+          ])
+          "failureMode must be fail or defer"
+          (
+            ensure context (isInt timeoutSec && timeoutSec > 0) "timeoutSec must be a positive integer" (
+              ensure context (lib.all (secret: builtins.hasAttr secret secrets) secretNames)
+                "Secrets must reference declared names"
+                {
+                  inherit
+                    action
+                    dependsOn
+                    failureMode
+                    timeoutSec
+                    ;
+                  secrets = secretNames;
+                }
+            )
+          )
       )
     );
 
@@ -842,13 +865,17 @@ let
         "approvedOci"
         "delivery"
         "domain"
+        "environment"
+        "environmentFiles"
         "healthRecovery"
         "jobs"
         "parameters"
+        "path"
         "port"
         "project"
         "public"
         "resources"
+        "runtime"
         "secrets"
         "source"
       ];
@@ -900,8 +927,14 @@ let
             }
             // lib.optionalAttrs (checkedPolicy ? delivery) { inherit (checkedPolicy) delivery; }
             // lib.optionalAttrs (checkedPolicy ? domain) { inherit (checkedPolicy) domain; }
+            // lib.optionalAttrs (checkedPolicy ? environment) { inherit (checkedPolicy) environment; }
+            // lib.optionalAttrs (checkedPolicy ? environmentFiles) {
+              inherit (checkedPolicy) environmentFiles;
+            }
+            // lib.optionalAttrs (checkedPolicy ? path) { inherit (checkedPolicy) path; }
             // lib.optionalAttrs (checkedPolicy ? port) { inherit (checkedPolicy) port; }
             // lib.optionalAttrs (checkedPolicy ? public) { inherit (checkedPolicy) public; }
+            // lib.optionalAttrs (checkedPolicy ? runtime) { inherit (checkedPolicy) runtime; }
           )
       );
 in

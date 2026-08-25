@@ -13,6 +13,7 @@ def normalized_ingress:
       compression: ($ingress.compression // false),
       requestBodyMaxBytes: ($ingress.requestBodyMaxBytes // null),
       responseHeaders: ($ingress.responseHeaders // {}),
+      streamCloseDelaySec: ($ingress.streamCloseDelaySec // null),
       redirects: (($ingress.redirects // []) | map(
         . as $redirect
         | {
@@ -36,6 +37,7 @@ def normalized_tasks:
       | .value = {
           action: (.value.action // $name),
           dependsOn: (.value.dependsOn // []),
+          failureMode: (.value.failureMode // "fail"),
           secrets: (.value.secrets // []),
           timeoutSec: (.value.timeoutSec // 900)
         }

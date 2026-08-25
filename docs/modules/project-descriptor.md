@@ -52,12 +52,14 @@ realization is placed:
   "release": {
     "action": "web",
     "preDeployTasks": {
-      "migrate": { "timeoutSec": 300 }
+      "migrate": { "timeoutSec": 300 },
+      "wait-for-idle": { "failureMode": "defer" }
     },
     "activationExecutable": "activate-release",
     "stateDirectories": ["data"],
     "ingress": {
       "compression": true,
+      "streamCloseDelaySec": 300,
       "redirects": [
         { "from": "/old", "to": "/new", "permanent": false }
       ],

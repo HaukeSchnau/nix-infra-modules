@@ -25,6 +25,14 @@ let
     environment = { };
     environmentFiles = [ ];
     path = [ ];
+    runtime = {
+      user = null;
+      group = null;
+      home = null;
+      workingDirectory = null;
+      protectHome = true;
+      readWritePaths = [ ];
+    };
     stateDirs = [ ];
     preStart = "";
     serviceConfig = { };
@@ -84,9 +92,14 @@ let
   unitName = "app-deployment-${name}";
   updateUnitName = "${unitName}-update";
   activationUnitName = "${unitName}-activate";
-  userName = "app-${name}";
+  generatedUserName = "app-${name}";
+  userName = if cfg.runtime.user == null then generatedUserName else cfg.runtime.user;
+  groupName = if cfg.runtime.group == null then userName else cfg.runtime.group;
   stateDir = "/var/lib/app-deployments/${name}";
   runtimeDir = "${stateDir}/runtime";
+  homeDir = if cfg.runtime.home == null then stateDir else cfg.runtime.home;
+  workingDirectory =
+    if cfg.runtime.workingDirectory == null then stateDir else cfg.runtime.workingDirectory;
   needsRuntimeUser =
     isService || (isProject && (projectActivationExecutable != null || projectJobs != { }));
   runsProjectActivation = isProject && (isService || projectActivationExecutable != null);
@@ -709,8 +722,8 @@ let
               --unit="${unitName}-pre-deploy-$task"
               --service-type=oneshot
               --uid=${lib.escapeShellArg userName}
-              --gid=${lib.escapeShellArg userName}
-              --working-directory=${lib.escapeShellArg stateDir}
+              --gid=${lib.escapeShellArg groupName}
+              --working-directory=${lib.escapeShellArg workingDirectory}
               --property="TimeoutStartSec=''${timeout}s"
               --property=CapabilityBoundingSet=
               --property=LockPersonality=true
@@ -719,12 +732,14 @@ let
               --property=PrivateTmp=true
               --property=ProtectClock=true
               --property=ProtectControlGroups=true
-              --property=ProtectHome=true
+              --property=ProtectHome=${if cfg.runtime.protectHome then "true" else "false"}
               --property=ProtectKernelLogs=true
               --property=ProtectKernelModules=true
               --property=ProtectKernelTunables=true
               --property=ProtectSystem=strict
-              --property=ReadWritePaths=${lib.escapeShellArg runtimeDir}
+              --property=ReadWritePaths=${
+                lib.escapeShellArg (lib.concatStringsSep " " ([ runtimeDir ] ++ cfg.runtime.readWritePaths))
+              }
               --property=RemoveIPC=true
               --property="RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX"
               --property=RestrictRealtime=true
@@ -743,8 +758,15 @@ let
               ) "--property=MemorySwapMax=${lib.escapeShellArg projectMemory.swapMax}"}
             )
             systemd_run_args+=("''${credential_args[@]}")
-            systemd-run "''${systemd_run_args[@]}" \
-              ${projectPreDeployTaskScript} "$task"
+            if ! systemd-run "''${systemd_run_args[@]}" \
+              ${projectPreDeployTaskScript} "$task"; then
+              failure_mode="$(jq -er --arg task "$task" '.preDeployTasks[$task].failureMode' "$candidate_release_plan")"
+              if [ "$failure_mode" = defer ]; then
+                echo "app-deployment/${name}: pre-deploy task $task deferred activation"
+                exit 0
+              fi
+              exit 1
+            fi
           done
         fi
       fi
@@ -1043,8 +1065,8 @@ let
         ExecCondition = projectArtifactConditionScript;
         ExecStart = projectJobScripts.${jobName};
         User = userName;
-        Group = userName;
-        WorkingDirectory = stateDir;
+        Group = groupName;
+        WorkingDirectory = workingDirectory;
       }
       // projectHardening
       // lib.optionalAttrs (projectSecrets != { }) {
@@ -1086,7 +1108,11 @@ let
   '';
   projectServiceCaddyConfig = ''
     ${projectIngressConfig}
-    reverse_proxy ${cfg.host}:${toString cfg.port}
+    reverse_proxy ${cfg.host}:${toString cfg.port} {
+      ${lib.optionalString (projectRelease.ingress.streamCloseDelaySec != null) (
+        "stream_close_delay ${toString projectRelease.ingress.streamCloseDelaySec}s"
+      )}
+    }
   '';
   projectHealthRecoveryScript = pkgs.writeShellScript "app-deployment-${name}-health-recovery" ''
     set -euo pipefail
@@ -1122,12 +1148,12 @@ let
     PrivateTmp = true;
     ProtectClock = true;
     ProtectControlGroups = true;
-    ProtectHome = true;
+    ProtectHome = cfg.runtime.protectHome;
     ProtectKernelLogs = true;
     ProtectKernelModules = true;
     ProtectKernelTunables = true;
     ProtectSystem = "strict";
-    ReadWritePaths = [ runtimeDir ];
+    ReadWritePaths = [ runtimeDir ] ++ cfg.runtime.readWritePaths;
     RemoveIPC = true;
     RestrictAddressFamilies = [
       "AF_INET"
@@ -1147,15 +1173,15 @@ let
   runtimeConfig =
     if cfg.enable then
       {
-        users.users = lib.optionalAttrs needsRuntimeUser {
-          ${userName} = {
+        users.users = lib.optionalAttrs (needsRuntimeUser && cfg.runtime.user == null) {
+          ${generatedUserName} = {
             isSystemUser = true;
-            group = userName;
+            group = generatedUserName;
             home = stateDir;
           };
         };
-        users.groups = lib.optionalAttrs needsRuntimeUser {
-          ${userName} = { };
+        users.groups = lib.optionalAttrs (needsRuntimeUser && cfg.runtime.user == null) {
+          ${generatedUserName} = { };
         };
 
         systemd.tmpfiles.rules = [
@@ -1164,11 +1190,11 @@ let
         ]
         ++ lib.optionals needsRuntimeUser (
           [
-            "d ${runtimeDir} 0750 ${userName} ${userName} -"
-            "d ${runtimeDir}/secrets 0700 ${userName} ${userName} -"
+            "d ${runtimeDir} 0750 ${userName} ${groupName} -"
+            "d ${runtimeDir}/secrets 0700 ${userName} ${groupName} -"
           ]
-          ++ (map (dir: "d ${runtimeDir}/${dir} 0750 ${userName} ${userName} -") projectStateDirectories)
-          ++ (map (dir: "d ${dir} 0750 ${userName} ${userName} -") cfg.stateDirs)
+          ++ (map (dir: "d ${runtimeDir}/${dir} 0750 ${userName} ${groupName} -") projectStateDirectories)
+          ++ (map (dir: "d ${dir} 0750 ${userName} ${groupName} -") cfg.stateDirs)
         );
 
         systemd.services = projectJobServices // {
@@ -1185,12 +1211,12 @@ let
             environment =
               (
                 if isProject then
-                  { HOME = stateDir; }
+                  { HOME = homeDir; }
                 else
                   {
                     HOST = cfg.host;
                     PORT = toString cfg.port;
-                    HOME = stateDir;
+                    HOME = homeDir;
                   }
               )
               // cfg.environment;
@@ -1200,8 +1226,8 @@ let
               Restart = "always";
               RestartSec = "15s";
               User = userName;
-              Group = userName;
-              WorkingDirectory = stateDir;
+              Group = groupName;
+              WorkingDirectory = workingDirectory;
             }
             // lib.optionalAttrs isProject {
               ExecCondition = projectArtifactConditionScript;
@@ -1237,8 +1263,8 @@ let
               Type = "oneshot";
               ExecStart = activationScript;
               User = userName;
-              Group = userName;
-              WorkingDirectory = stateDir;
+              Group = groupName;
+              WorkingDirectory = workingDirectory;
             }
             // projectHardening
             // lib.optionalAttrs (projectSecrets != { }) {

@@ -259,7 +259,11 @@ let
     schemaVersion = 2;
     development = { };
     release = conciseProjectDescriptor.release // {
+      ingress = conciseProjectDescriptor.release.ingress // {
+        streamCloseDelaySec = 300;
+      };
       preDeployTasks.migrate = {
+        failureMode = "defer";
         secrets = [ "betterAuthSecret" ];
         timeoutSec = 120;
       };
@@ -599,6 +603,15 @@ in
       if normalizedProjectDescriptor.secrets.betterAuthSecret.required then "required" else "optional"
     }' = required
     test '${toString (builtins.elemAt normalizedProjectDescriptor.release.ingress.redirects 0).status}' = 307
+    test '${
+      toString
+        (self.lib.projectDescriptor.normalize { descriptor = pairedProjectDescriptor; })
+        .release.ingress.streamCloseDelaySec
+    }' = 300
+    test '${
+      (self.lib.projectDescriptor.normalize { descriptor = pairedProjectDescriptor; })
+      .release.preDeployTasks.migrate.failureMode
+    }' = defer
     test '${normalizedProjectDescriptor.release.ociAuxiliaries.database.ports.postgres.protocol}' = tcp
     test '${toString normalizedDevelopmentHealthDescriptor.development.endpoints.web.health.intervalSec}' = 1
     test '${toString normalizedDevelopmentHealthDescriptor.development.endpoints.web.health.requestTimeoutSec}' = 15
@@ -755,6 +768,10 @@ in
     grep -Fq -- '--property=LoadCredential=$secret:$path' ${pairedProjectUpdateScript}
     grep -Fq -- '--property=NoNewPrivileges=true' ${pairedProjectUpdateScript}
     grep -Fq '.preDeployOrder[]' ${pairedProjectUpdateScript}
+    grep -Fq '.preDeployTasks[$task].failureMode' ${pairedProjectUpdateScript}
+    grep -Fq 'stream_close_delay 300s' ${
+      pairedProjectSystem.config.vps.services.caddy.virtualHosts."demo-project.example.net".extraConfig
+    }
     grep -Fq 'cleanup_candidate' ${pairedProjectUpdateScript}
     grep -Fq 'requested-release.json' ${pairedProjectUpdateScript}
     grep -Fq 'nix-store --realise "$requested_store_path"' ${pairedProjectUpdateScript}
@@ -809,6 +826,7 @@ in
       and .releasePlan.preDeployOrder == ["migrate", "warmup"]
       and .releasePlan.preDeployTasks.migrate.action == "migrate"
       and .releasePlan.preDeployTasks.migrate.timeoutSec == 120
+      and .releasePlan.preDeployTasks.migrate.failureMode == "defer"
       and .releasePlan.preDeployTasks.warmup.action == "warm-cache"
     ' health.json >/dev/null
     compatibility ${changedActionsCandidate} > actions.json

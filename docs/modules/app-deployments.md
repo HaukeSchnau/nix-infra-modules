@@ -149,12 +149,19 @@ Schema v2 service Releases may declare `preDeployTasks`. The updater runs their
 acyclic dependency graph from a GC-rooted candidate artifact and candidate
 Runtime Context before it changes `current`. Each task has its own timeout and
 receives only its declared systemd credentials. A failed task leaves the active
-artifact, Runtime Context, and service untouched.
+artifact, Runtime Context, and service untouched. Tasks with
+`failureMode = "defer"` also leave the requested Release queued and report a
+successful reconciliation, so the update timer can retry a safe cutover later.
 
-The reusable Gitea workflow at `.gitea/workflows/project-release.yml` verifies
-a Project, builds its immutable Release, waits for cache publication, and
-promotes the exact store path. Cache and promotion endpoints plus the promotion
-credential are bindings supplied by the runner's infrastructure.
+The reusable Gitea and GitHub workflows verify a Project, build its immutable
+Release, wait for cache publication, and promote the exact store path. Runner
+infrastructure supplies cache and promotion bindings. A project may map to
+multiple promotion URLs when the same Release has several placements.
+
+Deployments use an isolated `app-<name>` account by default. Host policy may
+instead bind an existing user, group, home, working directory, and writable
+paths. This is intended for services that operate on user-owned state while
+keeping those deployment choices out of the repository descriptor.
 
 Pre-deploy tasks must be idempotent and backward-compatible with the active
 service. The updater does not reverse a successful task if later activation or

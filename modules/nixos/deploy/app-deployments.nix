@@ -90,6 +90,44 @@ let
           description = "Packages added to the application service PATH.";
         };
 
+        runtime = {
+          user = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Existing user for Release actions; null creates app-<name>.";
+          };
+
+          group = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Group for Release actions; defaults to the effective user.";
+          };
+
+          home = lib.mkOption {
+            type = lib.types.nullOr (lib.types.strMatching "^/.*");
+            default = null;
+            description = "HOME for Release actions; defaults to managed deployment state.";
+          };
+
+          workingDirectory = lib.mkOption {
+            type = lib.types.nullOr (lib.types.strMatching "^/.*");
+            default = null;
+            description = "Working directory for Release actions; defaults to managed deployment state.";
+          };
+
+          protectHome = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Whether systemd hides home directories from Release actions.";
+          };
+
+          readWritePaths = lib.mkOption {
+            type = lib.types.listOf (lib.types.strMatching "^/.*");
+            default = [ ];
+            description = "Additional host paths writable by Release actions.";
+          };
+        };
+
         stateDirs = lib.mkOption {
           type = lib.types.listOf lib.types.str;
           default = [ ];

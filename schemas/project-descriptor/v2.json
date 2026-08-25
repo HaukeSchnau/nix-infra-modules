@@ -79,6 +79,7 @@
           "type": "array",
           "items": { "$ref": "#/$defs/name" }
         },
+        "failureMode": { "enum": ["fail", "defer"] },
         "secrets": {
           "type": "array",
           "items": { "type": "string" }
