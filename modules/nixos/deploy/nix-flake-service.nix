@@ -185,7 +185,12 @@ let
   projectSecretBindings = pkgs.writeText "project-release-secret-bindings-${name}.json" (
     builtins.toJSON projectSecrets + "\n"
   );
-  projectCompatibilityJq = ./project-release-compatibility.jq;
+  # A flake-source path has no derivation string context, so interpolating it into a generated
+  # script does not retain the source as a runtime dependency. Materialize the policy as its own
+  # store object so garbage collection cannot leave deployed updater scripts with a dangling path.
+  projectCompatibilityJq = pkgs.writeText "project-release-compatibility.jq" (
+    builtins.readFile ./project-release-compatibility.jq
+  );
   deployedProjectRuntimeManifest = "${stateDir}/project-runtime.json";
   deployedProjectReleasePlan = "${stateDir}/release-plan.json";
 
