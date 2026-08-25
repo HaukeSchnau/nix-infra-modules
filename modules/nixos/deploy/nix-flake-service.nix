@@ -26,6 +26,7 @@ let
     environmentFiles = [ ];
     path = [ ];
     runtime = {
+      isolation = "isolated";
       user = null;
       group = null;
       home = null;
@@ -725,26 +726,28 @@ let
               --gid=${lib.escapeShellArg groupName}
               --working-directory=${lib.escapeShellArg workingDirectory}
               --property="TimeoutStartSec=''${timeout}s"
-              --property=CapabilityBoundingSet=
-              --property=LockPersonality=true
-              --property=NoNewPrivileges=true
-              --property=PrivateDevices=true
-              --property=PrivateTmp=true
-              --property=ProtectClock=true
-              --property=ProtectControlGroups=true
-              --property=ProtectHome=${if cfg.runtime.protectHome then "true" else "false"}
-              --property=ProtectKernelLogs=true
-              --property=ProtectKernelModules=true
-              --property=ProtectKernelTunables=true
-              --property=ProtectSystem=strict
-              --property=ReadWritePaths=${
-                lib.escapeShellArg (lib.concatStringsSep " " ([ runtimeDir ] ++ cfg.runtime.readWritePaths))
-              }
-              --property=RemoveIPC=true
-              --property="RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX"
-              --property=RestrictRealtime=true
-              --property=RestrictSUIDSGID=true
-              --property=SystemCallArchitectures=native
+              ${lib.optionalString (cfg.runtime.isolation == "isolated") ''
+                --property=CapabilityBoundingSet=
+                --property=LockPersonality=true
+                --property=NoNewPrivileges=true
+                --property=PrivateDevices=true
+                --property=PrivateTmp=true
+                --property=ProtectClock=true
+                --property=ProtectControlGroups=true
+                --property=ProtectHome=${if cfg.runtime.protectHome then "true" else "false"}
+                --property=ProtectKernelLogs=true
+                --property=ProtectKernelModules=true
+                --property=ProtectKernelTunables=true
+                --property=ProtectSystem=strict
+                --property=ReadWritePaths=${
+                  lib.escapeShellArg (lib.concatStringsSep " " ([ runtimeDir ] ++ cfg.runtime.readWritePaths))
+                }
+                --property=RemoveIPC=true
+                --property="RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX"
+                --property=RestrictRealtime=true
+                --property=RestrictSUIDSGID=true
+                --property=SystemCallArchitectures=native
+              ''}
               --property=TimeoutStopSec=30s
               --property=UMask=0027
               ${lib.optionalString (
@@ -1068,7 +1071,7 @@ let
         Group = groupName;
         WorkingDirectory = workingDirectory;
       }
-      // projectHardening
+      // projectServicePolicy
       // lib.optionalAttrs (projectSecrets != { }) {
         LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
       }
@@ -1140,7 +1143,11 @@ let
     ${serviceHealthScript}
     check_service_health "$release_plan"
   '';
-  projectHardening = {
+  projectServicePolicy = {
+    TimeoutStopSec = "30s";
+    UMask = "0027";
+  }
+  // lib.optionalAttrs (cfg.runtime.isolation == "isolated") {
     CapabilityBoundingSet = "";
     LockPersonality = true;
     NoNewPrivileges = true;
@@ -1163,8 +1170,6 @@ let
     RestrictRealtime = true;
     RestrictSUIDSGID = true;
     SystemCallArchitectures = "native";
-    TimeoutStopSec = "30s";
-    UMask = "0027";
   }
   // lib.optionalAttrs (projectMemory.high != null) { MemoryHigh = projectMemory.high; }
   // lib.optionalAttrs (projectMemory.max != null) { MemoryMax = projectMemory.max; }
@@ -1232,7 +1237,7 @@ let
             // lib.optionalAttrs isProject {
               ExecCondition = projectArtifactConditionScript;
             }
-            // lib.optionalAttrs isProject projectHardening
+            // lib.optionalAttrs isProject projectServicePolicy
             // lib.optionalAttrs (isProject && projectSecrets != { }) {
               LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
             }
@@ -1266,7 +1271,7 @@ let
               Group = groupName;
               WorkingDirectory = workingDirectory;
             }
-            // projectHardening
+            // projectServicePolicy
             // lib.optionalAttrs (projectSecrets != { }) {
               LoadCredential = lib.mapAttrsToList (secretName: path: "${secretName}:${path}") projectSecrets;
             };

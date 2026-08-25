@@ -255,6 +255,11 @@ let
     descriptor = conciseProjectDescriptor;
     policy = projectPolicy;
   };
+  trustedProjectApp = projectApp // {
+    runtime = (projectApp.runtime or { }) // {
+      isolation = "trusted";
+    };
+  };
   pairedProjectDescriptor = conciseProjectDescriptor // {
     schemaVersion = 2;
     development = { };
@@ -285,6 +290,15 @@ let
       vps.services.appDeployments = {
         enable = true;
         apps.demo-project = projectApp;
+      };
+      vps.appDeployments.webhook.enable = false;
+    }
+  ];
+  trustedProjectSystem = mkFleetSystem "project-trusted-01" [
+    {
+      vps.services.appDeployments = {
+        enable = true;
+        apps.demo-project = trustedProjectApp;
       };
       vps.appDeployments.webhook.enable = false;
     }
@@ -331,6 +345,35 @@ let
   projectActivationScript = projectActivationService.serviceConfig.ExecStart;
   projectJobService = projectSystem.config.systemd.services.app-deployment-demo-project-job-cleanup;
   projectJobScript = projectJobService.serviceConfig.ExecStart;
+  trustedProjectService = trustedProjectSystem.config.systemd.services.app-deployment-demo-project;
+  trustedProjectActivationService =
+    trustedProjectSystem.config.systemd.services.app-deployment-demo-project-activate;
+  trustedProjectJobService =
+    trustedProjectSystem.config.systemd.services.app-deployment-demo-project-job-cleanup;
+  trustedProjectUpdateScript =
+    trustedProjectSystem.config.systemd.services.app-deployment-demo-project-update.serviceConfig.ExecStart;
+  sandboxProperties = [
+    "CapabilityBoundingSet"
+    "LockPersonality"
+    "NoNewPrivileges"
+    "PrivateDevices"
+    "PrivateTmp"
+    "ProtectClock"
+    "ProtectControlGroups"
+    "ProtectHome"
+    "ProtectKernelLogs"
+    "ProtectKernelModules"
+    "ProtectKernelTunables"
+    "ProtectSystem"
+    "ReadWritePaths"
+    "RemoveIPC"
+    "RestrictAddressFamilies"
+    "RestrictRealtime"
+    "RestrictSUIDSGID"
+    "SystemCallArchitectures"
+  ];
+  presentSandboxProperties =
+    service: lib.filter (name: builtins.hasAttr name service.serviceConfig) sandboxProperties;
   pairedProjectStartScript =
     pairedProjectSystem.config.systemd.services.app-deployment-demo-project.serviceConfig.ExecStart;
   pairedProjectUpdateScript =
@@ -439,6 +482,13 @@ let
               Unit
               ;
           };
+      };
+      trusted = {
+        serviceSandbox = presentSandboxProperties trustedProjectService;
+        activationSandbox = presentSandboxProperties trustedProjectActivationService;
+        jobSandbox = presentSandboxProperties trustedProjectJobService;
+        serviceUMask = trustedProjectService.serviceConfig.UMask;
+        updaterUsesSandbox = lib.hasInfix "--property=NoNewPrivileges=true" trustedProjectUpdateScript;
       };
       staticCaddy =
         staticProjectSystem.config.vps.services.caddy.virtualHosts."static-project.example.net";
@@ -916,6 +966,11 @@ in
       and .job.timer.OnActiveSec == "15min"
       and .job.timer.OnUnitActiveSec == "1d"
       and .job.timer.RandomizedDelaySec == "30min"
+      and .trusted.serviceSandbox == []
+      and .trusted.activationSandbox == []
+      and .trusted.jobSandbox == []
+      and .trusted.serviceUMask == "0027"
+      and .trusted.updaterUsesSandbox == false
       and (.staticCaddy.extraConfig | contains("@project_metadata path /share/project/*"))
       and (.staticCaddy.extraConfig | contains("respond @project_metadata 404"))
       and (.tmpfiles | map(contains("/runtime/data")) | any)

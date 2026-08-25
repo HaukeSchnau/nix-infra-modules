@@ -91,6 +91,18 @@ let
         };
 
         runtime = {
+          isolation = lib.mkOption {
+            type = lib.types.enum [
+              "isolated"
+              "trusted"
+            ];
+            default = "isolated";
+            description = ''
+              Process isolation for Release actions. trusted keeps the service
+              under its configured user but does not apply the systemd sandbox.
+            '';
+          };
+
           user = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
