@@ -228,6 +228,21 @@ let
   normalizedProjectDescriptor = self.lib.projectDescriptor.normalize {
     descriptor = conciseProjectDescriptor;
   };
+  renormalizedProjectDescriptor = self.lib.projectDescriptor.normalize {
+    descriptor = normalizedProjectDescriptor;
+  };
+  normalizedCalendarJobDescriptor = self.lib.projectDescriptor.normalize {
+    descriptor = conciseProjectDescriptor // {
+      release = conciseProjectDescriptor.release // {
+        maintenanceJobs.cleanup.schedule = {
+          calendar = "*-*-* 03:15:00";
+        };
+      };
+    };
+  };
+  renormalizedCalendarJobDescriptor = self.lib.projectDescriptor.normalize {
+    descriptor = normalizedCalendarJobDescriptor;
+  };
   normalizedDevelopmentHealthDescriptor = self.lib.projectDescriptor.normalize {
     descriptor = conciseProjectDescriptor // {
       schemaVersion = 2;
@@ -695,6 +710,8 @@ in
     test '${normalizedProjectDescriptor.release.executable}' = project-release-runtime
     test '${normalizedProjectDescriptor.release.maintenanceJobs.cleanup.schedule.interval}' = 6h
     test '${normalizedProjectDescriptor.release.maintenanceJobs.cleanup.schedule.cadence}' = fixed
+    test '${renormalizedProjectDescriptor.release.maintenanceJobs.cleanup.schedule.interval}' = 6h
+    test '${renormalizedCalendarJobDescriptor.release.maintenanceJobs.cleanup.schedule.calendar}' = '*-*-* 03:15:00'
     test '${defaultScheduleProjectSystem.config.systemd.timers.app-deployment-demo-project-job-cleanup.timerConfig.OnUnitActiveSec}' = 6h
     test '${defaultScheduleProjectSystem.config.systemd.timers.app-deployment-demo-project-job-cleanup.timerConfig.OnUnitInactiveSec}' = 6h
     test '${

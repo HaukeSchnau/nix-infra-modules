@@ -558,7 +558,14 @@ let
       ] attrs;
       calendar = checked.calendar or null;
       interval = checked.interval or null;
-      cadence = checked.cadence or "spaced";
+      requestedCadence = checked.cadence or null;
+      cadence =
+        if interval == null then
+          null
+        else if requestedCadence == null then
+          "spaced"
+        else
+          requestedCadence;
     in
     ensure context ((calendar == null) != (interval == null))
       "must set exactly one of calendar or interval"
@@ -571,7 +578,7 @@ let
               (
                 ensure context
                   (
-                    interval == null
+                    cadence == null
                     || builtins.elem cadence [
                       "fixed"
                       "spaced"
@@ -579,7 +586,7 @@ let
                   )
                   "cadence must be fixed or spaced for interval schedules"
                   (
-                    ensure context (interval != null || !(checked ? cadence))
+                    ensure context (interval != null || requestedCadence == null)
                       "cadence only applies to interval schedules"
                       {
                         inherit calendar interval;
