@@ -1353,9 +1353,9 @@ let
           // projectJobTimers;
 
         vps.appDeployments.webhookApps.${name} = {
-          bindingPolicyFile = lib.optionalString isProject projectBindingPolicy;
+          bindingPolicyFile = lib.optionalString isProject "${projectBindingPolicy}";
           compatibilityFile = "${stateDir}/compatibility.json";
-          compatibilityProgram = lib.optionalString isProject projectCompatibilityJq;
+          compatibilityProgram = lib.optionalString isProject "${projectCompatibilityJq}";
           deliveryMode = cfg.delivery.mode;
           requestedReleaseFile = "${stateDir}/requested-release.json";
           updateUnit = "${updateUnitName}.service";
