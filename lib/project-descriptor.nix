@@ -1074,7 +1074,14 @@ let
             else
               defaultSchedule.interval;
           defaultCadence = if defaultSchedule == null then "spaced" else defaultSchedule.cadence or "spaced";
-          cadence = if interval == null then null else policy.cadence or defaultCadence;
+          requestedCadence = policy.cadence or null;
+          cadence =
+            if interval == null then
+              null
+            else if requestedCadence == null then
+              defaultCadence
+            else
+              requestedCadence;
         in
         ensure context ((calendar == null) != (interval == null))
           "must set exactly one of calendar or interval, either in the descriptor or host policy"

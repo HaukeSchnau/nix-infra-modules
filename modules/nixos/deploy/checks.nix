@@ -279,6 +279,12 @@ let
     descriptor = conciseProjectDescriptor;
     policy = builtins.removeAttrs projectPolicy [ "jobs" ];
   };
+  nullCadenceScheduleProjectApp = self.lib.projectDescriptor.releaseApp {
+    descriptor = conciseProjectDescriptor;
+    policy = builtins.removeAttrs projectPolicy [ "jobs" ] // {
+      jobs.cleanup.cadence = null;
+    };
+  };
   disabledScheduleProjectApp = self.lib.projectDescriptor.releaseApp {
     descriptor = conciseProjectDescriptor;
     policy = projectPolicy // {
@@ -331,6 +337,15 @@ let
       vps.services.appDeployments = {
         enable = true;
         apps.demo-project = defaultScheduleProjectApp;
+      };
+      vps.appDeployments.webhook.enable = false;
+    }
+  ];
+  nullCadenceScheduleProjectSystem = mkFleetSystem "project-null-cadence-schedule-01" [
+    {
+      vps.services.appDeployments = {
+        enable = true;
+        apps.demo-project = nullCadenceScheduleProjectApp;
       };
       vps.appDeployments.webhook.enable = false;
     }
@@ -714,6 +729,7 @@ in
     test '${renormalizedCalendarJobDescriptor.release.maintenanceJobs.cleanup.schedule.calendar}' = '*-*-* 03:15:00'
     test '${defaultScheduleProjectSystem.config.systemd.timers.app-deployment-demo-project-job-cleanup.timerConfig.OnUnitActiveSec}' = 6h
     test '${defaultScheduleProjectSystem.config.systemd.timers.app-deployment-demo-project-job-cleanup.timerConfig.OnUnitInactiveSec}' = 6h
+    test '${nullCadenceScheduleProjectSystem.config.systemd.timers.app-deployment-demo-project-job-cleanup.timerConfig.OnUnitActiveSec}' = 6h
     test '${
       if
         builtins.hasAttr "app-deployment-demo-project-job-cleanup" disabledScheduleProjectSystem.config.systemd.timers
