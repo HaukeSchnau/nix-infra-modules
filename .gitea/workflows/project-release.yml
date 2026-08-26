@@ -80,7 +80,7 @@ jobs:
           }
 
           payload="$(jq -cn --argjson descriptor "$descriptor" '{descriptor: $descriptor}')"
-          while IFS= read -r promotion_url; do
+          while IFS= read -r promotion_url || [ -n "$promotion_url" ]; do
             status="$(curl --silent --show-error \
               --output preflight.json \
               --write-out '%{http_code}' \
@@ -147,7 +147,7 @@ jobs:
             '{"revision":"%s","storePath":"%s","source":"actions"}' \
             "$GITHUB_SHA" "$RELEASE_STORE_PATH"
 
-          while IFS= read -r promotion_url; do
+          while IFS= read -r promotion_url || [ -n "$promotion_url" ]; do
             promoted=false
             for _ in $(seq 1 30); do
               status="$(curl --silent --show-error \
