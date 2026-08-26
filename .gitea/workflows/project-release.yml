@@ -43,6 +43,12 @@ jobs:
           fi
           nix --version
 
+      - name: Add release tools to PATH
+        run: |
+          set -euo pipefail
+          jq_path="$(nix build 'nixpkgs#jq^bin' --no-link --print-out-paths)"
+          printf '%s/bin\n' "$jq_path" >> "$GITHUB_PATH"
+
       - name: Preflight host bindings
         run: |
           set -euo pipefail
