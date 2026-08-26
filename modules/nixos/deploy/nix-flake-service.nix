@@ -1121,6 +1121,14 @@ let
       }
       // lib.optionalAttrs (policy.interval != null) {
         OnActiveSec = policy.onBootSec;
+      }
+      // lib.optionalAttrs (policy.interval != null && policy.cadence == "fixed") {
+        OnUnitActiveSec = policy.interval;
+        # If a run fails, systemd never considers the unit active. Keep the
+        # normal cadence alive without changing successful fixed-rate runs.
+        OnUnitInactiveSec = policy.interval;
+      }
+      // lib.optionalAttrs (policy.interval != null && policy.cadence == "spaced") {
         OnUnitInactiveSec = policy.interval;
       };
     }

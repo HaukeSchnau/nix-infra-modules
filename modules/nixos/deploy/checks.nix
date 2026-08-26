@@ -195,6 +195,10 @@ let
       stateDirectories = [ "data" ];
       maintenanceJobs.cleanup = {
         action = "cleanup";
+        schedule = {
+          cadence = "fixed";
+          interval = "6h";
+        };
         secrets = [ "betterAuthSecret" ];
       };
       ingress = {
@@ -241,6 +245,7 @@ let
     secrets.betterAuthSecret = "/run/secrets/demo-better-auth";
     approvedOci = [ "database" ];
     jobs.cleanup = {
+      cadence = "spaced";
       interval = "1d";
       onBootSec = "15min";
       randomizedDelaySec = "30min";
@@ -254,6 +259,16 @@ let
   projectApp = self.lib.projectDescriptor.releaseApp {
     descriptor = conciseProjectDescriptor;
     policy = projectPolicy;
+  };
+  defaultScheduleProjectApp = self.lib.projectDescriptor.releaseApp {
+    descriptor = conciseProjectDescriptor;
+    policy = builtins.removeAttrs projectPolicy [ "jobs" ];
+  };
+  disabledScheduleProjectApp = self.lib.projectDescriptor.releaseApp {
+    descriptor = conciseProjectDescriptor;
+    policy = projectPolicy // {
+      jobs.cleanup.enable = false;
+    };
   };
   trustedProjectApp = projectApp // {
     runtime = (projectApp.runtime or { }) // {
@@ -292,6 +307,24 @@ let
       vps.services.appDeployments = {
         enable = true;
         apps.demo-project = projectApp;
+      };
+      vps.appDeployments.webhook.enable = false;
+    }
+  ];
+  defaultScheduleProjectSystem = mkFleetSystem "project-default-schedule-01" [
+    {
+      vps.services.appDeployments = {
+        enable = true;
+        apps.demo-project = defaultScheduleProjectApp;
+      };
+      vps.appDeployments.webhook.enable = false;
+    }
+  ];
+  disabledScheduleProjectSystem = mkFleetSystem "project-disabled-schedule-01" [
+    {
+      vps.services.appDeployments = {
+        enable = true;
+        apps.demo-project = disabledScheduleProjectApp;
       };
       vps.appDeployments.webhook.enable = false;
     }
@@ -660,6 +693,18 @@ in
     }' = service
     test '${normalizedProjectDescriptor.release.package}' = projectRelease
     test '${normalizedProjectDescriptor.release.executable}' = project-release-runtime
+    test '${normalizedProjectDescriptor.release.maintenanceJobs.cleanup.schedule.interval}' = 6h
+    test '${normalizedProjectDescriptor.release.maintenanceJobs.cleanup.schedule.cadence}' = fixed
+    test '${defaultScheduleProjectSystem.config.systemd.timers.app-deployment-demo-project-job-cleanup.timerConfig.OnUnitActiveSec}' = 6h
+    test '${defaultScheduleProjectSystem.config.systemd.timers.app-deployment-demo-project-job-cleanup.timerConfig.OnUnitInactiveSec}' = 6h
+    test '${
+      if
+        builtins.hasAttr "app-deployment-demo-project-job-cleanup" disabledScheduleProjectSystem.config.systemd.timers
+      then
+        "present"
+      else
+        "absent"
+    }' = absent
     test '${toString normalizedProjectDescriptor.parameters.maxStorageMb.default}' = 512
     test '${
       if normalizedProjectDescriptor.secrets.betterAuthSecret.required then "required" else "optional"

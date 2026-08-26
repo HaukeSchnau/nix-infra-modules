@@ -547,6 +547,49 @@ let
         )
     );
 
+  normalizeJobSchedule =
+    context: value:
+    let
+      attrs = ensure context (isAttrs value) "must be an attribute set" value;
+      checked = checkKeys context [
+        "cadence"
+        "calendar"
+        "interval"
+      ] attrs;
+      calendar = checked.calendar or null;
+      interval = checked.interval or null;
+      cadence = checked.cadence or "spaced";
+    in
+    ensure context ((calendar == null) != (interval == null))
+      "must set exactly one of calendar or interval"
+      (
+        ensure context (calendar == null || (isString calendar && calendar != ""))
+          "calendar must be a non-empty string"
+          (
+            ensure context (interval == null || (isString interval && interval != ""))
+              "interval must be a non-empty string"
+              (
+                ensure context
+                  (
+                    interval == null
+                    || builtins.elem cadence [
+                      "fixed"
+                      "spaced"
+                    ]
+                  )
+                  "cadence must be fixed or spaced for interval schedules"
+                  (
+                    ensure context (interval != null || !(checked ? cadence))
+                      "cadence only applies to interval schedules"
+                      {
+                        inherit calendar interval;
+                        cadence = if interval == null then null else cadence;
+                      }
+                  )
+              )
+          )
+      );
+
   normalizeJob =
     secrets: name: value:
     let
@@ -555,9 +598,12 @@ let
       attrs = ensure context (isAttrs value) "must be an attribute set" value;
       checked = checkKeys context [
         "action"
+        "schedule"
         "secrets"
       ] attrs;
       action = checked.action or name;
+      schedule =
+        if checked ? schedule then normalizeJobSchedule "${context}.schedule" checked.schedule else null;
       secretNames = checked.secrets or [ ];
       checkedSecrets = checkStringList "${context}.secrets" secretNames;
     in
@@ -569,6 +615,7 @@ let
             inherit action;
             secrets = checkedSecrets;
           }
+        // lib.optionalAttrs (schedule != null) { inherit schedule; }
       )
     );
 
@@ -989,7 +1036,63 @@ let
       jobs = ensure "release policy.jobs" (isAttrs (
         checkedPolicy.jobs or { }
       )) "must be an attribute set" (checkedPolicy.jobs or { });
-      activeJobs = lib.filterAttrs (name: _: builtins.hasAttr name release.maintenanceJobs) jobs;
+      activeJobDeclarations = lib.filterAttrs (
+        name: job:
+        let
+          policy = jobs.${name} or { };
+        in
+        (policy.enable or true) && ((job ? schedule) || builtins.hasAttr name jobs)
+      ) release.maintenanceJobs;
+      activeJobs = lib.mapAttrs (
+        name: job:
+        let
+          context = "release policy.jobs.${name}";
+          policy = jobs.${name} or { };
+          explicitCalendar = policy.calendar or null;
+          explicitInterval = policy.interval or null;
+          hasExplicitSchedule = explicitCalendar != null || explicitInterval != null;
+          defaultSchedule = job.schedule or null;
+          calendar =
+            if hasExplicitSchedule then
+              explicitCalendar
+            else if defaultSchedule == null then
+              null
+            else
+              defaultSchedule.calendar;
+          interval =
+            if hasExplicitSchedule then
+              explicitInterval
+            else if defaultSchedule == null then
+              null
+            else
+              defaultSchedule.interval;
+          defaultCadence = if defaultSchedule == null then "spaced" else defaultSchedule.cadence or "spaced";
+          cadence = if interval == null then null else policy.cadence or defaultCadence;
+        in
+        ensure context ((calendar == null) != (interval == null))
+          "must set exactly one of calendar or interval, either in the descriptor or host policy"
+          (
+            ensure context
+              (
+                cadence == null
+                || builtins.elem cadence [
+                  "fixed"
+                  "spaced"
+                ]
+              )
+              "cadence must be fixed or spaced for interval schedules"
+              (
+                ensure context (calendar == null || (policy.cadence or null) == null)
+                  "cadence only applies to interval schedules"
+                  {
+                    inherit calendar cadence interval;
+                    onBootSec = policy.onBootSec or "5min";
+                    persistent = policy.persistent or true;
+                    randomizedDelaySec = policy.randomizedDelaySec or "0";
+                  }
+              )
+          )
+      ) activeJobDeclarations;
       resources = normalizeReleaseResources (checkedPolicy.resources or { });
       exposeRevision = ensure "release policy.exposeRevision" (
         !(checkedPolicy.exposeRevision or false) || normalized.schemaVersion >= 2

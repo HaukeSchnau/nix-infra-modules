@@ -208,15 +208,20 @@ ports bind only to localhost. Host policy may also set typed Release memory thre
 `resources.memory.high`, `max`, and `swapMax`, which map to the corresponding
 systemd controls for repository-owned Release actions.
 
-Host policy may schedule descriptor-declared maintenance jobs by name. Each job
-sets exactly one of `calendar` or `interval`; interval jobs may set
-`onBootSec` as their initial delay after the timer is activated, and all jobs
-may set `randomizedDelaySec` and `persistent`. Project update, recovery, and
-interval-job timers use relative delays, so adding or changing a Project on an
-already-running host never starts repository builds or maintenance work inside
-a NixOS switch. An interval job schedules its next run after the previous run
-becomes inactive. Failed jobs therefore keep retrying on the normal interval,
-and long jobs cannot overlap their own next run.
+Applications may give descriptor-declared maintenance jobs a default `schedule`
+with exactly one of `calendar` or `interval`. Interval schedules also select a
+`cadence`: `fixed` measures between start times, while `spaced` measures from a
+completed run to the next start. The host activates these defaults when it binds
+the Project and may replace the schedule, override the cadence, add
+`onBootSec`, `randomizedDelaySec`, or `persistent`, or set `enable = false`.
+This keeps product polling policy beside the application action while leaving
+load spreading and machine lifecycle under host control.
+
+Project update, recovery, and interval-job timers use relative delays, so adding
+or changing a Project on an already-running host never starts repository builds
+or maintenance work inside a NixOS switch. Fixed-cadence jobs also retain an
+inactive-unit fallback, so a failed activation does not silently stop future
+runs. systemd prevents a maintenance one-shot from overlapping itself.
 The generated one-shot reads the current action from the active Release plan,
 then invokes the same Release executable with that action as its single
 argument. A repository may change the action or its Secret requirements while
@@ -256,8 +261,9 @@ and tailnet webhook plumbing.
 
 Private repos own app instances, repository URLs, delivery/cache policy, credential secret names,
 webhook token secrets, domains/visibility, parameter values, OCI approval,
-maintenance-job schedules/resource policy, branch/revision policy, and
-placement on real hosts. A descriptor owns maintenance job names and actions;
+maintenance-job operational overrides/resource policy, branch/revision policy,
+and placement on real hosts. A descriptor owns maintenance job names, actions,
+and default schedules;
 the generic Release adapter materializes only those jobs selected by host
 policy.
 

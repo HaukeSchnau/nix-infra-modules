@@ -277,6 +277,12 @@ let
                   type = lib.types.attrsOf (
                     lib.types.submodule {
                       options = {
+                        enable = lib.mkOption {
+                          type = lib.types.bool;
+                          default = true;
+                          description = "Whether this descriptor-declared maintenance job is scheduled.";
+                        };
+
                         calendar = lib.mkOption {
                           type = lib.types.nullOr lib.types.str;
                           default = null;
@@ -287,6 +293,17 @@ let
                           type = lib.types.nullOr lib.types.str;
                           default = null;
                           description = "Monotonic interval between this job's runs.";
+                        };
+
+                        cadence = lib.mkOption {
+                          type = lib.types.nullOr (
+                            lib.types.enum [
+                              "fixed"
+                              "spaced"
+                            ]
+                          );
+                          default = null;
+                          description = "Override the descriptor's fixed or completion-spaced interval cadence.";
                         };
 
                         onBootSec = lib.mkOption {
