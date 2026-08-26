@@ -223,8 +223,8 @@ func validateManifest(raw map[string]any, config map[string]any) manifest {
 		fail(65, "runtime manifest /schemaVersion: unsupported version")
 	}
 	descriptorSchemaVersion := configInteger(config, "descriptorSchemaVersion", 1)
-	if schemaVersion == 2 && descriptorSchemaVersion != 2 {
-		fail(65, "runtime manifest /schemaVersion: version 2 requires a v2 Project descriptor")
+	if schemaVersion == 2 && descriptorSchemaVersion < 2 {
+		fail(65, "runtime manifest /schemaVersion: version 2 requires a v2 or newer Project descriptor")
 	}
 
 	allowedRoot := keySet([]string{

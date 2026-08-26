@@ -36,6 +36,12 @@ The generated dispatcher serializes Preparation by physical Checkout. The same
 lock covers canonical Checkouts, ad-hoc git worktrees, jj workspaces, and local
 flake apps.
 
+Descriptor v3 adds a Development lifecycle to service Workloads. `on-demand`
+is the default. Managed infrastructure keeps `background` services running in
+every available registered instance, including the canonical Checkout and
+registered worktrees. Background services still use the declared dependency
+graph and restart policy. They do not need a synthetic Endpoint.
+
 Development keeps the Python controller because it owns port allocation,
 locking, and multi-process supervision. Development packages are tooling and
 do not enter a production Release closure.
@@ -139,8 +145,9 @@ commands.
 ## Rolling compatibility and errors
 
 Schemas live below `schemas/project-descriptor/` and `schemas/project-runtime/`.
-A numbered schema is immutable. Descriptor v1 and runtime v1 remain supported;
-new Projects use paired descriptor v2 and runtime v2. New producers emit
+A numbered schema is immutable. Descriptor v1 and runtime v1 remain supported.
+Descriptor v2 remains supported without semantic changes. New Projects use
+descriptor v3 with runtime v2. New producers emit
 canonical `parameters`; runtime v1 consumers accept legacy `settings` only when
 `parameters` is absent. Actions depend on `project-context`, not the JSON layout,
 and the dispatcher normalizes both runtime versions behind that Interface.

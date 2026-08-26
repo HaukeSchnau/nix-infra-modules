@@ -1,0 +1,69 @@
+{
+  "$schema": "https://raw.githubusercontent.com/HaukeSchnau/nix-infra-modules/main/schemas/project-descriptor/v3.json",
+  "schemaVersion": 3,
+  "project": "runtime-paired-fixture",
+  "parameters": {
+    "flavour": {
+      "type": "string",
+      "default": "local"
+    }
+  },
+  "secrets": {
+    "token": {
+      "description": "Fixture credential"
+    }
+  },
+  "development": {
+    "preparation": {
+      "action": "install",
+      "secrets": ["token"]
+    },
+    "workloads": {
+      "database": {
+        "action": "database"
+      },
+      "web": {
+        "action": "serve",
+        "dependsOn": ["database"],
+        "lifecycle": "background",
+        "secrets": ["token"]
+      }
+    },
+    "endpoints": {
+      "database": {
+        "protocol": "tcp",
+        "workload": "database"
+      },
+      "web": {
+        "workload": "web",
+        "health": {
+          "paths": ["/healthz"]
+        }
+      }
+    }
+  },
+  "release": {
+    "action": "serve",
+    "preDeployTasks": {
+      "prepare-schema": {
+        "action": "prepare-release"
+      },
+      "migrate": {
+        "dependsOn": ["prepare-schema"],
+        "secrets": ["token"],
+        "timeoutSec": 300
+      }
+    },
+    "ociAuxiliaries": {
+      "database": {
+        "image": "postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": {
+          "postgres": {
+            "containerPort": 5432,
+            "protocol": "tcp"
+          }
+        }
+      }
+    }
+  }
+}

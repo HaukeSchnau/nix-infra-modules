@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/HaukeSchnau/nix-infra-modules/main/schemas/project-descriptor/v3.json",
+  "title": "Project Descriptor v3",
+  "type": "object",
+  "required": ["schemaVersion", "project", "development", "release"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri"
+    },
+    "schemaVersion": { "const": 3 },
+    "project": { "$ref": "#/$defs/name" },
+    "secrets": { "type": "object" },
+    "parameters": { "type": "object" },
+    "development": {
+      "type": "object",
+      "properties": {
+        "preparation": { "type": "object" },
+        "workloads": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/name" },
+          "additionalProperties": { "$ref": "#/$defs/workload" }
+        },
+        "endpoints": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/name" },
+          "additionalProperties": { "$ref": "#/$defs/endpoint" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "release": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "minLength": 1 },
+        "activationExecutable": { "type": "string", "minLength": 1 },
+        "backend": { "enum": ["service", "static"] },
+        "executable": { "type": "string", "minLength": 1 },
+        "health": { "$ref": "#/$defs/httpHealth" },
+        "ingress": { "type": "object" },
+        "maintenanceJobs": { "type": "object" },
+        "ociAuxiliaries": { "type": "object" },
+        "package": { "type": "string", "minLength": 1 },
+        "preDeployTasks": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/name" },
+          "additionalProperties": { "$ref": "#/$defs/releaseTask" }
+        },
+        "stateDirectories": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
+    "workload": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "minLength": 1 },
+        "dependsOn": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/name" }
+        },
+        "kind": { "enum": ["service", "task"] },
+        "lifecycle": { "enum": ["background", "on-demand"] },
+        "secrets": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "lifecycle": { "const": "background" } },
+            "required": ["lifecycle"]
+          },
+          "then": {
+            "properties": { "kind": { "const": "service" } }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "releaseTask": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "minLength": 1 },
+        "dependsOn": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/name" }
+        },
+        "failureMode": { "enum": ["fail", "defer"] },
+        "secrets": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "timeoutSec": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "httpHealth": {
+      "type": "object",
+      "properties": {
+        "intervalSec": { "type": "integer", "minimum": 1 },
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^/" }
+        },
+        "requestTimeoutSec": { "type": "integer", "minimum": 1 },
+        "startupTimeoutSec": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "tcpHealth": {
+      "type": "object",
+      "properties": {
+        "intervalSec": { "type": "integer", "minimum": 1 },
+        "requestTimeoutSec": { "type": "integer", "minimum": 1 },
+        "startupTimeoutSec": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "endpoint": {
+      "type": "object",
+      "properties": {
+        "protocol": { "enum": ["http", "tcp"] },
+        "workload": { "$ref": "#/$defs/name" },
+        "health": { "type": "object" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "protocol": { "const": "tcp" } },
+            "required": ["protocol"]
+          },
+          "then": { "properties": { "health": { "$ref": "#/$defs/tcpHealth" } } },
+          "else": { "properties": { "health": { "$ref": "#/$defs/httpHealth" } } }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

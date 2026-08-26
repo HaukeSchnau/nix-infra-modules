@@ -86,8 +86,8 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
     if schema_version not in (1, 2):
         fail(65, "runtime manifest /schemaVersion: unsupported version")
     descriptor_schema_version = config.get("descriptorSchemaVersion", 1)
-    if schema_version == 2 and descriptor_schema_version != 2:
-        fail(65, "runtime manifest /schemaVersion: version 2 requires a v2 Project descriptor")
+    if schema_version == 2 and descriptor_schema_version < 2:
+        fail(65, "runtime manifest /schemaVersion: version 2 requires a v2 or newer Project descriptor")
 
     allowed_root = {
         "schemaVersion",

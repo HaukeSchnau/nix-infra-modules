@@ -221,15 +221,19 @@ let
         let
           itemContext = "development.workloads.${name}";
           checkedName = checkName itemContext name;
-          item = checkKeys itemContext [
-            "action"
-            "dependsOn"
-            "kind"
-            "secrets"
-          ] (ensure itemContext (isAttrs workload) "must be an attribute set" workload);
+          item = checkKeys itemContext (
+            [
+              "action"
+              "dependsOn"
+              "kind"
+              "secrets"
+            ]
+            ++ lib.optional (schemaVersion == 3) "lifecycle"
+          ) (ensure itemContext (isAttrs workload) "must be an attribute set" workload);
           action = if (item.action or null) == null then name else item.action;
           dependsOn = item.dependsOn or [ ];
           kind = item.kind or "service";
+          lifecycle = item.lifecycle or "on-demand";
           secretNames = item.secrets or [ ];
           checkedDependsOn = checkStringList "${itemContext}.dependsOn" dependsOn;
           checkedSecrets = checkStringList "${itemContext}.secrets" secretNames;
@@ -242,11 +246,29 @@ let
                 "task"
               ])
               "kind must be service or task"
-              {
-                inherit action kind;
-                dependsOn = checkedDependsOn;
-                secrets = checkedSecrets;
-              }
+              (
+                ensure itemContext
+                  (
+                    schemaVersion != 3
+                    || builtins.elem lifecycle [
+                      "background"
+                      "on-demand"
+                    ]
+                  )
+                  "lifecycle must be background or on-demand"
+                  (
+                    ensure itemContext (schemaVersion != 3 || lifecycle != "background" || kind == "service")
+                      "background lifecycle requires kind service"
+                      (
+                        {
+                          inherit action kind;
+                          dependsOn = checkedDependsOn;
+                          secrets = checkedSecrets;
+                        }
+                        // lib.optionalAttrs (schemaVersion == 3) { inherit lifecycle; }
+                      )
+                  )
+              )
           )
         )
       ) mergedWorkloads;
@@ -669,8 +691,8 @@ let
                                 ensure context (backend == "service" || preDeployTasks == { })
                                   "preDeployTasks require the service backend"
                                   (
-                                    ensure context (schemaVersion == 2 || preDeployTasks == { })
-                                      "preDeployTasks require schemaVersion 2"
+                                    ensure context (schemaVersion != 1 || preDeployTasks == { })
+                                      "preDeployTasks require schemaVersion 2 or newer"
                                       (
                                         ensure context preDeployReferencesValid "preDeployTask dependencies must reference declared tasks" (
                                           ensure context (graphIsAcyclic preDeployTasks) "preDeployTask dependency graph must be acyclic" {
@@ -746,6 +768,7 @@ let
       (builtins.elem schemaVersion [
         1
         2
+        3
       ])
       "unsupported schemaVersion ${toString schemaVersion}"
       (
@@ -756,7 +779,7 @@ let
               checked ? development && checked.development != null && checked ? release && checked.release != null
             )
           )
-          "schemaVersion 2 requires both Development and Release realizations"
+          "schemaVersion 2 or newer requires both Development and Release realizations"
           (
             ensure "project" (
               expectedProject == null || expectedProject == project

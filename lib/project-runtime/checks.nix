@@ -7,7 +7,14 @@ let
   runtime = import ../project-runtime.nix { inherit lib; };
   descriptor = import ../project-descriptor.nix { inherit lib; };
   developmentDescriptor = ./fixtures/development.json;
-  pairedDescriptor = ./fixtures/paired-v2.json;
+  pairedV2Descriptor = ./fixtures/paired-v2.json;
+  pairedDescriptor = ./fixtures/paired-v3.json;
+  pairedNormalized = descriptor.normalize {
+    descriptor = builtins.fromJSON (builtins.readFile pairedDescriptor);
+  };
+  invalidBackgroundTaskDescriptor = lib.recursiveUpdate pairedNormalized {
+    development.workloads.web.kind = "task";
+  };
   serviceDescriptor = ./fixtures/service-release.json;
   staticDescriptor = ./fixtures/static-release.json;
   cycleDescriptor = builtins.fromJSON (builtins.readFile ./fixtures/v2-cycle.json);
@@ -117,6 +124,14 @@ in
   project-runtime =
     assert lib.all (app: builtins.isString app.program) (lib.attrValues development.apps);
     assert lib.all (app: builtins.isString app.program) (lib.attrValues pairedDevelopment.apps);
+    assert pairedNormalized.development.workloads.database.lifecycle == "on-demand";
+    assert pairedNormalized.development.workloads.web.lifecycle == "background";
+    assert
+      !(builtins.tryEval (
+        builtins.deepSeq (descriptor.normalize {
+          descriptor = invalidBackgroundTaskDescriptor;
+        }) true
+      )).success;
     assert
       !(builtins.tryEval (
         builtins.deepSeq (descriptor.normalize {
@@ -149,7 +164,17 @@ in
             check-jsonschema --schemafile ${../../schemas/project-descriptor/v1.json} \
               ${developmentDescriptor} ${serviceDescriptor} ${staticDescriptor}
             check-jsonschema --schemafile ${../../schemas/project-descriptor/v2.json} \
-              ${pairedDescriptor} ${./fixtures/v2-cycle.json}
+              ${pairedV2Descriptor} ${./fixtures/v2-cycle.json}
+            check-jsonschema --schemafile ${../../schemas/project-descriptor/v3.json} \
+              ${pairedDescriptor}
+            invalid_background_task="$TMPDIR/invalid-background-task.json"
+            ${pkgs.jq}/bin/jq '.development.workloads.web.kind = "task"' \
+              ${pairedDescriptor} > "$invalid_background_task"
+            if check-jsonschema --schemafile ${../../schemas/project-descriptor/v3.json} \
+              "$invalid_background_task"; then
+              echo "background task unexpectedly passed the v3 descriptor schema" >&2
+              exit 1
+            fi
             if check-jsonschema --schemafile ${../../schemas/project-descriptor/v2.json} \
               ${./fixtures/v2-missing-release.json}; then
               echo "incomplete v2 descriptor unexpectedly passed its schema" >&2

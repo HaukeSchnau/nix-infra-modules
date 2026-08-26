@@ -304,7 +304,7 @@ rec {
           secrets = builtins.attrNames descriptor.secrets;
           inherit auxiliaryEndpoints;
         }
-        // lib.optionalAttrs (descriptor.schemaVersion == 2) {
+        // lib.optionalAttrs (descriptor.schemaVersion != 1) {
           endpoints = releaseEndpoints;
           endpointProtocols = releaseEndpointProtocols;
         };

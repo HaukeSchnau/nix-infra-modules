@@ -7,11 +7,11 @@ NixOS implementation details.
 The public helper is exported as `lib.projectDescriptor`:
 
 - `load { path; expectedProject?; }` reads and normalizes JSON.
-- `normalize { descriptor; expectedProject?; }` validates schema v1 or v2 and
+- `normalize { descriptor; expectedProject?; }` validates schema v1, v2, or v3 and
   fills defaults. Normalization is idempotent.
 - `requireRealizations { descriptor; expectedProject?; }` additionally requires
   both Development and Release. It supports auditing v1 repositories during a
-  rolling migration; v2 enforces this invariant directly.
+  rolling migration; v2 and v3 enforce this invariant directly.
 - `resolveParameters { descriptor; values?; allowUnknown?; }` type-checks host
   values and applies repository defaults. Release adapters retain unknown
   values as forward bindings when `allowUnknown` is enabled.
@@ -24,14 +24,15 @@ The public helper is exported as `lib.projectDescriptor`:
 
 ## Shape
 
-Schema v2 is the complete Project contract. It requires both Development and
+Schema v3 is the current Project contract. It requires both Development and
 Release capabilities in the repository, independently of where either
-realization is placed:
+realization is placed. It also distinguishes services that managed Development
+keeps running from services started by an Endpoint:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/HaukeSchnau/nix-infra-modules/main/schemas/project-descriptor/v2.json",
-  "schemaVersion": 2,
+  "$schema": "https://raw.githubusercontent.com/HaukeSchnau/nix-infra-modules/main/schemas/project-descriptor/v3.json",
+  "schemaVersion": 3,
   "project": "example",
   "secrets": {
     "betterAuthSecret": { "description": "Signs sessions" }
@@ -42,7 +43,11 @@ realization is placed:
   "development": {
     "workloads": {
       "database": {},
-      "web": { "dependsOn": ["database"] }
+      "web": { "dependsOn": ["database"] },
+      "importer": {
+        "dependsOn": ["database"],
+        "lifecycle": "background"
+      }
     },
     "endpoints": {
       "database": { "protocol": "tcp" },
@@ -79,15 +84,13 @@ realization is placed:
 }
 ```
 
-Repository `project.json` files should declare the v2 schema through the
-standard `$schema` property shown above. The rolling `main` URL keeps editor
-validation and completion current without requiring repositories to update the
-reference for each compatible schema improvement. The property is authoring
-metadata and is omitted from the normalized descriptor.
+Repository `project.json` files should declare the numbered schema through the
+standard `$schema` property shown above. Numbered schemas are immutable. The
+property is authoring metadata and is omitted from the normalized descriptor.
 
-Schema v1 remains supported without semantic changes: only `schemaVersion` and
-`project` are always required, and a v1 descriptor may define either or both
-realizations. New and migrated Project repositories should emit v2.
+Schema v1 and v2 remain supported without semantic changes. Only
+`schemaVersion` and `project` are always required in v1, and a v1 descriptor may
+define either or both realizations. New Projects should emit v3.
 
 Defaults are intentionally aggressive. Development Endpoints imply same-named
 workloads and actions. Release defaults to backend `service`, package
@@ -106,7 +109,12 @@ explicitly marked required. Workload, preparation, pre-deploy task, and
 maintenance-job Secret references must name declarations at the descriptor root.
 
 Development contains a preparation action, acyclic Workload dependency graph,
-and HTTP or TCP Endpoints with health policy. HTTP health defaults to path `/`;
+and HTTP or TCP Endpoints with health policy. A v3 Workload defaults to the
+`on-demand` lifecycle. Managed Development starts each `background` service for
+every available registered instance and supervises it without requiring an
+Endpoint. Tasks cannot use the background lifecycle. Local `dev` continues to
+start all selected Workloads, so lifecycle changes managed autostart rather
+than the repository's local process graph. HTTP health defaults to path `/`;
 TCP health is a connect-only probe and therefore has no paths. Both share
 `startupTimeoutSec`, `intervalSec`, and `requestTimeoutSec`. Development probes
 default to a fifteen-second request timeout and one-second retry interval.
@@ -116,7 +124,7 @@ without repeated client cancellations. Release retains the five-second timeout
 and two-second interval. Release contains
 backend/package/executable, health policy, safe relative state directories,
 structured ingress, maintenance-job action declarations, an optional activation
-executable, a schema v2 pre-deploy task graph, and explicitly approved
+executable, a schema v2-or-newer pre-deploy task graph, and explicitly approved
 digest-pinned OCI auxiliaries. Pre-deploy tasks default their action to their
 name and their timeout to 900 seconds. Dependencies must reference other
 pre-deploy tasks and form an acyclic graph. Ingress
