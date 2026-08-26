@@ -421,6 +421,18 @@ in
               ${pairedService.package}/bin/project-context parameter flavour)" = release
             test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
               ${pairedService.package}/bin/project-context revision)" = 0123456789abcdef0123456789abcdef01234567
+            PROJECT_RUNTIME_FILE="$paired_release_manifest" \
+              ${pairedService.package}/bin/project-context snapshot \
+              | ${pkgs.jq}/bin/jq -e '
+                .schemaVersion == 1
+                and .project == "runtime-paired-fixture"
+                and .realization == "release"
+                and .revision == "0123456789abcdef0123456789abcdef01234567"
+                and .parameters.flavour == "release"
+                and .endpoints.serve.url == "https://paired.example"
+                and .endpoints["database-postgres"].listen.port == 33104
+                and .secretFiles == {}
+              ' >/dev/null
             test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
               ${pairedService.package}/bin/project-context auxiliary database postgres listen-port)" = 33104
             assert_status 66 env PROJECT_RUNTIME_FILE="$paired_release_manifest" \

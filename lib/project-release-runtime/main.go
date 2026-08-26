@@ -612,6 +612,43 @@ func printValue(value any, jsonOutput bool) {
 	fmt.Println(value)
 }
 
+func contextSnapshot(config map[string]any, value manifest) map[string]any {
+	endpoints := make(map[string]any, len(value.endpoints))
+	for name, endpoint := range value.endpoints {
+		fields := map[string]any{
+			"protocol": endpoint.protocol,
+			"listen": map[string]any{
+				"host": endpoint.host,
+				"port": endpoint.port,
+			},
+			"hostNames": endpoint.hostNames,
+		}
+		if endpoint.url != "" {
+			fields["url"] = endpoint.url
+		}
+		endpoints[name] = fields
+	}
+
+	secretFiles := make(map[string]any, len(value.secrets))
+	for name, credential := range value.secrets {
+		secretFiles[name] = filepath.Join(os.Getenv("PROJECT_SECRETS_DIR"), credential)
+	}
+
+	result := map[string]any{
+		"schemaVersion": 1,
+		"project":       config["project"],
+		"realization":   config["realization"],
+		"paths":         value.paths,
+		"endpoints":     endpoints,
+		"parameters":    value.parameters,
+		"secretFiles":   secretFiles,
+	}
+	if value.revision != "" {
+		result["revision"] = value.revision
+	}
+	return result
+}
+
 func contextQuery(config map[string]any, arguments []string) int {
 	if len(arguments) == 0 {
 		fail(64, "usage: project-context <command>")
@@ -684,6 +721,11 @@ func contextQuery(config map[string]any, arguments []string) int {
 			}
 		}
 		printValue(path, false)
+	case "snapshot":
+		if len(arguments) != 1 {
+			fail(64, "usage: project-context snapshot")
+		}
+		printValue(contextSnapshot(config, value), true)
 	case "revision":
 		if len(arguments) != 1 {
 			fail(64, "usage: project-context revision")

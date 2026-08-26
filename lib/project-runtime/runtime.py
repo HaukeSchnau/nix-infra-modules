@@ -573,7 +573,13 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
     if options.command == "snapshot":
         root = pathlib.Path(os.environ.get("PROJECT_SECRETS_DIR", ""))
         value = {
-            **manifest,
+            "schemaVersion": 1,
+            "project": manifest["project"],
+            "realization": manifest["realization"],
+            "revision": manifest.get("revision"),
+            "paths": manifest["paths"],
+            "endpoints": manifest["endpoints"],
+            "parameters": manifest["parameters"],
             "secretFiles": {
                 name: str(root / credential)
                 for name, credential in manifest["secrets"].items()
