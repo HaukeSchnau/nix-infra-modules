@@ -488,7 +488,7 @@ let
             inherit (timer) wantedBy;
             inherit (timer.timerConfig)
               OnActiveSec
-              OnUnitActiveSec
+              OnUnitInactiveSec
               Persistent
               RandomizedDelaySec
               Unit
@@ -983,7 +983,7 @@ in
       and (.job.after | index("app-deployment-demo-project-release-plan.service"))
       and (.job.LoadCredential | index("betterAuthSecret:/run/secrets/demo-better-auth"))
       and .job.timer.OnActiveSec == "15min"
-      and .job.timer.OnUnitActiveSec == "1d"
+      and .job.timer.OnUnitInactiveSec == "1d"
       and .job.timer.RandomizedDelaySec == "30min"
       and .trusted.serviceSandbox == []
       and .trusted.activationSandbox == []
