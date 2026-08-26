@@ -525,11 +525,12 @@ func actionExecutable(config map[string]any, action string, activation bool) str
 	return executable
 }
 
-func executeAction(config map[string]any, action string, activation bool) int {
+func executeAction(config map[string]any, action string, arguments []string, activation bool) int {
 	executable := actionExecutable(config, action, activation)
 	value := loadManifest(config)
 	prepareContext(value)
-	if err := syscall.Exec(executable, []string{executable}, os.Environ()); err != nil {
+	argv := append([]string{executable}, arguments...)
+	if err := syscall.Exec(executable, argv, os.Environ()); err != nil {
 		fail(69, "could not execute action %s: %v", action, err)
 	}
 	return 0
@@ -712,20 +713,24 @@ func run(arguments []string) int {
 		return contextQuery(config, remaining[1:])
 	}
 	if len(remaining) == 1 && remaining[0] == "--activate" {
-		return executeAction(config, "activation", true)
+		return executeAction(config, "activation", nil, true)
 	}
 	action := ""
 	if len(remaining) == 0 {
 		action, _ = config["defaultAction"].(string)
-	} else if len(remaining) == 1 {
+	} else if len(remaining) >= 1 {
 		action = remaining[0]
 	} else {
-		fail(64, "usage: project runtime <action>")
+		fail(64, "usage: project runtime <action> [arguments...]")
 	}
 	if action == "" {
 		fail(64, "this Project Runtime has no default action")
 	}
-	return executeAction(config, action, false)
+	actionArguments := []string{}
+	if len(remaining) > 1 {
+		actionArguments = remaining[1:]
+	}
+	return executeAction(config, action, actionArguments, false)
 }
 
 func executeMain() (status int) {

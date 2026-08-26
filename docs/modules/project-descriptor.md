@@ -7,7 +7,7 @@ NixOS implementation details.
 The public helper is exported as `lib.projectDescriptor`:
 
 - `load { path; expectedProject?; }` reads and normalizes JSON.
-- `normalize { descriptor; expectedProject?; }` validates schema v1, v2, or v3 and
+- `normalize { descriptor; expectedProject?; }` validates schema v1 through v3 and
   fills defaults. Normalization is idempotent.
 - `requireRealizations { descriptor; expectedProject?; }` additionally requires
   both Development and Release. It supports auditing v1 repositories during a
@@ -24,10 +24,9 @@ The public helper is exported as `lib.projectDescriptor`:
 
 ## Shape
 
-Schema v3 is the current Project contract. It requires both Development and
-Release capabilities in the repository, independently of where either
-realization is placed. It also distinguishes services that managed Development
-keeps running from services started by an Endpoint:
+Schema v3 is the current Project contract. It adds background Development
+workloads and interactive commands to the paired Development and Release model
+introduced by v2:
 
 ```json
 {
@@ -49,6 +48,9 @@ keeps running from services started by an Endpoint:
         "lifecycle": "background"
       }
     },
+    "commands": {
+      "console": { "dependsOn": ["database"] }
+    },
     "endpoints": {
       "database": { "protocol": "tcp" },
       "web": { "workload": "web" }
@@ -56,6 +58,9 @@ keeps running from services started by an Endpoint:
   },
   "release": {
     "action": "web",
+    "commands": {
+      "console": {}
+    },
     "preDeployTasks": {
       "migrate": { "timeoutSec": 300 },
       "wait-for-idle": { "failureMode": "defer" }
@@ -107,6 +112,9 @@ underscores, dots, or hyphens. Parameter types are `string`, `boolean`,
 `integer`, and `number`. A parameter with a default is optional unless
 explicitly marked required. Workload, preparation, pre-deploy task, and
 maintenance-job Secret references must name declarations at the descriptor root.
+Command Secret references follow the same rule. Development commands may depend
+on Workloads so the host can start services such as a database before invoking
+the command. Release commands reuse the active Release dependencies.
 
 Development contains a preparation action, acyclic Workload dependency graph,
 and HTTP or TCP Endpoints with health policy. A v3 Workload defaults to the
@@ -169,7 +177,12 @@ Release-only placements on different hosts. Infrastructure decides which
 realizations to place and whether an HTTP Endpoint is local, Tailnet-only, or
 public.
 
-Maintenance jobs intentionally stop at names/actions in both schema versions.
+Interactive commands declare a stable user-facing name, an opaque action, and
+the Secrets they require. They contain no terminal, user, path, or privilege
+policy. The host adapter selects the active realization, supplies Runtime
+Context and credentials, and forwards the command arguments and terminal.
+
+Maintenance jobs intentionally stop at names/actions in every schema version.
 Private host policy supplies schedules and resource policy. The generic Release
 adapter then invokes the repository Release executable with the declared action
 as its single argument, reusing the normal runtime manifest and credentials.

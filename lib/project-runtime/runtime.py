@@ -432,7 +432,12 @@ def preparation_lock(manifest: Mapping[str, Any]) -> contextlib.AbstractContextM
 
 
 def execute_action(
-    config: Mapping[str, Any], action: str, *, replace: bool, activation: bool = False
+    config: Mapping[str, Any],
+    action: str,
+    arguments: Sequence[str] = (),
+    *,
+    replace: bool,
+    activation: bool = False,
 ) -> int:
     actions = config["actions"]
     executable = config.get("activation") if activation else actions.get(action)
@@ -445,11 +450,13 @@ def execute_action(
     with context:
         if replace and not is_preparation:
             try:
-                os.execvpe(executable, [executable], os.environ)
+                os.execvpe(executable, [executable, *arguments], os.environ)
             except OSError as error:
                 fail(69, f"could not execute action {action}: {error}")
         try:
-            return subprocess.run([executable], env=os.environ, check=False).returncode
+            return subprocess.run(
+                [executable, *arguments], env=os.environ, check=False
+            ).returncode
         except OSError as error:
             fail(69, f"could not execute action {action}: {error}")
 
@@ -636,13 +643,13 @@ def main(arguments: Sequence[str]) -> int:
 
     if config["realization"] == "release" and not remaining:
         action = config.get("defaultAction")
-    elif len(remaining) == 1:
+    elif remaining:
         action = remaining[0]
     else:
-        fail(64, "usage: project runtime <action>")
+        fail(64, "usage: project runtime <action> [arguments...]")
     if not isinstance(action, str):
         fail(64, "this Project Runtime has no default action")
-    return execute_action(config, action, replace=True)
+    return execute_action(config, action, remaining[1:], replace=True)
 
 
 if __name__ == "__main__":

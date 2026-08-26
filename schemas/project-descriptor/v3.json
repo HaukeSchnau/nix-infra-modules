@@ -22,6 +22,11 @@
           "propertyNames": { "$ref": "#/$defs/name" },
           "additionalProperties": { "$ref": "#/$defs/workload" }
         },
+        "commands": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/name" },
+          "additionalProperties": { "$ref": "#/$defs/developmentCommand" }
+        },
         "endpoints": {
           "type": "object",
           "propertyNames": { "$ref": "#/$defs/name" },
@@ -36,6 +41,11 @@
         "action": { "type": "string", "minLength": 1 },
         "activationExecutable": { "type": "string", "minLength": 1 },
         "backend": { "enum": ["service", "static"] },
+        "commands": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/name" },
+          "additionalProperties": { "$ref": "#/$defs/releaseCommand" }
+        },
         "executable": { "type": "string", "minLength": 1 },
         "health": { "$ref": "#/$defs/httpHealth" },
         "ingress": { "type": "object" },
@@ -55,6 +65,30 @@
   "additionalProperties": false,
   "$defs": {
     "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
+    "secrets": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "releaseCommand": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "minLength": 1 },
+        "secrets": { "$ref": "#/$defs/secrets" }
+      },
+      "additionalProperties": false
+    },
+    "developmentCommand": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "minLength": 1 },
+        "dependsOn": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/name" }
+        },
+        "secrets": { "$ref": "#/$defs/secrets" }
+      },
+      "additionalProperties": false
+    },
     "workload": {
       "type": "object",
       "properties": {
@@ -65,10 +99,7 @@
         },
         "kind": { "enum": ["service", "task"] },
         "lifecycle": { "enum": ["background", "on-demand"] },
-        "secrets": {
-          "type": "array",
-          "items": { "type": "string" }
-        }
+        "secrets": { "$ref": "#/$defs/secrets" }
       },
       "allOf": [
         {
@@ -92,10 +123,7 @@
           "items": { "$ref": "#/$defs/name" }
         },
         "failureMode": { "enum": ["fail", "defer"] },
-        "secrets": {
-          "type": "array",
-          "items": { "type": "string" }
-        },
+        "secrets": { "$ref": "#/$defs/secrets" },
         "timeoutSec": { "type": "integer", "minimum": 1 }
       },
       "additionalProperties": false

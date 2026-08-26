@@ -378,6 +378,11 @@ let
     pairedProjectSystem.config.systemd.services.app-deployment-demo-project.serviceConfig.ExecStart;
   pairedProjectUpdateScript =
     pairedProjectSystem.config.systemd.services.app-deployment-demo-project-update.serviceConfig.ExecStart;
+  projectReleaseCommandPackage =
+    lib.findFirst (package: lib.getName package == "project-release-command")
+      (throw "project-release-command is absent from the Project host")
+      pairedProjectSystem.config.environment.systemPackages;
+  projectReleaseCommand = lib.getExe projectReleaseCommandPackage;
   staticProjectDescriptor = {
     schemaVersion = 1;
     project = "static-project";
@@ -782,6 +787,7 @@ in
     ${pkgs.bash}/bin/bash -n ${projectActivationScript}
     ${pkgs.bash}/bin/bash -n ${projectJobScript}
     ${pkgs.bash}/bin/bash -n ${projectReleasePlanService.serviceConfig.ExecStart}
+    ${pkgs.bash}/bin/bash -n ${projectReleaseCommand}
     grep -Fq 'share/project/descriptor.json' ${projectUpdateScript}
     test '${
       if
@@ -819,8 +825,12 @@ in
     grep -Fq -- '--property=NoNewPrivileges=true' ${pairedProjectUpdateScript}
     grep -Fq '.preDeployOrder[]' ${pairedProjectUpdateScript}
     grep -Fq '.preDeployTasks[$task].failureMode' ${pairedProjectUpdateScript}
-    grep -Fq 'stream_close_delay 300s' ${
-      pairedProjectSystem.config.vps.services.caddy.virtualHosts."demo-project.example.net".extraConfig
+    grep -Fq 'systemd-run' ${projectReleaseCommand}
+    grep -Fq '.commands[$command].secrets[]' ${projectReleaseCommand}
+    grep -Fq -- '--working-directory="$working_directory"' ${projectReleaseCommand}
+    grep -Fq 'stream_close_delay 300s' <<< ${
+      lib.escapeShellArg
+        pairedProjectSystem.config.vps.services.caddy.virtualHosts."demo-project.example.net".extraConfig
     }
     grep -Fq 'cleanup_candidate' ${pairedProjectUpdateScript}
     grep -Fq 'requested-release.json' ${pairedProjectUpdateScript}

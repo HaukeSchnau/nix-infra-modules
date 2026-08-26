@@ -69,6 +69,7 @@ let
       install = installAction;
       database = pairedWorkloadAction "database";
       serve = pairedWorkloadAction "web";
+      console = commandAction;
     };
     localParameters.flavour = "generated";
     localPortRange = {
@@ -76,6 +77,10 @@ let
       to = 33999;
     };
   };
+  commandAction = action "runtime-command-console" ''
+    state="$(project-context path state)"
+    printf '%s\n' "$@" > "$state/command.log"
+  '';
   releaseAction =
     name:
     action name ''
@@ -105,6 +110,7 @@ let
       serve = releaseAction "paired-release";
       prepare-release = releaseAction "prepare-release";
       migrate = releaseAction "migrate";
+      console = commandAction;
     };
   };
   staticRoot = pkgs.runCommand "runtime-static-root" { } ''
@@ -338,6 +344,12 @@ in
             grep -qx database "$state/workloads.log"
             grep -qx web "$state/workloads.log"
 
+            rm -f "$state/command.log"
+            PROJECT_RUNTIME_FILE="$paired_manifest" PROJECT_SECRETS_DIR="$secrets" \
+              ${pairedDevelopment.package}/bin/runtime-paired-fixture-project-runtime \
+              console first "two words"
+            test "$(tr '\n' ' ' < "$state/command.log")" = 'first two words '
+
             invalid_tcp_publication="$root/invalid-tcp-publication.json"
             ${pkgs.jq}/bin/jq '.endpoints.database.url = "tcp://127.0.0.1:33101"' \
               "$paired_manifest" > "$invalid_tcp_publication"
@@ -421,6 +433,11 @@ in
               ${pairedService.package}/bin/project-release-runtime
             test "$(cat "$state/release.log")" = paired-release
             cmp ${pairedDescriptor} ${pairedService.package}/share/project/descriptor.json
+
+            rm -f "$state/command.log"
+            PROJECT_RUNTIME_FILE="$paired_release_manifest" \
+              ${pairedService.package}/bin/project-release-runtime console release-argument
+            test "$(cat "$state/command.log")" = release-argument
 
             release_manifest="$root/release.json"
             ${pkgs.jq}/bin/jq -n \

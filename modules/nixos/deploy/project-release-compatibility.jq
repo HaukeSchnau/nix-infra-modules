@@ -67,6 +67,16 @@ def normalized_jobs($managed_jobs):
         }
     );
 
+def normalized_commands:
+  (. // {})
+  | with_entries(
+      .key as $name
+      | .value = {
+          action: (.value.action // $name),
+          secrets: (.value.secrets // [])
+        }
+    );
+
 def normalized_oci:
   (. // {})
   | with_entries(
@@ -117,6 +127,7 @@ def parameter_type_matches($definition; $value):
 | ($candidate_descriptor.release.health | normalized_health) as $health
 | ($candidate_descriptor.release.preDeployTasks | normalized_tasks) as $tasks
 | ($candidate_descriptor.release.maintenanceJobs | normalized_jobs($host_policy.managedJobs)) as $jobs
+| ($candidate_descriptor.release.commands | normalized_commands) as $commands
 | (task_plan($tasks)) as $task_plan
 | [
     $tasks
@@ -151,6 +162,15 @@ def parameter_type_matches($definition; $value):
     | select(($candidate_descriptor.secrets // {}) | has($secret) | not)
     | "maintenance job " + $name + " references undeclared Secret: " + $secret
   ] as $missing_job_secrets
+| [
+    $commands
+    | to_entries[]
+    | .key as $name
+    | .value.secrets[]
+    | . as $secret
+    | select(($candidate_descriptor.secrets // {}) | has($secret) | not)
+    | "command " + $name + " references undeclared Secret: " + $secret
+  ] as $missing_command_secrets
 | reduce (($candidate_descriptor.parameters // {}) | to_entries[]) as $parameter (
     {values: {}, reasons: []};
     ($parameter.value // {}) as $definition
@@ -190,6 +210,7 @@ def parameter_type_matches($definition; $value):
   + $missing_task_secrets
   + $missing_managed_jobs
   + $missing_job_secrets
+  + $missing_command_secrets
   + (if ($task_plan.remaining | length) == 0 then [] else ["pre-deploy task dependency graph contains a cycle"] end)
   + $parameters.reasons
   + $secrets.reasons) as $reasons
@@ -200,6 +221,7 @@ def parameter_type_matches($definition; $value):
     secrets: $secrets.values,
     releasePlan: {
       activationExecutable: ($candidate_descriptor.release.activationExecutable // null),
+      commands: $commands,
       health: $health,
       maintenanceJobs: $jobs,
       preDeployTasks: $tasks,

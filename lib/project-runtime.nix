@@ -150,9 +150,11 @@ rec {
         inherit descriptor;
         values = localParameters;
       };
+      runtimeSchemaVersion = if descriptor.schemaVersion >= 2 then 2 else 1;
       expectedActions = lib.unique (
         [ development.preparation.action ]
         ++ map (workload: workload.action) (lib.attrValues development.workloads)
+        ++ map (command: command.action) (lib.attrValues development.commands)
       );
       checkedActions =
         requireExactActions "mkDevelopment.actions" expectedActions (builtins.attrNames normalizedActions)
@@ -166,6 +168,7 @@ rec {
         bundle = {
           schemaVersion = 1;
           descriptorSchemaVersion = descriptor.schemaVersion;
+          inherit runtimeSchemaVersion;
           inherit (descriptor) project parameters secrets;
           realization = "development";
           entrypoint = "bin/${descriptor.project}-project-runtime";
@@ -174,6 +177,7 @@ rec {
         config = {
           schemaVersion = 1;
           descriptorSchemaVersion = descriptor.schemaVersion;
+          inherit runtimeSchemaVersion;
           inherit (descriptor) project;
           realization = "development";
           actions = checkedActions;
@@ -259,6 +263,7 @@ rec {
         [ effectiveDefaultAction ]
         ++ map (task: task.action) (lib.attrValues release.preDeployTasks)
         ++ map (job: job.action) (lib.attrValues release.maintenanceJobs)
+        ++ map (command: command.action) (lib.attrValues release.commands)
       );
       checkedActions =
         requireExactActions "mkServiceRelease.actions" expectedActions
@@ -304,7 +309,7 @@ rec {
           secrets = builtins.attrNames descriptor.secrets;
           inherit auxiliaryEndpoints;
         }
-        // lib.optionalAttrs (descriptor.schemaVersion != 1) {
+        // lib.optionalAttrs (descriptor.schemaVersion >= 2) {
           endpoints = releaseEndpoints;
           endpointProtocols = releaseEndpointProtocols;
         };

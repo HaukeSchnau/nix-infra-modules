@@ -131,7 +131,7 @@ allocated auxiliary endpoints. Secret values are exposed with systemd
 `LoadCredential`; `PROJECT_SECRETS_DIR` points to that credential directory.
 Repositories derive framework-specific variables such as database or auth URLs
 from this small manifest rather than requiring those variables in infra.
-The manifest version follows the repository descriptor. Schema v2 marks the
+Descriptor v2 and newer Releases use Runtime manifest v2. It marks the
 service Endpoint as HTTP and exposes auxiliary TCP listeners without inventing
 application-specific URLs; repository actions construct those from
 `project-context`. Descriptor v1 retains its original manifest shape for
@@ -152,6 +152,14 @@ receives only its declared systemd credentials. A failed task leaves the active
 artifact, Runtime Context, and service untouched. Tasks with
 `failureMode = "defer"` also leave the requested Release queued and report a
 successful reconciliation, so the update timer can retry a safe cutover later.
+
+Descriptor v3 service Releases may declare interactive commands. The module
+installs the root-only `project-release-command <project> <command>
+[arguments...]` adapter. It resolves the command from the active Release plan,
+runs the active artifact as its service user in a transient systemd service,
+loads only the command's declared credentials, and forwards the caller's
+terminal and exit status. Host tooling can delegate to this adapter without
+depending on deployment state paths or service account names.
 
 The reusable Gitea workflow verifies a Project, builds its immutable
 Release, waits for cache publication, and promotes the exact store path. Runner

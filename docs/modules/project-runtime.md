@@ -25,7 +25,7 @@ apps = runtime.apps;
 checks = runtime.checks;
 ```
 
-Action names must exactly match the normalized Preparation and Workload actions.
+Action names must exactly match the normalized Preparation, Workload, and command actions.
 The constructor returns `prepare`, `dev`, and one `dev-<workload>` app. Local
 Development allocates stable, distinct loopback listeners per physical Checkout
 without putting ports in repository configuration. Infrastructure invokes the
@@ -71,7 +71,7 @@ packages.projectRelease = release.package;
 
 The default action comes from `release.action`; an explicitly passed
 `defaultAction` must agree. Maintenance actions must exactly match the
-descriptor. Schema v2 pre-deploy task actions must also have implementations.
+descriptor. Pre-deploy task and interactive command actions must also have implementations.
 `activation` must be present exactly when the descriptor declares
 `activationExecutable`. The service artifact contains the dispatcher, payloads,
 optional activation wrapper, and the byte-for-byte repository descriptor at
@@ -80,8 +80,8 @@ optional activation wrapper, and the byte-for-byte repository descriptor at
 Service Releases use a small statically linked Go dispatcher. The Go compiler
 is only a build input, and neither Go nor Python enters the Release closure.
 The compiled dispatcher implements the same Runtime manifest validation,
-`project-context` queries, action selection, and failure statuses as the
-Development controller.
+`project-context` queries, action selection, argument forwarding, and failure
+statuses as the Development controller.
 
 Static Releases use `mkStaticRelease { descriptorPath; root; ...; }`. It combines
 the site root with the same exact descriptor artifact and adds no service
@@ -146,8 +146,9 @@ commands.
 
 Schemas live below `schemas/project-descriptor/` and `schemas/project-runtime/`.
 A numbered schema is immutable. Descriptor v1 and runtime v1 remain supported.
-Descriptor v2 remains supported without semantic changes. New Projects use
-descriptor v3 with runtime v2. New producers emit
+Descriptor v2 introduced paired realizations and runtime v2. Descriptor v3 adds
+background workload lifecycle and interactive commands without changing Runtime
+Context, so it continues to use runtime v2. New producers emit
 canonical `parameters`; runtime v1 consumers accept legacy `settings` only when
 `parameters` is absent. Actions depend on `project-context`, not the JSON layout,
 and the dispatcher normalizes both runtime versions behind that Interface.

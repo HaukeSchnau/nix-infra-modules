@@ -200,16 +200,54 @@ let
 
   graphOrder = workloads: (graphTraversal workloads).visited;
 
+  normalizeCommand =
+    {
+      context,
+      name,
+      secrets,
+      value,
+      withDependencies ? false,
+    }:
+    let
+      checkedName = checkName context name;
+      attrs = ensure context (isAttrs value) "must be an attribute set" value;
+      checked = checkKeys context (
+        [
+          "action"
+          "secrets"
+        ]
+        ++ lib.optional withDependencies "dependsOn"
+      ) attrs;
+      action = checked.action or name;
+      secretNames = checkStringList "${context}.secrets" (checked.secrets or [ ]);
+      dependsOn =
+        if withDependencies then checkStringList "${context}.dependsOn" (checked.dependsOn or [ ]) else [ ];
+    in
+    builtins.seq checkedName (
+      ensure context (isString action && action != "") "action must be a non-empty string" (
+        ensure context (lib.all (secret: builtins.hasAttr secret secrets) secretNames)
+          "Secrets must reference declared names"
+          (
+            {
+              inherit action;
+              secrets = secretNames;
+            }
+            // lib.optionalAttrs withDependencies { inherit dependsOn; }
+          )
+      )
+    );
+
   normalizeDevelopment =
     schemaVersion: secrets: value:
     let
       context = "development";
       attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context [
+      checked = checkKeys context ([
+        "commands"
         "endpoints"
         "preparation"
         "workloads"
-      ] attrs;
+      ]) attrs;
       endpointInput = checked.endpoints or { };
       workloadInput = checked.workloads or { };
       impliedWorkloads = lib.mapAttrs (_: endpoint: {
@@ -272,6 +310,14 @@ let
           )
         )
       ) mergedWorkloads;
+      commands = lib.mapAttrs (
+        name: value:
+        normalizeCommand {
+          context = "development.commands.${name}";
+          inherit name secrets value;
+          withDependencies = true;
+        }
+      ) (checked.commands or { });
       endpoints = lib.mapAttrs (
         name: endpoint:
         let
@@ -342,33 +388,43 @@ let
         lib.all (dependency: builtins.hasAttr dependency workloads) workload.dependsOn
         && lib.all (secret: builtins.hasAttr secret secrets) workload.secrets
       ) (builtins.attrValues workloads);
+      commandReferencesValid = lib.all (
+        command: lib.all (dependency: builtins.hasAttr dependency workloads) command.dependsOn
+      ) (builtins.attrValues commands);
       endpointTargetsServices = lib.all (endpoint: workloads.${endpoint.workload}.kind == "service") (
         builtins.attrValues endpoints
       );
     in
-    ensure "development.preparation" (isString preparation.action && preparation.action != "")
-      "action must be a non-empty string"
-      (
-        ensure "development.preparation" (isInt preparation.timeoutSec && preparation.timeoutSec > 0)
-          "timeoutSec must be a positive integer"
-          (
-            ensure context workloadReferencesValid
-              "workload dependencies and Secrets must reference declared names"
-              (
-                ensure context (schemaVersion == 1 || graphIsAcyclic workloads)
-                  "Workload dependency graph must be acyclic"
-                  (
-                    ensure context endpointTargetsServices "Endpoints must target service Workloads" (
-                      ensure context (lib.all (secret: builtins.hasAttr secret secrets) preparation.secrets)
-                        "Preparation Secrets must reference declared names"
-                        {
-                          inherit endpoints preparation workloads;
-                        }
+    ensure context (schemaVersion >= 3 || commands == { }) "commands require schemaVersion 3" (
+      ensure "development.preparation" (isString preparation.action && preparation.action != "")
+        "action must be a non-empty string"
+        (
+          ensure "development.preparation" (isInt preparation.timeoutSec && preparation.timeoutSec > 0)
+            "timeoutSec must be a positive integer"
+            (
+              ensure context (workloadReferencesValid && commandReferencesValid)
+                "Workload and command dependencies and Secrets must reference declared names"
+                (
+                  ensure context (schemaVersion == 1 || graphIsAcyclic workloads)
+                    "Workload dependency graph must be acyclic"
+                    (
+                      ensure context endpointTargetsServices "Endpoints must target service Workloads" (
+                        ensure context (lib.all (secret: builtins.hasAttr secret secrets) preparation.secrets)
+                          "Preparation Secrets must reference declared names"
+                          {
+                            inherit
+                              commands
+                              endpoints
+                              preparation
+                              workloads
+                              ;
+                          }
+                      )
                     )
-                  )
-              )
-          )
-      );
+                )
+            )
+        )
+    );
 
   normalizeIngress =
     value:
@@ -618,10 +674,11 @@ let
     let
       context = "release";
       attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context [
+      checked = checkKeys context ([
         "action"
         "activationExecutable"
         "backend"
+        "commands"
         "executable"
         "health"
         "ingress"
@@ -630,7 +687,7 @@ let
         "package"
         "preDeployTasks"
         "stateDirectories"
-      ] attrs;
+      ]) attrs;
       backend = checked.backend or "service";
       action = checked.action or (if backend == "service" then "web" else null);
       package = checked.package or "projectRelease";
@@ -639,6 +696,14 @@ let
       activationExecutable = checked.activationExecutable or null;
       stateDirectories = checked.stateDirectories or [ ];
       maintenanceJobs = lib.mapAttrs (normalizeJob secrets) (checked.maintenanceJobs or { });
+      commands = lib.mapAttrs (
+        name: command:
+        normalizeCommand {
+          context = "release.commands.${name}";
+          inherit name secrets;
+          value = command;
+        }
+      ) (checked.commands or { });
       preDeployTasks = lib.mapAttrs (normalizePreDeployTask secrets) (checked.preDeployTasks or { });
       preDeployReferencesValid = lib.all (
         task: lib.all (dependency: builtins.hasAttr dependency preDeployTasks) task.dependsOn
@@ -649,80 +714,85 @@ let
         && builtins.match "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$" path != null
         && lib.all (segment: segment != "." && segment != "..") (lib.splitString "/" path);
     in
-    ensure context
-      (builtins.elem backend [
-        "service"
-        "static"
-      ])
-      "backend must be service or static"
-      (
-        ensure context (isString package && builtins.match semanticNamePattern package != null)
-          "package must be a simple flake package attribute name"
-          (
-            ensure context
-              (
+    ensure context (schemaVersion >= 3 || commands == { }) "commands require schemaVersion 3" (
+      ensure context
+        (builtins.elem backend [
+          "service"
+          "static"
+        ])
+        "backend must be service or static"
+        (
+          ensure context (isString package && builtins.match semanticNamePattern package != null)
+            "package must be a simple flake package attribute name"
+            (
+              ensure context
                 (
-                  backend == "service"
-                  && isString executable
-                  && builtins.match executableNamePattern executable != null
-                )
-                || (backend == "static" && executable == null)
-              )
-              "service releases require an executable and static releases must not define one"
-              (
-                ensure context (backend == "static" || (isString action && action != ""))
-                  "service releases require a non-empty action"
                   (
-                    ensure context
-                      (
-                        activationExecutable == null
-                        || (
-                          isString activationExecutable && builtins.match executableNamePattern activationExecutable != null
+                    backend == "service"
+                    && isString executable
+                    && builtins.match executableNamePattern executable != null
+                  )
+                  || (backend == "static" && executable == null)
+                )
+                "service releases require an executable and static releases must not define one"
+                (
+                  ensure context (backend == "static" || (isString action && action != ""))
+                    "service releases require a non-empty action"
+                    (
+                      ensure context
+                        (
+                          activationExecutable == null
+                          || (
+                            isString activationExecutable && builtins.match executableNamePattern activationExecutable != null
+                          )
                         )
-                      )
-                      "activationExecutable must be null or a simple executable name"
-                      (
-                        ensure context (builtins.isList stateDirectories && lib.all validRelative stateDirectories)
-                          "stateDirectories must contain safe relative paths"
-                          (
-                            ensure context (backend == "service" || maintenanceJobs == { })
-                              "maintenanceJobs require the service backend"
-                              (
-                                ensure context (backend == "service" || preDeployTasks == { })
-                                  "preDeployTasks require the service backend"
-                                  (
-                                    ensure context (schemaVersion != 1 || preDeployTasks == { })
-                                      "preDeployTasks require schemaVersion 2 or newer"
+                        "activationExecutable must be null or a simple executable name"
+                        (
+                          ensure context (builtins.isList stateDirectories && lib.all validRelative stateDirectories)
+                            "stateDirectories must contain safe relative paths"
+                            (
+                              ensure context (backend == "service" || maintenanceJobs == { })
+                                "maintenanceJobs require the service backend"
+                                (
+                                  ensure context (backend == "service" || commands == { }) "commands require the service backend" (
+                                    ensure context (backend == "service" || preDeployTasks == { })
+                                      "preDeployTasks require the service backend"
                                       (
-                                        ensure context preDeployReferencesValid "preDeployTask dependencies must reference declared tasks" (
-                                          ensure context (graphIsAcyclic preDeployTasks) "preDeployTask dependency graph must be acyclic" {
-                                            inherit action;
-                                            inherit
-                                              activationExecutable
-                                              backend
-                                              executable
-                                              maintenanceJobs
-                                              package
-                                              preDeployTasks
-                                              stateDirectories
-                                              ;
-                                            health = normalizeHealth {
-                                              context = "release.health";
-                                              value = checked.health or { };
-                                            };
-                                            ingress = normalizeIngress (checked.ingress or { });
-                                            ociAuxiliaries = lib.mapAttrs normalizeOci (checked.ociAuxiliaries or { });
-                                          }
-                                        )
+                                        ensure context (schemaVersion >= 2 || preDeployTasks == { })
+                                          "preDeployTasks require schemaVersion 2 or newer"
+                                          (
+                                            ensure context preDeployReferencesValid "preDeployTask dependencies must reference declared tasks" (
+                                              ensure context (graphIsAcyclic preDeployTasks) "preDeployTask dependency graph must be acyclic" {
+                                                inherit action;
+                                                inherit
+                                                  activationExecutable
+                                                  backend
+                                                  commands
+                                                  executable
+                                                  maintenanceJobs
+                                                  package
+                                                  preDeployTasks
+                                                  stateDirectories
+                                                  ;
+                                                health = normalizeHealth {
+                                                  context = "release.health";
+                                                  value = checked.health or { };
+                                                };
+                                                ingress = normalizeIngress (checked.ingress or { });
+                                                ociAuxiliaries = lib.mapAttrs normalizeOci (checked.ociAuxiliaries or { });
+                                              }
+                                            )
+                                          )
                                       )
                                   )
-                              )
-                          )
-                      )
-                  )
-              )
-          )
-      );
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+    );
 
   normalize =
     {

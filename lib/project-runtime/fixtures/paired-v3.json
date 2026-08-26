@@ -29,6 +29,13 @@
         "secrets": ["token"]
       }
     },
+    "commands": {
+      "console": {
+        "action": "console",
+        "dependsOn": ["database"],
+        "secrets": ["token"]
+      }
+    },
     "endpoints": {
       "database": {
         "protocol": "tcp",
@@ -44,6 +51,12 @@
   },
   "release": {
     "action": "serve",
+    "commands": {
+      "console": {
+        "action": "console",
+        "secrets": ["token"]
+      }
+    },
     "preDeployTasks": {
       "prepare-schema": {
         "action": "prepare-release"

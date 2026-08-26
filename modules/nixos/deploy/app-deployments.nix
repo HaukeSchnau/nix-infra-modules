@@ -500,6 +500,173 @@ let
     }
   ) apps;
 
+  projectCommandApps = lib.filterAttrs (
+    _: app: app.enable && app.backend == "service" && app.project != null
+  ) resolvedApps;
+  projectCommandRecords = lib.mapAttrs (
+    name: app:
+    let
+      stateDir = "/var/lib/app-deployments/${name}";
+      runtimeDir = "${stateDir}/runtime";
+      user = if app.runtime.user == null then "app-${name}" else app.runtime.user;
+      group = if app.runtime.group == null then user else app.runtime.group;
+      home = if app.runtime.home == null then stateDir else app.runtime.home;
+      workingDirectory =
+        if app.runtime.workingDirectory == null then stateDir else app.runtime.workingDirectory;
+      secretBindings = pkgs.writeText "project-release-command-secrets-${name}.json" (
+        builtins.toJSON app.project.secrets + "\n"
+      );
+      runner = pkgs.writeShellScript "project-release-command-${name}" ''
+        set -euo pipefail
+
+        command_name="$1"
+        shift
+        state_dir=${lib.escapeShellArg stateDir}
+        release_plan="$state_dir/release-plan.json"
+        executable="$state_dir/current/bin/${app.executable}"
+        action="$(${lib.getExe pkgs.jq} --exit-status --raw-output \
+          --arg command "$command_name" '.commands[$command].action' "$release_plan")"
+
+        export PROJECT_RUNTIME_FILE="$state_dir/project-runtime.json"
+        export PROJECT_SECRETS_DIR="''${CREDENTIALS_DIRECTORY:-$state_dir/runtime/secrets}"
+        exec "$executable" "$action" "$@"
+      '';
+    in
+    {
+      inherit
+        app
+        group
+        home
+        runner
+        secretBindings
+        stateDir
+        runtimeDir
+        user
+        workingDirectory
+        ;
+    }
+  ) projectCommandApps;
+  projectReleaseCommand = pkgs.writeShellApplication {
+    name = "project-release-command";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.jq
+      pkgs.systemd
+    ];
+    text = ''
+      if [ "$(id -u)" -ne 0 ]; then
+        echo "project-release-command: must run as root" >&2
+        exit 77
+      fi
+      if [ "$#" -lt 2 ]; then
+        echo "usage: project-release-command <project> <command> [arguments...]" >&2
+        exit 64
+      fi
+
+      project="$1"
+      command_name="$2"
+      shift 2
+      case "$project" in
+        ${lib.concatStringsSep "\n" (
+          lib.mapAttrsToList (name: record: ''
+            ${lib.escapeShellArg name})
+              state_dir=${lib.escapeShellArg record.stateDir}
+              runtime_dir=${lib.escapeShellArg record.runtimeDir}
+              release_user=${lib.escapeShellArg record.user}
+              release_group=${lib.escapeShellArg record.group}
+              release_home=${lib.escapeShellArg record.home}
+              working_directory=${lib.escapeShellArg record.workingDirectory}
+              command_runner=${lib.escapeShellArg record.runner}
+              secret_bindings=${lib.escapeShellArg record.secretBindings}
+              isolation=${lib.escapeShellArg record.app.runtime.isolation}
+              protect_home=${lib.escapeShellArg (if record.app.runtime.protectHome then "yes" else "no")}
+              read_write_paths=${lib.escapeShellArg (lib.concatStringsSep " " record.app.runtime.readWritePaths)}
+              required_units=${lib.escapeShellArg (lib.concatStringsSep " " record.app.unitDependencies.requires)}
+              wanted_units=${lib.escapeShellArg (lib.concatStringsSep " " record.app.unitDependencies.wants)}
+              after_units=${lib.escapeShellArg (lib.concatStringsSep " " record.app.unitDependencies.after)}
+              ;;
+          '') projectCommandRecords
+        )}
+        *)
+          echo "project-release-command: unknown Project: $project" >&2
+          exit 66
+          ;;
+      esac
+
+      release_plan="$state_dir/release-plan.json"
+      if ! jq --exit-status --arg command "$command_name" \
+        '.commands[$command] != null' "$release_plan" >/dev/null; then
+        echo "project-release-command: undeclared Release command: $project/$command_name" >&2
+        exit 64
+      fi
+
+      properties=(
+        --property=UMask=0027
+        --property=TimeoutStopSec=30s
+      )
+      for unit in $required_units; do
+        properties+=(--property="Requires=$unit" --property="After=$unit")
+      done
+      for unit in $wanted_units; do
+        properties+=(--property="Wants=$unit" --property="After=$unit")
+      done
+      for unit in $after_units; do
+        properties+=(--property="After=$unit")
+      done
+
+      while IFS= read -r secret; do
+        source="$(jq --exit-status --raw-output --arg secret "$secret" \
+          '.[$secret]' "$secret_bindings")" || {
+            echo "project-release-command: Secret is not bound: $secret" >&2
+            exit 66
+          }
+        properties+=(--property="LoadCredential=$secret:$source")
+      done < <(jq --exit-status --raw-output --arg command "$command_name" \
+        '.commands[$command].secrets[]' "$release_plan")
+
+      if [ "$isolation" = isolated ]; then
+        properties+=(
+          --property=CapabilityBoundingSet=
+          --property=LockPersonality=yes
+          --property=NoNewPrivileges=yes
+          --property=PrivateDevices=yes
+          --property=PrivateTmp=yes
+          --property=ProtectClock=yes
+          --property=ProtectControlGroups=yes
+          --property="ProtectHome=$protect_home"
+          --property=ProtectKernelLogs=yes
+          --property=ProtectKernelModules=yes
+          --property=ProtectKernelTunables=yes
+          --property=ProtectSystem=strict
+          --property="ReadWritePaths=$runtime_dir''${read_write_paths:+ $read_write_paths}"
+          --property=RemoveIPC=yes
+          --property="RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX"
+          --property=RestrictRealtime=yes
+          --property=RestrictSUIDSGID=yes
+          --property=SystemCallArchitectures=native
+        )
+      fi
+
+      stdio=(--pipe)
+      if [ -t 0 ] && [ -t 1 ] && [ -t 2 ]; then
+        stdio=(--pty)
+      fi
+
+      exec systemd-run \
+        --quiet \
+        --wait \
+        --collect \
+        --service-type=exec \
+        "''${stdio[@]}" \
+        --uid="$release_user" \
+        --gid="$release_group" \
+        --working-directory="$working_directory" \
+        --setenv="HOME=$release_home" \
+        "''${properties[@]}" \
+        "$command_runner" "$command_name" "$@"
+    '';
+  };
+
   appRuntimeModules = lib.mapAttrsToList (
     name: app:
     (nixFlakeService
@@ -525,6 +692,7 @@ let
     path: fallback: map (module: lib.attrByPath path fallback module.config) appRuntimeModules;
 
   appRuntimeConfig = {
+    environment.systemPackages = lib.optional (projectCommandApps != { }) projectReleaseCommand;
     users.users = lib.mkMerge (appRuntimeValues [ "users" "users" ] { });
     users.groups = lib.mkMerge (appRuntimeValues [ "users" "groups" ] { });
     systemd.tmpfiles.rules = lib.mkMerge (appRuntimeValues [ "systemd" "tmpfiles" "rules" ] [ ]);

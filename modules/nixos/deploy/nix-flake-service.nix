@@ -89,7 +89,7 @@ let
   projectAuxiliaryPorts = if isProject then cfg.project.auxiliaryPorts else { };
   projectJobs = if isProject then cfg.project.jobs else { };
   projectMemory = if isProject then cfg.project.resources.memory else { };
-  projectRuntimeSchemaVersion = if isProject then descriptor.schemaVersion else 1;
+  projectRuntimeSchemaVersion = if isProject && descriptor.schemaVersion >= 2 then 2 else 1;
   unitName = "app-deployment-${name}";
   updateUnitName = "${unitName}-update";
   activationUnitName = "${unitName}-activate";
