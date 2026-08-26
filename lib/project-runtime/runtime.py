@@ -314,7 +314,8 @@ def local_manifest(config: Mapping[str, Any]) -> pathlib.Path:
     ) / config["project"] / "instances" / identity
 
     with exclusive_lock(runtime_root() / "local-allocations.lock"):
-        target_schema_version = config.get("descriptorSchemaVersion", 1)
+        descriptor_schema_version = config.get("descriptorSchemaVersion", 1)
+        target_schema_version = 1 if descriptor_schema_version == 1 else 2
         if manifest_path.exists():
             existing = load_json(manifest_path, label="runtime manifest")
             if (
@@ -621,7 +622,7 @@ def main(arguments: Sequence[str]) -> int:
     if (
         remaining
         and remaining[0] == "workload"
-        and config.get("descriptorSchemaVersion", 1) == 2
+        and config.get("descriptorSchemaVersion", 1) != 1
         and config["realization"] == "development"
     ):
         if len(remaining) != 2 or remaining[1] not in config["workloads"]:
