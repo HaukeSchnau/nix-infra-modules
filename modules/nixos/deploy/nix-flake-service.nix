@@ -526,6 +526,7 @@ let
         local descriptor="$1"
         local runtime="$2"
         local plan="$3"
+        local revision="''${4:-}"
         local result="$state_dir/compatibility.json.next"
 
         if ! jq -n \
@@ -547,7 +548,9 @@ let
           return 1
         fi
 
-        jq -S -s '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}' \
+        jq -S -s --arg revision "$revision" \
+          '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
+            + (if $revision == "" then {} else {revision: $revision} end)' \
           ${lib.escapeShellArg projectRuntimeBaseManifest} "$result" > "$runtime"
         jq -S '.releasePlan' "$result" > "$plan"
         mv -f "$result" "$state_dir/compatibility.json"
@@ -556,12 +559,16 @@ let
       }
 
       current_descriptor_matches() {
-        local descriptor expected_runtime expected_plan
+        local descriptor expected_runtime expected_plan revision
         descriptor="$current_link/share/project/descriptor.json"
         expected_runtime="$state_dir/current-project-runtime.json.next"
         expected_plan="$state_dir/current-release-plan.json.next"
         [ -f "$descriptor" ] || return 1
-        bind_descriptor "$descriptor" "$expected_runtime" "$expected_plan" || return 1
+        revision=""
+        ${lib.optionalString cfg.project.exposeRevision ''
+          revision="$(cat "$current_revision_file")"
+        ''}
+        bind_descriptor "$descriptor" "$expected_runtime" "$expected_plan" "$revision" || return 1
         if cmp -s "$expected_runtime" "$runtime_manifest" && cmp -s "$expected_plan" "$release_plan"; then
           rm -f "$expected_runtime" "$expected_plan"
           return 0
@@ -641,7 +648,11 @@ let
         echo "app-deployment/${name}: Project artifact is missing $descriptor_file" >&2
         exit 1
       fi
-      if ! bind_descriptor "$descriptor_file" "$candidate_runtime_manifest.next" "$candidate_release_plan.next"; then
+      candidate_revision=""
+      ${lib.optionalString cfg.project.exposeRevision ''
+        candidate_revision="$resolved_revision"
+      ''}
+      if ! bind_descriptor "$descriptor_file" "$candidate_runtime_manifest.next" "$candidate_release_plan.next" "$candidate_revision"; then
         echo "app-deployment/${name}: Project artifact is waiting for compatible host bindings" >&2
         exit 1
       fi
@@ -949,8 +960,13 @@ let
       exit 1
     fi
 
-    expected_runtime="$(${pkgs.jq}/bin/jq -S -s \
-      '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}' \
+    revision=""
+    ${lib.optionalString cfg.project.exposeRevision ''
+      revision="$(cat ${lib.escapeShellArg stateDir}/current-revision)"
+    ''}
+    expected_runtime="$(${pkgs.jq}/bin/jq -S -s --arg revision "$revision" \
+      '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
+        + (if $revision == "" then {} else {revision: $revision} end)' \
       ${lib.escapeShellArg projectRuntimeBaseManifest} <(printf '%s\n' "$result"))"
     actual_runtime="$(${pkgs.jq}/bin/jq -S . "$runtime")"
     if [ "$expected_runtime" != "$actual_runtime" ]; then
@@ -983,8 +999,13 @@ let
       exit 1
     fi
 
-    expected_runtime="$(${pkgs.jq}/bin/jq -S -s \
-      '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}' \
+    revision=""
+    ${lib.optionalString cfg.project.exposeRevision ''
+      revision="$(cat ${lib.escapeShellArg stateDir}/current-revision)"
+    ''}
+    expected_runtime="$(${pkgs.jq}/bin/jq -S -s --arg revision "$revision" \
+      '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
+        + (if $revision == "" then {} else {revision: $revision} end)' \
       ${lib.escapeShellArg projectRuntimeBaseManifest} <(printf '%s\n' "$result"))"
     expected_release_plan="$(${pkgs.jq}/bin/jq -S '.releasePlan' <<<"$result")"
     actual_runtime="$(${pkgs.jq}/bin/jq -S . ${lib.escapeShellArg deployedProjectRuntimeManifest})"
@@ -1332,7 +1353,9 @@ let
           // projectJobTimers;
 
         vps.appDeployments.webhookApps.${name} = {
+          bindingPolicyFile = lib.optionalString isProject projectBindingPolicy;
           compatibilityFile = "${stateDir}/compatibility.json";
+          compatibilityProgram = lib.optionalString isProject projectCompatibilityJq;
           deliveryMode = cfg.delivery.mode;
           requestedReleaseFile = "${stateDir}/requested-release.json";
           updateUnit = "${updateUnitName}.service";

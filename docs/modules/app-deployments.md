@@ -161,10 +161,20 @@ loads only the command's declared credentials, and forwards the caller's
 terminal and exit status. Host tooling can delegate to this adapter without
 depending on deployment state paths or service account names.
 
+The root-only `project-release-status <project> [--json]` adapter reports the remote branch,
+active/previous/pending revisions, descriptor compatibility, service state and restart count,
+public health checks, and the last updater result. It deliberately omits Nix store paths. Private
+host tooling can present it without duplicating the deployment state model.
+
 The reusable Gitea workflow verifies a Project, builds its immutable
 Release, waits for cache publication, and promotes the exact store path. Runner
 infrastructure supplies cache and promotion bindings. A project may map to
 multiple promotion URLs when the same Release has several placements.
+
+Hosts may opt a Runtime Context v2 application into `exposeRevision`. The updater then binds the
+promoted immutable Git revision into the candidate, active, and rollback manifests. It is not
+enabled by default, so applications pinned to older strict Runtime Context validators continue to
+work until they deliberately adopt the field.
 
 Deployments use an isolated `app-<name>` account by default. Host policy may
 instead bind an existing user, group, home, working directory, and writable

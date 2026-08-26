@@ -277,7 +277,9 @@ let
   pairedProjectApp =
     self.lib.projectDescriptor.releaseApp {
       descriptor = pairedProjectDescriptor;
-      policy = projectPolicy;
+      policy = projectPolicy // {
+        exposeRevision = true;
+      };
     }
     // {
       delivery = {
@@ -383,6 +385,11 @@ let
       (throw "project-release-command is absent from the Project host")
       pairedProjectSystem.config.environment.systemPackages;
   projectReleaseCommand = lib.getExe projectReleaseCommandPackage;
+  projectReleaseStatusPackage =
+    lib.findFirst (package: lib.getName package == "project-release-status")
+      (throw "project-release-status is absent from the Project host")
+      pairedProjectSystem.config.environment.systemPackages;
+  projectReleaseStatus = lib.getExe projectReleaseStatusPackage;
   staticProjectDescriptor = {
     schemaVersion = 1;
     project = "static-project";
@@ -788,6 +795,7 @@ in
     ${pkgs.bash}/bin/bash -n ${projectJobScript}
     ${pkgs.bash}/bin/bash -n ${projectReleasePlanService.serviceConfig.ExecStart}
     ${pkgs.bash}/bin/bash -n ${projectReleaseCommand}
+    ${pkgs.bash}/bin/bash -n ${projectReleaseStatus}
     grep -Fq 'share/project/descriptor.json' ${projectUpdateScript}
     test '${
       if
@@ -809,6 +817,7 @@ in
     grep -Fq 'runtime_manifest.next' ${projectUpdateScript}
     grep -Fq 'chmod 0644 "$runtime_manifest.next"' ${projectUpdateScript}
     grep -Fq 'previous_runtime_manifest' ${projectUpdateScript}
+    grep -Fq 'candidate_revision="$resolved_revision"' ${pairedProjectUpdateScript}
     grep -Fq '/release-plan.json' ${projectReleasePlanService.serviceConfig.ExecStart}
     grep -Fq '.releasePlan' ${projectReleasePlanService.serviceConfig.ExecStart}
     ! grep -Fq 'activate-release' ${projectStartScript}

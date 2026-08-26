@@ -8,6 +8,7 @@
     "schemaVersion": { "const": 2 },
     "project": { "$ref": "#/$defs/name" },
     "realization": { "enum": ["development", "release"] },
+    "revision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
     "paths": {
       "type": "object",
       "required": ["state", "runtime"],

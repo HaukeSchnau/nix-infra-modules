@@ -394,6 +394,7 @@ in
             ${pkgs.jq}/bin/jq -n \
               --arg state "$state" --arg runtime "$runtime_dir" \
               '{schemaVersion: 2, project: "runtime-paired-fixture", realization: "release",
+                revision: "0123456789abcdef0123456789abcdef01234567",
                 paths: {state: $state, runtime: $runtime},
                 endpoints: {
                   serve: {protocol: "http", url: "https://paired.example",
@@ -409,6 +410,8 @@ in
               ${pairedService.package}/bin/project-context endpoint serve host-names --json)" = '[]'
             test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
               ${pairedService.package}/bin/project-context parameter flavour)" = release
+            test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
+              ${pairedService.package}/bin/project-context revision)" = 0123456789abcdef0123456789abcdef01234567
             test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
               ${pairedService.package}/bin/project-context auxiliary database postgres listen-port)" = 33104
             assert_status 66 env PROJECT_RUNTIME_FILE="$paired_release_manifest" \

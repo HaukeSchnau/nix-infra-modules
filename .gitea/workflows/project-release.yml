@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: ""
+      readiness_url:
+        description: Optional public readiness URL whose JSON revision must match the promoted commit
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -38,6 +43,56 @@ jobs:
           fi
           nix --version
 
+      - name: Preflight host bindings
+        run: |
+          set -euo pipefail
+          : "${PROJECT_RELEASE_PROMOTION_TOKEN:?runner does not provide PROJECT_RELEASE_PROMOTION_TOKEN}"
+          project="$(nix eval --raw .#lib.project.project)"
+          descriptor="$(nix eval --json .#lib.project)"
+          promotion_urls_file="$RUNNER_TEMP/project-release-promotion-urls"
+          : > "$promotion_urls_file"
+
+          if [ -n "${PROJECT_RELEASE_PROMOTION_TARGETS:-}" ]; then
+            export project
+            nix eval --impure --raw --expr '
+              let
+                targets = builtins.fromJSON (builtins.getEnv "PROJECT_RELEASE_PROMOTION_TARGETS");
+                project = builtins.getEnv "project";
+                urls =
+                  if builtins.hasAttr project targets
+                  then builtins.getAttr project targets
+                  else targets."*" or [];
+              in
+              builtins.concatStringsSep "\n" urls
+            ' > "$promotion_urls_file"
+          elif [ -n "${PROJECT_RELEASE_PROMOTION_URL:-}" ]; then
+            printf '%s\n' "$PROJECT_RELEASE_PROMOTION_URL" > "$promotion_urls_file"
+          fi
+          [ -s "$promotion_urls_file" ] || {
+            echo "Runner does not provide a promotion target for $project" >&2
+            exit 1
+          }
+
+          payload="$(jq -cn --argjson descriptor "$descriptor" '{descriptor: $descriptor}')"
+          while IFS= read -r promotion_url; do
+            status="$(curl --silent --show-error \
+              --output preflight.json \
+              --write-out '%{http_code}' \
+              --request POST \
+              --header "Authorization: Bearer ${PROJECT_RELEASE_PROMOTION_TOKEN}" \
+              --header "Content-Type: application/json" \
+              --data "$payload" \
+              "${promotion_url%/}/preflight/${project}")"
+            cat preflight.json
+            if [ "$status" != 200 ]; then
+              echo "Release contract is incompatible with host bindings at $promotion_url (HTTP $status)" >&2
+              exit 1
+            fi
+          done < "$promotion_urls_file"
+
+          printf 'PROJECT_NAME=%s\n' "$project" >> "$GITHUB_ENV"
+          printf 'PROMOTION_URLS_FILE=%s\n' "$promotion_urls_file" >> "$GITHUB_ENV"
+
       - name: Verify Project
         run: |
           set -euo pipefail
@@ -52,10 +107,8 @@ jobs:
       - name: Build immutable Release
         run: |
           set -euo pipefail
-          project="$(nix eval --raw .#lib.project.project)"
           release="$(nix build ".#${{ inputs.package }}" --no-link --print-out-paths --print-build-logs)"
           test "$(printf '%s\n' "$release" | wc -l)" -eq 1
-          printf 'PROJECT_NAME=%s\n' "$project" >> "$GITHUB_ENV"
           printf 'RELEASE_STORE_PATH=%s\n' "$release" >> "$GITHUB_ENV"
 
       - name: Wait for cache publication
@@ -78,35 +131,17 @@ jobs:
         run: |
           set -euo pipefail
           : "${PROJECT_RELEASE_PROMOTION_TOKEN:?runner does not provide PROJECT_RELEASE_PROMOTION_TOKEN}"
+          git fetch --no-tags origin "+refs/heads/${GITHUB_REF_NAME}:refs/remotes/origin/${GITHUB_REF_NAME}"
+          remote_revision="$(git rev-parse "refs/remotes/origin/${GITHUB_REF_NAME}")"
+          if [ "$remote_revision" != "$GITHUB_SHA" ]; then
+            echo "Refusing to promote superseded revision $GITHUB_SHA; ${GITHUB_REF_NAME} is $remote_revision" >&2
+            exit 1
+          fi
           printf -v payload \
             '{"revision":"%s","storePath":"%s","source":"actions"}' \
             "$GITHUB_SHA" "$RELEASE_STORE_PATH"
 
-          promotion_urls=()
-          if [ -n "${PROJECT_RELEASE_PROMOTION_TARGETS:-}" ]; then
-            export PROJECT_NAME
-            mapfile -t promotion_urls < <(
-              nix eval --impure --raw --expr '
-                let
-                  targets = builtins.fromJSON (builtins.getEnv "PROJECT_RELEASE_PROMOTION_TARGETS");
-                  project = builtins.getEnv "PROJECT_NAME";
-                  urls =
-                    if builtins.hasAttr project targets
-                    then builtins.getAttr project targets
-                    else targets."*" or [];
-                in
-                builtins.concatStringsSep "\n" urls
-              '
-            )
-          elif [ -n "${PROJECT_RELEASE_PROMOTION_URL:-}" ]; then
-            promotion_urls+=("$PROJECT_RELEASE_PROMOTION_URL")
-          fi
-          [ "${#promotion_urls[@]}" -gt 0 ] || {
-            echo "Runner does not provide a promotion target for $PROJECT_NAME" >&2
-            exit 1
-          }
-
-          for promotion_url in "${promotion_urls[@]}"; do
+          while IFS= read -r promotion_url; do
             promoted=false
             for _ in $(seq 1 30); do
               status="$(curl --silent --show-error \
@@ -137,4 +172,21 @@ jobs:
               echo "Release could not be activated at $promotion_url within five minutes" >&2
               exit 1
             }
+          done < "$PROMOTION_URLS_FILE"
+
+      - name: Verify public deployment
+        if: inputs.readiness_url != ''
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 60); do
+            if curl --fail --silent --show-error --max-time 5 \
+              '${{ inputs.readiness_url }}' > readiness.json \
+              && [ "$(jq -r '.revision // empty' readiness.json)" = "$GITHUB_SHA" ]; then
+              cat readiness.json
+              exit 0
+            fi
+            sleep 5
           done
+          echo "Public readiness did not report promoted revision $GITHUB_SHA within five minutes" >&2
+          cat readiness.json >&2 2>/dev/null || true
+          exit 1

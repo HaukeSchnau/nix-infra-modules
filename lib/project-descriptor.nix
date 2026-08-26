@@ -960,6 +960,7 @@ let
         "domain"
         "environment"
         "environmentFiles"
+        "exposeRevision"
         "healthRecovery"
         "jobs"
         "parameters"
@@ -990,6 +991,9 @@ let
       )) "must be an attribute set" (checkedPolicy.jobs or { });
       activeJobs = lib.filterAttrs (name: _: builtins.hasAttr name release.maintenanceJobs) jobs;
       resources = normalizeReleaseResources (checkedPolicy.resources or { });
+      exposeRevision = ensure "release policy.exposeRevision" (
+        !(checkedPolicy.exposeRevision or false) || normalized.schemaVersion >= 2
+      ) "requires Project descriptor schemaVersion 2 or newer" (checkedPolicy.exposeRevision or false);
     in
     ensure "release policy" (missingSecrets == [ ])
       "missing required Secret bindings: ${lib.concatStringsSep ", " missingSecrets}"
@@ -1011,6 +1015,7 @@ let
                 jobs = activeJobs;
                 parameterBindings = checkedPolicy.parameters or { };
                 healthRecovery = checkedPolicy.healthRecovery or { };
+                inherit exposeRevision;
                 inherit parameters;
                 approvedOci = approvedOci;
                 inherit resources;

@@ -18,6 +18,7 @@ import (
 var (
 	namePattern       = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 	credentialPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+	revisionPattern   = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
 )
 
 type runtimeFailure struct {
@@ -34,6 +35,7 @@ type endpoint struct {
 }
 
 type manifest struct {
+	revision   string
 	paths      map[string]string
 	endpoints  map[string]endpoint
 	parameters map[string]any
@@ -228,7 +230,7 @@ func validateManifest(raw map[string]any, config map[string]any) manifest {
 	}
 
 	allowedRoot := keySet([]string{
-		"schemaVersion", "project", "realization", "paths", "endpoints", "parameters", "secrets",
+		"schemaVersion", "project", "realization", "revision", "paths", "endpoints", "parameters", "secrets",
 	})
 	if schemaVersion == 1 {
 		allowedRoot["settings"] = struct{}{}
@@ -246,6 +248,14 @@ func validateManifest(raw map[string]any, config map[string]any) manifest {
 	}
 	if realization != "release" {
 		fail(65, "runtime configuration /realization: compiled Release runtime requires release")
+	}
+	revision := ""
+	if rawRevision, present := raw["revision"]; present {
+		var ok bool
+		revision, ok = rawRevision.(string)
+		if !ok || !revisionPattern.MatchString(revision) {
+			fail(65, "runtime manifest /revision: must be a lowercase Git object ID")
+		}
 	}
 
 	rawPaths := object(raw["paths"], "/paths")
@@ -464,6 +474,7 @@ func validateManifest(raw map[string]any, config map[string]any) manifest {
 	}
 
 	return manifest{
+		revision:   revision,
 		paths:      paths,
 		endpoints:  endpoints,
 		parameters: normalizedParameters,
@@ -673,6 +684,14 @@ func contextQuery(config map[string]any, arguments []string) int {
 			}
 		}
 		printValue(path, false)
+	case "revision":
+		if len(arguments) != 1 {
+			fail(64, "usage: project-context revision")
+		}
+		if value.revision == "" {
+			return 1
+		}
+		printValue(value.revision, false)
 	default:
 		fail(64, "unknown project-context command: %s", arguments[0])
 	}

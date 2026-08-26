@@ -245,6 +245,12 @@ let
                   };
                 };
 
+                exposeRevision = lib.mkOption {
+                  type = lib.types.bool;
+                  default = false;
+                  description = "Add the immutable Git revision to Runtime Context v2.";
+                };
+
                 resources.memory = {
                   high = lib.mkOption {
                     type = lib.types.nullOr lib.types.str;
@@ -667,6 +673,215 @@ let
     '';
   };
 
+  projectStatusApps = lib.filterAttrs (_: app: app.enable && app.project != null) resolvedApps;
+  projectStatusCatalog = pkgs.writeText "project-release-status-apps.json" (
+    builtins.toJSON (
+      lib.mapAttrs (
+        name: app:
+        let
+          release =
+            (projectDescriptor.normalize {
+              descriptor = app.project.descriptor;
+              expectedProject = name;
+            }).release;
+          tokenPath =
+            if app.source.giteaTokenSecretName == null then
+              null
+            else
+              config.sops.secrets.${app.source.giteaTokenSecretName}.path;
+        in
+        {
+          inherit (app.source)
+            branch
+            netrcHost
+            url
+            username
+            ;
+          inherit tokenPath;
+          backend = app.backend;
+          endpoint = release.action;
+          stateDir = "/var/lib/app-deployments/${name}";
+          serviceUnit = lib.optionalString (app.backend == "service") "app-deployment-${name}.service";
+          updateUnit = "app-deployment-${name}-update.service";
+        }
+      ) projectStatusApps
+    )
+    + "\n"
+  );
+  projectReleaseStatusScript = pkgs.writeText "project-release-status.py" ''
+    import argparse
+    import base64
+    import datetime
+    import json
+    import os
+    import pathlib
+    import subprocess
+    import urllib.error
+    import urllib.request
+
+    CATALOG = pathlib.Path(os.environ["PROJECT_RELEASE_STATUS_CATALOG"])
+
+    def read_text(path):
+      try:
+        return pathlib.Path(path).read_text(encoding="utf-8").strip() or None
+      except OSError:
+        return None
+
+    def read_json(path):
+      try:
+        value = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
+      except (OSError, json.JSONDecodeError):
+        return None
+
+    def systemd_property(unit, name):
+      if not unit:
+        return None
+      result = subprocess.run(
+        ["${pkgs.systemd}/bin/systemctl", "show", unit, f"--property={name}", "--value"],
+        check=False,
+        capture_output=True,
+        text=True,
+      )
+      return result.stdout.strip() or None
+
+    def remote_revision(app):
+      environment = os.environ.copy()
+      token_path = app.get("tokenPath")
+      if token_path:
+        token = read_text(token_path)
+        if not token:
+          return None
+        credentials = base64.b64encode(f"{app['username']}:{token}".encode()).decode()
+        environment.update({
+          "GIT_CONFIG_COUNT": "1",
+          "GIT_CONFIG_KEY_0": "http.extraHeader",
+          "GIT_CONFIG_VALUE_0": f"Authorization: Basic {credentials}",
+          "GIT_TERMINAL_PROMPT": "0",
+        })
+      url = app["url"].removeprefix("git+")
+      result = subprocess.run(
+        ["${pkgs.git}/bin/git", "ls-remote", url, f"refs/heads/{app['branch']}"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=20,
+      )
+      fields = result.stdout.split()
+      return fields[0] if result.returncode == 0 and fields else None
+
+    def health(runtime, plan, endpoint_name):
+      endpoint = (runtime or {}).get("endpoints", {}).get(endpoint_name, {})
+      origin = endpoint.get("url")
+      paths = (plan or {}).get("health", {}).get("paths", [])
+      checks = []
+      if not origin:
+        return {"ok": False, "checks": checks, "error": "Runtime Context has no HTTP URL"}
+      for path in paths:
+        url = origin.rstrip("/") + "/" + path.lstrip("/")
+        try:
+          with urllib.request.urlopen(url, timeout=5) as response:
+            body = response.read(1024 * 1024)
+            parsed = None
+            if "json" in response.headers.get("Content-Type", ""):
+              try:
+                parsed = json.loads(body)
+              except json.JSONDecodeError:
+                pass
+            checks.append({"path": path, "status": response.status, "body": parsed})
+        except urllib.error.HTTPError as error:
+          checks.append({"path": path, "status": error.code})
+        except (OSError, TimeoutError) as error:
+          checks.append({"path": path, "status": None, "error": str(error)})
+      return {"ok": bool(checks) and all(check.get("status") == 200 for check in checks), "checks": checks}
+
+    def iso_mtime(path):
+      try:
+        timestamp = pathlib.Path(path).stat().st_mtime
+      except OSError:
+        return None
+      return datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc).isoformat()
+
+    def collect(name, app):
+      state = pathlib.Path(app["stateDir"])
+      current = read_text(state / "current-revision")
+      previous = read_text(state / "previous-revision")
+      pending = read_json(state / "requested-release.json")
+      compatibility = read_json(state / "compatibility.json")
+      runtime = read_json(state / "project-runtime.json")
+      plan = read_json(state / "release-plan.json")
+      remote = remote_revision(app)
+      result = {
+        "project": name,
+        "branch": app["branch"],
+        "remoteRevision": remote,
+        "activeRevision": current,
+        "previousRevision": previous,
+        "pendingRevision": (pending or {}).get("revision"),
+        "promotionPending": pending is not None,
+        "upToDate": remote is not None and current == remote and pending is None,
+        "compatibility": compatibility,
+        "service": {
+          "activeState": systemd_property(app["serviceUnit"], "ActiveState"),
+          "subState": systemd_property(app["serviceUnit"], "SubState"),
+          "restarts": int(systemd_property(app["serviceUnit"], "NRestarts") or 0),
+        } if app["serviceUnit"] else None,
+        "lastDeploymentAt": iso_mtime(state / "current-revision"),
+        "lastDeploymentResult": systemd_property(app["updateUnit"], "Result"),
+        "health": health(runtime, plan, app["endpoint"]),
+      }
+      result["ready"] = (
+        result["upToDate"]
+        and result["health"]["ok"]
+        and (result["service"] is None or result["service"]["activeState"] == "active")
+        and (compatibility is None or compatibility.get("compatible") is True)
+      )
+      return result
+
+    def print_human(value):
+      short = lambda revision: revision[:12] if revision else "—"
+      print(f"{value['project']}: {'ready' if value['ready'] else 'attention needed'}")
+      print(f"  remote {value['branch']}: {short(value['remoteRevision'])}")
+      print(f"  active / previous: {short(value['activeRevision'])} / {short(value['previousRevision'])}")
+      print(f"  pending promotion: {short(value['pendingRevision'])}")
+      service = value.get("service")
+      if service:
+        print(f"  service: {service['activeState']}/{service['subState']}, {service['restarts']} restarts")
+      print(f"  public health: {'passing' if value['health']['ok'] else 'failing'}")
+      print(f"  last deployment: {value['lastDeploymentResult'] or '—'} at {value['lastDeploymentAt'] or '—'}")
+      compatibility = value.get("compatibility")
+      if compatibility and not compatibility.get("compatible", False):
+        for reason in compatibility.get("reasons", []):
+          print(f"  incompatible: {reason}")
+
+    parser = argparse.ArgumentParser(prog="project-release-status")
+    parser.add_argument("project")
+    parser.add_argument("--json", action="store_true")
+    options = parser.parse_args()
+    catalog = read_json(CATALOG) or {}
+    if options.project not in catalog:
+      parser.error(f"unknown Project: {options.project}")
+    value = collect(options.project, catalog[options.project])
+    if options.json:
+      print(json.dumps(value, indent=2, sort_keys=True))
+    else:
+      print_human(value)
+    raise SystemExit(0 if value["ready"] else 1)
+  '';
+  projectReleaseStatus = pkgs.writeShellApplication {
+    name = "project-release-status";
+    runtimeInputs = [ pkgs.python3 ];
+    text = ''
+      if [ "$(id -u)" -ne 0 ]; then
+        echo "project-release-status: must run as root" >&2
+        exit 77
+      fi
+      export PROJECT_RELEASE_STATUS_CATALOG=${lib.escapeShellArg projectStatusCatalog}
+      exec ${pkgs.python3}/bin/python3 ${lib.escapeShellArg projectReleaseStatusScript} "$@"
+    '';
+  };
+
   appRuntimeModules = lib.mapAttrsToList (
     name: app:
     (nixFlakeService
@@ -692,7 +907,9 @@ let
     path: fallback: map (module: lib.attrByPath path fallback module.config) appRuntimeModules;
 
   appRuntimeConfig = {
-    environment.systemPackages = lib.optional (projectCommandApps != { }) projectReleaseCommand;
+    environment.systemPackages =
+      lib.optional (projectCommandApps != { }) projectReleaseCommand
+      ++ lib.optional (projectStatusApps != { }) projectReleaseStatus;
     users.users = lib.mkMerge (appRuntimeValues [ "users" "users" ] { });
     users.groups = lib.mkMerge (appRuntimeValues [ "users" "groups" ] { });
     systemd.tmpfiles.rules = lib.mkMerge (appRuntimeValues [ "systemd" "tmpfiles" "rules" ] [ ]);
@@ -724,6 +941,7 @@ let
     import os
     import re
     import subprocess
+    import tempfile
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     APPS_FILE = os.environ["APP_DEPLOYMENTS_APPS_FILE"]
@@ -762,12 +980,12 @@ let
           self.send_json(403, {"error": "forbidden"})
           return
 
-        prefix = "/deploy/"
-        if not self.path.startswith(prefix):
+        match = re.fullmatch(r"/(deploy|preflight)/([^/]+)", self.path)
+        if match is None:
           self.send_json(404, {"error": "not found"})
           return
 
-        app_name = self.path[len(prefix):].strip("/")
+        action, app_name = match.groups()
         app = APPS.get(app_name)
         if app is None:
           self.send_json(404, {"error": "unknown app", "app": app_name})
@@ -781,6 +999,39 @@ let
           except json.JSONDecodeError:
             self.send_json(400, {"error": "invalid json"})
             return
+
+        if action == "preflight":
+          descriptor = payload.get("descriptor")
+          if not isinstance(descriptor, dict):
+            self.send_json(400, {"error": "preflight requires a descriptor object"})
+            return
+          if not app["bindingPolicyFile"] or not app["compatibilityProgram"]:
+            self.send_json(400, {"error": "app does not use the Project adapter"})
+            return
+          with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as candidate:
+            json.dump(descriptor, candidate)
+            candidate.flush()
+            result = subprocess.run(
+              [
+                "${pkgs.jq}/bin/jq",
+                "-n",
+                "--slurpfile", "host", app["bindingPolicyFile"],
+                "--slurpfile", "candidate", candidate.name,
+                "-f", app["compatibilityProgram"],
+              ],
+              check=False,
+              capture_output=True,
+              text=True,
+            )
+          if result.returncode != 0:
+            self.send_json(500, {"error": "compatibility evaluation failed"})
+            return
+          compatibility = json.loads(result.stdout)
+          self.send_json(200 if compatibility.get("compatible") else 409, {
+            "app": app_name,
+            "compatibility": compatibility,
+          })
+          return
 
         revision = str(payload.get("revision", "")).strip()
         if revision:
@@ -912,7 +1163,9 @@ in
       type = lib.types.attrsOf (
         lib.types.submodule {
           options = {
+            bindingPolicyFile = lib.mkOption { type = lib.types.str; };
             compatibilityFile = lib.mkOption { type = lib.types.str; };
+            compatibilityProgram = lib.mkOption { type = lib.types.str; };
             deliveryMode = lib.mkOption {
               type = lib.types.enum [
                 "source"

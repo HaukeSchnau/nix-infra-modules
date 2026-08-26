@@ -93,6 +93,7 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
         "schemaVersion",
         "project",
         "realization",
+        "revision",
         "paths",
         "endpoints",
         "parameters",
@@ -115,6 +116,12 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
             "runtime manifest /realization: "
             f"expected {config['realization']}, got {raw.get('realization')}",
         )
+    revision = raw.get("revision")
+    if revision is not None and (
+        not isinstance(revision, str)
+        or re.fullmatch(r"[0-9a-f]{40,64}", revision) is None
+    ):
+        fail(65, "runtime manifest /revision: must be a lowercase Git object ID")
 
     paths = raw.get("paths")
     if not isinstance(paths, dict):
@@ -554,6 +561,7 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
     secret_parser = subparsers.add_parser("secret-file")
     secret_parser.add_argument("name")
     secret_parser.add_argument("--required", action="store_true")
+    subparsers.add_parser("revision")
     try:
         options = parser.parse_args(arguments)
     except SystemExit as error:
@@ -595,6 +603,10 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
                 value = json.loads(options.default)
             except json.JSONDecodeError:
                 value = options.default
+    elif options.command == "revision":
+        value = manifest.get("revision")
+        if value is None:
+            return 1
     else:
         credential = manifest["secrets"].get(options.name)
         if credential is None:

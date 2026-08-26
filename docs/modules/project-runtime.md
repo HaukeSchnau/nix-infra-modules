@@ -105,6 +105,7 @@ protocol="$(project-context endpoint web protocol)"
 origin="$(project-context endpoint web url)"
 hosts="$(project-context endpoint web host-names --json)"
 mode="$(project-context parameter mode --default '"development"')"
+revision="$(project-context revision || true)"
 token_file="$(project-context secret-file authToken --required)"
 ```
 
@@ -113,6 +114,11 @@ token_file="$(project-context secret-file authToken --required)"
 Local manifests do not claim descriptor Secrets are bound. Repository actions
 may use an optional `secret-file` query and retain their ordinary local env-file
 fallback; managed adapters bind and enforce required Secrets.
+
+Release hosts may add an immutable Git revision to Runtime Context v2. Actions query it with
+`project-context revision`; the command exits with status 1 when a Development adapter or an older
+Release binding does not provide one. Applications should treat that absence as an explicit
+development or legacy state and never infer a revision from a mutable checkout.
 
 Release primary Endpoints use the repository-owned Release action name. A
 Release with action `web` therefore queries `endpoint web` just like
