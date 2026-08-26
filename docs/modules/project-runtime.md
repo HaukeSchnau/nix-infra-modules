@@ -106,6 +106,7 @@ origin="$(project-context endpoint web url)"
 hosts="$(project-context endpoint web host-names --json)"
 mode="$(project-context parameter mode --default '"development"')"
 revision="$(project-context revision || true)"
+instance_id="$(project-context instance-id || true)"
 token_file="$(project-context secret-file authToken --required)"
 ```
 
@@ -114,6 +115,10 @@ token_file="$(project-context secret-file authToken --required)"
 Local manifests do not claim descriptor Secrets are bound. Repository actions
 may use an optional `secret-file` query and retain their ordinary local env-file
 fallback; managed adapters bind and enforce required Secrets.
+
+`project-context instance-id` returns the stable Development instance identity. It separates
+telemetry, caches, and other diagnostic output from concurrent Checkouts. Release runtimes return
+status 1 because their immutable revision and deployment identity already cover that role.
 
 Release hosts may add an immutable Git revision to Runtime Context v2. Actions query it with
 `project-context revision`; the command exits with status 1 when a Development adapter or an older

@@ -563,6 +563,7 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
     secret_parser.add_argument("--required", action="store_true")
     subparsers.add_parser("snapshot")
     subparsers.add_parser("revision")
+    subparsers.add_parser("instance-id")
     try:
         options = parser.parse_args(arguments)
     except SystemExit as error:
@@ -577,6 +578,11 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
             "project": manifest["project"],
             "realization": manifest["realization"],
             "revision": manifest.get("revision"),
+            "instanceId": (
+                pathlib.Path(manifest["paths"]["runtime"]).name
+                if manifest["realization"] == "development"
+                else None
+            ),
             "paths": manifest["paths"],
             "endpoints": manifest["endpoints"],
             "parameters": manifest["parameters"],
@@ -623,6 +629,10 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
         value = manifest.get("revision")
         if value is None:
             return 1
+    elif options.command == "instance-id":
+        if manifest["realization"] != "development":
+            return 1
+        value = pathlib.Path(manifest["paths"]["runtime"]).name
     else:
         credential = manifest["secrets"].get(options.name)
         if credential is None:

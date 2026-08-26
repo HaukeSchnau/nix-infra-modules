@@ -734,6 +734,11 @@ func contextQuery(config map[string]any, arguments []string) int {
 			return 1
 		}
 		printValue(value.revision, false)
+	case "instance-id":
+		if len(arguments) != 1 {
+			fail(64, "usage: project-context instance-id")
+		}
+		return 1
 	default:
 		fail(64, "unknown project-context command: %s", arguments[0])
 	}

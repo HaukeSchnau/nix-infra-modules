@@ -235,6 +235,8 @@ in
               ${development.package}/bin/project-context parameter flavour)" = compatibility
             test "$(PROJECT_RUNTIME_FILE="$manifest" PROJECT_SECRETS_DIR="$secrets" \
               ${development.package}/bin/project-context secret-file token --required)" = "$secrets/token"
+            test "$(PROJECT_RUNTIME_FILE="$manifest" PROJECT_SECRETS_DIR="$secrets" \
+              ${development.package}/bin/project-context instance-id)" = "$(basename "$runtime_dir")"
             PROJECT_RUNTIME_FILE="$manifest" PROJECT_SECRETS_DIR="$secrets" \
               ${development.package}/bin/project-context snapshot \
               | ${pkgs.jq}/bin/jq -e --arg token "$secrets/token" '
@@ -292,6 +294,10 @@ in
             web_port="$(cd "$checkout" && env -u PROJECT_RUNTIME_FILE \
               HOME="$local_home" XDG_RUNTIME_DIR="$local_runtime" \
               ${development.package}/bin/project-context endpoint web listen-port)"
+            local_instance="$(cd "$checkout" && env -u PROJECT_RUNTIME_FILE \
+              HOME="$local_home" XDG_RUNTIME_DIR="$local_runtime" \
+              ${development.package}/bin/project-context instance-id)"
+            test -n "$local_instance"
             mobile_port="$(cd "$checkout" && env -u PROJECT_RUNTIME_FILE \
               HOME="$local_home" XDG_RUNTIME_DIR="$local_runtime" \
               ${development.package}/bin/project-context endpoint mobile listen-port)"
