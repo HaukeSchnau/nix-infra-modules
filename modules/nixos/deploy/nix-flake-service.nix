@@ -687,12 +687,16 @@ let
     old_store_path=""
     if [ -L "$current_link" ]; then
       old_store_path="$(readlink "$current_link")"
-      if [ "$new_store_path" = "$old_store_path" ] && ${
-        if isService then
-          "${lib.optionalString isProject "current_descriptor_matches && "}systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && check_service_health${lib.optionalString isProject " \"$release_plan\""}"
-        else
-          "check_static_health \"$current_link\"${lib.optionalString isProject " \"$release_plan\""}"
-      }; then
+      if [ "$new_store_path" = "$old_store_path" ] \
+        ${lib.optionalString isProject ''
+          && cmp -s "$candidate_runtime_manifest" "$runtime_manifest" \
+          && cmp -s "$candidate_release_plan" "$release_plan" \
+        ''}&& ${
+          if isService then
+            "${lib.optionalString isProject "current_descriptor_matches && "}systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"} && check_service_health${lib.optionalString isProject " \"$release_plan\""}"
+          else
+            "check_static_health \"$current_link\"${lib.optionalString isProject " \"$release_plan\""}"
+        }; then
         printf '%s\n' "$resolved_revision" > "$current_revision_file"
         if [ -n "$requested_store_path" ]; then
           if cmp -s "$requested_release_snapshot" "$requested_release_file"; then

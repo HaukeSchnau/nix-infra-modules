@@ -818,6 +818,8 @@ in
     grep -Fq 'chmod 0644 "$runtime_manifest.next"' ${projectUpdateScript}
     grep -Fq 'previous_runtime_manifest' ${projectUpdateScript}
     grep -Fq 'candidate_revision="$resolved_revision"' ${pairedProjectUpdateScript}
+    grep -Fq 'cmp -s "$candidate_runtime_manifest" "$runtime_manifest"' ${pairedProjectUpdateScript}
+    grep -Fq 'cmp -s "$candidate_release_plan" "$release_plan"' ${pairedProjectUpdateScript}
     grep -Fq '/release-plan.json' ${projectReleasePlanService.serviceConfig.ExecStart}
     grep -Fq '.releasePlan' ${projectReleasePlanService.serviceConfig.ExecStart}
     ! grep -Fq 'activate-release' ${projectStartScript}

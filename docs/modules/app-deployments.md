@@ -267,6 +267,8 @@ policy.
 - The webhook is tailnet-only by default and requires a token when enabled.
 - Cache-delivered requests record both the exact revision and immutable store
   path separately from the deployed revision.
+- A Project revision change updates its runtime manifest and restarts its service even when Nix
+  reuses the same store output, so the process observes the promoted revision.
 - A failed health check keeps or restores the previous working profile.
 - Project artifacts must satisfy the pinned Release topology and current host
   bindings; extra infra bindings are allowed.
