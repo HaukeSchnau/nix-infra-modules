@@ -235,6 +235,15 @@ in
               ${development.package}/bin/project-context parameter flavour)" = compatibility
             test "$(PROJECT_RUNTIME_FILE="$manifest" PROJECT_SECRETS_DIR="$secrets" \
               ${development.package}/bin/project-context secret-file token --required)" = "$secrets/token"
+            PROJECT_RUNTIME_FILE="$manifest" PROJECT_SECRETS_DIR="$secrets" \
+              ${development.package}/bin/project-context snapshot \
+              | ${pkgs.jq}/bin/jq -e --arg token "$secrets/token" '
+                .project == "runtime-fixture"
+                and .realization == "development"
+                and .parameters.flavour == "compatibility"
+                and .endpoints.web.url == "http://127.0.0.1:32101"
+                and .secretFiles.token == $token
+              ' >/dev/null
 
             legacy="$root/legacy-settings.json"
             write_development_manifest "$legacy" runtime-fixture development settings

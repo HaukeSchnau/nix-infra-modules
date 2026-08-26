@@ -561,6 +561,7 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
     secret_parser = subparsers.add_parser("secret-file")
     secret_parser.add_argument("name")
     secret_parser.add_argument("--required", action="store_true")
+    subparsers.add_parser("snapshot")
     subparsers.add_parser("revision")
     try:
         options = parser.parse_args(arguments)
@@ -569,7 +570,16 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
 
     _, manifest = load_manifest(config)
     prepare_context(manifest)
-    if options.command == "path":
+    if options.command == "snapshot":
+        root = pathlib.Path(os.environ.get("PROJECT_SECRETS_DIR", ""))
+        value = {
+            **manifest,
+            "secretFiles": {
+                name: str(root / credential)
+                for name, credential in manifest["secrets"].items()
+            },
+        }
+    elif options.command == "path":
         value = manifest["paths"].get(options.name)
         if value is None:
             fail(66, f"Project path is unavailable: {options.name}")
