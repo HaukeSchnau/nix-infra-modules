@@ -212,9 +212,11 @@ Host policy may schedule descriptor-declared maintenance jobs by name. Each job
 sets exactly one of `calendar` or `interval`; interval jobs may set
 `onBootSec` as their initial delay after the timer is activated, and all jobs
 may set `randomizedDelaySec` and `persistent`. Project update, recovery, and
-interval-job timers deliberately use activation-relative delays, so adding or
-changing a Project on an already-running host never starts repository builds or
-maintenance work inside a NixOS switch.
+interval-job timers use relative delays, so adding or changing a Project on an
+already-running host never starts repository builds or maintenance work inside
+a NixOS switch. An interval job schedules its next run after the previous run
+becomes inactive. Failed jobs therefore keep retrying on the normal interval,
+and long jobs cannot overlap their own next run.
 The generated one-shot reads the current action from the active Release plan,
 then invokes the same Release executable with that action as its single
 argument. A repository may change the action or its Secret requirements while

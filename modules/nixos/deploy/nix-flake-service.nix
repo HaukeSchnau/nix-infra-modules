@@ -1117,7 +1117,7 @@ let
       }
       // lib.optionalAttrs (policy.interval != null) {
         OnActiveSec = policy.onBootSec;
-        OnUnitActiveSec = policy.interval;
+        OnUnitInactiveSec = policy.interval;
       };
     }
   ) projectJobs;
