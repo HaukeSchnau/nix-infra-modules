@@ -41,9 +41,11 @@ let
     action name ''
       project-context endpoint ${endpoint} listen-port
     '';
+  forbiddenDevelopmentDependency = pkgs.writeText "forbidden-development-dependency" "release";
   development = runtime.mkDevelopment {
     inherit pkgs;
     descriptorPath = developmentDescriptor;
+    disallowedRequisites = [ forbiddenDevelopmentDependency ];
     actions = {
       install = installAction;
       serve = queryAction "runtime-fixture-serve" "web";
@@ -129,6 +131,7 @@ in
 {
   project-runtime =
     assert lib.all (app: builtins.isString app.program) (lib.attrValues development.apps);
+    assert development.package.disallowedRequisites == [ (toString forbiddenDevelopmentDependency) ];
     assert lib.all (app: builtins.isString app.program) (lib.attrValues pairedDevelopment.apps);
     assert pairedNormalized.development.workloads.database.lifecycle == "on-demand";
     assert pairedNormalized.development.workloads.web.lifecycle == "background";

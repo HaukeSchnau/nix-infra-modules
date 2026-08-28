@@ -58,6 +58,7 @@ let
       config,
       bundle ? null,
       activationExecutable ? null,
+      disallowedRequisites ? [ ],
     }:
     let
       configFile = pkgs.writeText "${name}-runtime-config.json" (builtins.toJSON config + "\n");
@@ -77,6 +78,7 @@ let
     in
     pkgs.runCommand name
       {
+        inherit disallowedRequisites;
         nativeBuildInputs = [ pkgs.makeWrapper ];
         meta.mainProgram = mainProgram;
       }
@@ -132,6 +134,7 @@ rec {
       descriptorPath,
       actions,
       localParameters ? { },
+      disallowedRequisites ? [ ],
       localPortRange ? {
         from = 30000;
         to = 39999;
@@ -162,7 +165,7 @@ rec {
       portFrom = localPortRange.from or 30000;
       portTo = localPortRange.to or 39999;
       package = mkRuntimePackage {
-        inherit pkgs;
+        inherit pkgs disallowedRequisites;
         name = "${descriptor.project}-project-runtime";
         mainProgram = "${descriptor.project}-project-runtime";
         bundle = {

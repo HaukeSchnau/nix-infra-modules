@@ -13,6 +13,7 @@ application-specific environment variables never enter infrastructure.
 runtime = inputs.nix-infra-modules.lib.projectRuntime.mkDevelopment {
   inherit pkgs;
   descriptorPath = ./project.json;
+  disallowedRequisites = [ releaseApplication ];
   actions = {
     prepare = lib.getExe prepareAction;
     web = lib.getExe webAction;
@@ -51,6 +52,11 @@ infrastructure uses `project-runtime workload <name>` to execute exactly one
 Workload while it realizes the repository-declared dependency graph itself.
 This prevents independently activated Endpoints from starting duplicate copies
 of a shared dependency.
+
+Pass release payloads or other forbidden dependencies through
+`disallowedRequisites`. Nix then fails the Development runtime build if an
+action captures one of them. Development actions should launch mutable Checkout
+source and keep compiled Release payloads in `mkServiceRelease`.
 
 ## Release
 
