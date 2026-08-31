@@ -166,8 +166,9 @@ active/previous/pending revisions, descriptor compatibility, service state and r
 public health checks, and the last updater result. It deliberately omits Nix store paths. Private
 host tooling can present it without duplicating the deployment state model.
 
-The reusable Gitea workflow verifies a Project, builds its immutable
-Release, waits for cache publication, and promotes the exact store path. Runner
+The reusable Gitea workflow builds a Project's immutable Release, waits for
+cache publication, and promotes the exact store path. The calling repository
+decides which checks must pass before it invokes the workflow. Runner
 infrastructure supplies cache and promotion bindings. A project may map to
 multiple promotion URLs when the same Release has several placements.
 

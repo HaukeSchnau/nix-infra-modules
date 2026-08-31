@@ -8,11 +8,6 @@ on:
         required: false
         type: string
         default: projectRelease
-      verification_check:
-        description: Optional flake check that covers the deployment-specific Release contract
-        required: false
-        type: string
-        default: ""
       readiness_url:
         description: Optional public readiness URL whose JSON revision must match the promoted commit
         required: false
@@ -27,7 +22,7 @@ env:
 
 jobs:
   publish:
-    name: Verify, publish, and promote
+    name: Build, publish, and promote
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
@@ -98,17 +93,6 @@ jobs:
 
           printf 'PROJECT_NAME=%s\n' "$project" >> "$GITHUB_ENV"
           printf 'PROMOTION_URLS_FILE=%s\n' "$promotion_urls_file" >> "$GITHUB_ENV"
-
-      - name: Verify Project
-        run: |
-          set -euo pipefail
-          check='${{ inputs.verification_check }}'
-          if [ -z "$check" ]; then
-            nix flake check --print-build-logs
-          else
-            system="$(nix eval --impure --raw --expr builtins.currentSystem)"
-            nix build ".#checks.${system}.${check}" --no-link --print-build-logs
-          fi
 
       - name: Build immutable Release
         run: |
