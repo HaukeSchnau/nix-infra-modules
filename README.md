@@ -2,6 +2,10 @@
 
 Reusable Nix infrastructure modules for small self-hosted fleets.
 
+The flake also exposes small project-neutral packages. See the
+[CI workspace runner](./docs/ci-workspace-runner.md) for persistent CI workspace
+reuse with repository-owned setup and task definitions.
+
 This repository is the public, reusable half of a private infrastructure setup.
 It demonstrates how to keep fleet contracts, service modules, examples, and
 checks shareable while leaving real host placement, domains, secrets, DNS, and

@@ -66,6 +66,16 @@
         workspaceRepos = ./modules/home-manager/workspace-repos;
       };
 
+      packages = forAllSystems (
+        system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in
+        {
+          ci-workspace-runner = import ./lib/ci-workspace-runner.nix { inherit pkgs; };
+        }
+      );
+
       formatter = forAllSystems (
         system:
         let
@@ -118,6 +128,7 @@
               system
               ;
           };
+          ciWorkspaceRunner = self.packages.${system}.ci-workspace-runner;
           domainChecks = lib.mergeAttrsList (
             map (path: import path checkArgs) [
               ./modules/nixos/fleet/checks.nix
@@ -149,6 +160,10 @@
               '';
         }
         // domainChecks
+        // import ./lib/ci-workspace-runner/checks.nix {
+          inherit pkgs;
+          runner = ciWorkspaceRunner;
+        }
       );
     };
 }
