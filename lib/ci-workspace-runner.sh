@@ -55,4 +55,29 @@ if [[ -x .ci/setup ]]; then
   printf '[ci-workspace] project setup: %ss\n' "$((SECONDS - setup_started))"
 fi
 
-exec "$@"
+child_pid=""
+# shellcheck disable=SC2329 # Called indirectly by the signal traps below.
+forward_signal() {
+  if [[ -n "$child_pid" ]]; then
+    kill -s "$1" -- "-$child_pid" 2>/dev/null || true
+  fi
+}
+
+trap 'forward_signal TERM' TERM
+trap 'forward_signal INT' INT
+
+# Keep the project command in its own process group so CI cancellation reaches
+# nested task runners and their workers, not only the immediate child.
+setsid "$@" &
+child_pid=$!
+
+set +e
+wait "$child_pid"
+status=$?
+while kill -0 "$child_pid" 2>/dev/null; do
+  wait "$child_pid"
+  status=$?
+done
+set -e
+
+exit "$status"

@@ -41,6 +41,33 @@
           exit 1
         fi
 
+        child_pid_file="$TMPDIR/child.pid"
+        CHILD_PID_FILE="$child_pid_file" CI_PROJECT_ID=example CI_WORKSPACE_CACHE_ROOT="$cache" \
+          ci-workspace-run "$source" sh -c \
+          'sleep 30 & child_pid=$!; printf "%s\n" "$child_pid" > "$CHILD_PID_FILE"; wait "$child_pid"' &
+        runner_pid=$!
+
+        for _ in $(seq 1 100); do
+          if test -s "$child_pid_file"; then
+            break
+          fi
+          sleep 0.01
+        done
+        test -s "$child_pid_file"
+        child_pid="$(cat "$child_pid_file")"
+
+        kill -TERM "$runner_pid"
+        set +e
+        wait "$runner_pid"
+        runner_status=$?
+        set -e
+
+        test "$runner_status" -eq 143
+        if kill -0 "$child_pid" 2>/dev/null; then
+          echo "cancelled command left child process $child_pid running" >&2
+          exit 1
+        fi
+
         touch "$out"
       '';
 }
