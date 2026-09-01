@@ -7,18 +7,24 @@ supervise_command() {
   # shellcheck disable=SC2329 # Called indirectly by the signal traps below.
   forward_signal() {
     if [[ -n "$child_pid" ]]; then
-      local parent_pid descendant_pid index
+      local parent_pid descendant_pid index pid ppid
       local -a pending=("$child_pid") descendants=()
+      local -A children_by_parent=()
 
       # Capture descendants before signalling the main group. Some test tools
-      # create their own sessions and would otherwise escape group cleanup.
+      # create their own sessions and would otherwise escape group cleanup. A
+      # single process snapshot keeps cancellation responsive under pressure.
+      while read -r pid ppid; do
+        [[ -n "$pid" && -n "$ppid" ]] || continue
+        children_by_parent[$ppid]="${children_by_parent[$ppid]:-} $pid"
+      done < <(ps -eo pid=,ppid= 2>/dev/null || true)
+
       for ((index = 0; index < ${#pending[@]}; index++)); do
         parent_pid="${pending[$index]}"
-        while read -r descendant_pid; do
-          [[ -n "$descendant_pid" ]] || continue
+        for descendant_pid in ${children_by_parent[$parent_pid]:-}; do
           descendants+=("$descendant_pid")
           pending+=("$descendant_pid")
-        done < <(ps --ppid "$parent_pid" -o pid= 2>/dev/null || true)
+        done
       done
 
       for descendant_pid in "${descendants[@]}"; do
