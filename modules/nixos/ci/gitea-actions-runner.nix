@@ -55,6 +55,26 @@ in
       ];
       description = "Gitea Actions runner labels and execution backends.";
     };
+
+    resources = {
+      memoryHigh = lib.mkOption {
+        type = lib.types.str;
+        default = "2.5G";
+        description = "Soft memory limit for the runner service and its active job.";
+      };
+
+      memoryMax = lib.mkOption {
+        type = lib.types.str;
+        default = "4G";
+        description = "Hard memory limit for the runner service and its active job.";
+      };
+
+      memorySwapMax = lib.mkOption {
+        type = lib.types.str;
+        default = "1G";
+        description = "Maximum swap usage for the runner service and its active job.";
+      };
+    };
   };
 
   config = lib.mkIf (vps.enable && cfg.enable) {
@@ -106,9 +126,9 @@ in
         ExecPaths = [ "/var/lib/gitea-runner" ];
         Restart = lib.mkForce "on-failure";
         RestartSec = lib.mkForce "5s";
-        MemoryHigh = "2.5G";
-        MemoryMax = "4G";
-        MemorySwapMax = "1G";
+        MemoryHigh = cfg.resources.memoryHigh;
+        MemoryMax = cfg.resources.memoryMax;
+        MemorySwapMax = cfg.resources.memorySwapMax;
       };
     };
   };

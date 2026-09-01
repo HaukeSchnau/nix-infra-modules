@@ -29,12 +29,13 @@ limits.
     enable = true;
     url = "https://git.example.net";
     tokenFile = "/run/secrets/gitea-runner-token";
+    resources.memoryHigh = "3.5G";
   };
 }
 ```
 
 The public module owns the rendered Gitea runner instance, host packages,
-labels, Podman/Docker environment, and resource limits.
+labels, Podman/Docker environment, and configurable memory limits.
 
 ## Boundary
 
