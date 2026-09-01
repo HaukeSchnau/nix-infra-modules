@@ -52,7 +52,9 @@ separate CI workspace slots:
 
 Jobs select a pool with `runs-on: quick` or `runs-on: bulk`. Pool names and
 counts describe scheduling policy only. Repositories remain responsible for
-their language, tools, and task graph.
+their language, tools, and task graph. Every runner instance gets a short,
+persistent workspace cache root so tools that use Unix sockets do not inherit
+the deeper runner state path.
 
 ## Boundary
 

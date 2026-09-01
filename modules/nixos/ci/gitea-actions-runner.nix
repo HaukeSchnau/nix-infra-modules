@@ -70,7 +70,12 @@ let
       podman
       wget
     ];
-    settings.runner.envs = lib.optionalAttrs (runner.workspaceSlot != null) {
+    settings.runner.envs = {
+      # Keep persistent workspaces outside the runner's already-deep state path.
+      # Unix-domain sockets used by task runners have a small path limit.
+      CI_WORKSPACE_CACHE_ROOT = "/var/cache/gitea-ci-${runner.instanceName}";
+    }
+    // lib.optionalAttrs (runner.workspaceSlot != null) {
       CI_WORKSPACE_SLOT = runner.workspaceSlot;
     };
   };
@@ -81,13 +86,16 @@ let
       DOCKER_HOST = "unix:///run/docker.sock";
     };
     serviceConfig = {
+      CacheDirectory = "gitea-ci-${runner.instanceName}";
       SupplementaryGroups = lib.mkAfter [ "podman" ];
       PrivateUsers = false;
       ProtectProc = "default";
-      # DynamicUser protects the id-mapped StateDirectory with noexec. The
-      # host executor checks repositories out there, so repository tools and
-      # package-manager shims need an explicit executable path.
-      ExecPaths = [ "/var/lib/gitea-runner" ];
+      # DynamicUser protects managed directories with noexec. The host executor
+      # and persistent workspace both contain executable package-manager shims.
+      ExecPaths = [
+        "/var/lib/gitea-runner"
+        "/var/cache/gitea-ci-${runner.instanceName}"
+      ];
       Restart = lib.mkForce "on-failure";
       RestartSec = lib.mkForce "5s";
       MemoryHigh = runner.resources.memoryHigh;

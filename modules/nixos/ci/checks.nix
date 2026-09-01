@@ -88,7 +88,9 @@ in
       test '${runner.name}' = 'gitea-ci'
       test '${toString runner.tokenFile}' = '/run/secrets/gitea-runner-token'
       test '${unit.environment.DOCKER_HOST}' = 'unix:///run/docker.sock'
-      test '${builtins.concatStringsSep ":" unit.serviceConfig.ExecPaths}' = '/var/lib/gitea-runner'
+      test '${runner.settings.runner.envs.CI_WORKSPACE_CACHE_ROOT}' = '/var/cache/gitea-ci-gitea-ci'
+      test '${unit.serviceConfig.CacheDirectory}' = 'gitea-ci-gitea-ci'
+      test '${builtins.concatStringsSep ":" unit.serviceConfig.ExecPaths}' = '/var/lib/gitea-runner:/var/cache/gitea-ci-gitea-ci'
       test '${unit.serviceConfig.MemoryHigh}' = '3.5G'
       test '${unit.serviceConfig.MemoryMax}' = '5G'
       test '${unit.serviceConfig.MemorySwapMax}' = '2G'
@@ -109,6 +111,10 @@ in
       test '${runners."gitea-ci-quick".name}' = 'gitea-ci-quick'
       test '${builtins.concatStringsSep ":" runners."gitea-ci-quick".labels}' = 'quick:host'
       test '${runners."gitea-ci-bulk-2".settings.runner.envs.CI_WORKSPACE_SLOT}' = 'bulk-2'
+      test '${
+        runners."gitea-ci-bulk-2".settings.runner.envs.CI_WORKSPACE_CACHE_ROOT
+      }' = '/var/cache/gitea-ci-gitea-ci-bulk-2'
+      test '${bulkUnit.serviceConfig.CacheDirectory}' = 'gitea-ci-gitea-ci-bulk-2'
       test '${bulkUnit.serviceConfig.MemoryHigh}' = '2.5G'
       test '${bulkUnit.serviceConfig.MemoryMax}' = '6G'
       test '${toString (builtins.length healthUnits)}' = '3'
