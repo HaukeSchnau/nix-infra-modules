@@ -4,6 +4,7 @@ pkgs.writeShellApplication {
   name = "ci-workspace-run";
   runtimeInputs = [
     pkgs.coreutils
+    pkgs.procps
     pkgs.rsync
     pkgs.util-linux
   ];

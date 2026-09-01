@@ -44,7 +44,7 @@
         child_pid_file="$TMPDIR/child.pid"
         CHILD_PID_FILE="$child_pid_file" CI_PROJECT_ID=example CI_WORKSPACE_CACHE_ROOT="$cache" \
           ci-workspace-run "$source" sh -c \
-          'sleep 30 & child_pid=$!; printf "%s\n" "$child_pid" > "$CHILD_PID_FILE"; wait "$child_pid"' &
+          'setsid sleep 30 & child_pid=$!; printf "%s\n" "$child_pid" > "$CHILD_PID_FILE"; wait "$child_pid"' &
         runner_pid=$!
 
         for _ in $(seq 1 100); do
