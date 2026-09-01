@@ -37,6 +37,24 @@ let
       };
     }
   ];
+  giteaRunnerPoolsSystem = mkFleetSystem "gitea-pools-01" [
+    {
+      vps.services.giteaActionsRunner = {
+        enable = true;
+        url = "https://git.example.net";
+        tokenFile = "/run/secrets/gitea-runner-token";
+        instanceName = "gitea-ci";
+        runnerName = "gitea-ci";
+        pools = {
+          quick = { };
+          bulk = {
+            count = 2;
+            resources.memoryMax = "6G";
+          };
+        };
+      };
+    }
+  ];
 in
 {
   github-runner-example =
@@ -76,6 +94,27 @@ in
       test '${unit.serviceConfig.MemorySwapMax}' = '2G'
       test '${
         if builtins.elem "gitea-runner-gitea\\x2dci.service" healthUnits then "yes" else "no"
+      }' = 'yes'
+      touch $out
+    '';
+
+  gitea-runner-pools =
+    let
+      runners = giteaRunnerPoolsSystem.config.services.gitea-actions-runner.instances;
+      bulkUnit =
+        giteaRunnerPoolsSystem.config.systemd.services."gitea-runner-gitea\\x2dci\\x2dbulk\\x2d2";
+      healthUnits = giteaRunnerPoolsSystem.config.vps.services.giteaActionsRunner.metadata.health.units;
+    in
+    pkgs.runCommand "gitea-runner-pools" { } ''
+      test '${runners."gitea-ci-quick".name}' = 'gitea-ci-quick'
+      test '${builtins.concatStringsSep ":" runners."gitea-ci-quick".labels}' = 'quick:host'
+      test '${runners."gitea-ci-bulk-2".settings.runner.envs.CI_WORKSPACE_SLOT}' = 'bulk-2'
+      test '${bulkUnit.serviceConfig.MemoryHigh}' = '2.5G'
+      test '${bulkUnit.serviceConfig.MemoryMax}' = '6G'
+      test '${toString (builtins.length healthUnits)}' = '3'
+      test '${builtins.concatStringsSep ":" giteaRunnerPoolsSystem.config.vps.services.giteaActionsRunner.instanceNames}' = 'gitea-ci-bulk-1:gitea-ci-bulk-2:gitea-ci-quick'
+      test '${
+        if builtins.elem "gitea-runner-gitea\\x2dci\\x2dquick.service" healthUnits then "yes" else "no"
       }' = 'yes'
       touch $out
     '';

@@ -37,6 +37,23 @@ limits.
 The public module owns the rendered Gitea runner instance, host packages,
 labels, Podman/Docker environment, and configurable memory limits.
 
+Named pools reserve runner capacity for independent projects or workload
+classes. Pool names become labels, and `count` creates stable instances with
+separate CI workspace slots:
+
+```nix
+{
+  vps.services.giteaActionsRunner.pools = {
+    quick = { };
+    bulk.count = 2;
+  };
+}
+```
+
+Jobs select a pool with `runs-on: quick` or `runs-on: bulk`. Pool names and
+counts describe scheduling policy only. Repositories remain responsible for
+their language, tools, and task graph.
+
 ## Boundary
 
 Public modules use token file paths. Private adapters should map SOPS, agenix,

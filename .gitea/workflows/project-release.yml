@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: ""
+      runner_label:
+        description: Runner label used to build and publish the release
+        required: false
+        type: string
+        default: ubuntu-22.04
 
 permissions:
   contents: read
@@ -23,7 +28,7 @@ env:
 jobs:
   publish:
     name: Build, publish, and promote
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 45
     steps:
       - name: Checkout exact revision

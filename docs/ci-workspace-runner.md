@@ -25,6 +25,11 @@ its base with `CI_WORKSPACE_CACHE_ROOT`. Jobs for the same project and machine
 serialize on a file lock so a workspace is never mutated while another command
 uses it.
 
+Set `CI_WORKSPACE_SLOT` when one machine runs more than one job for the same
+project. Each stable slot gets its own workspace and lock below the project and
+architecture directory. The Gitea runner pool module sets this automatically
+for multi-instance pools.
+
 The project command runs below a small supervisor. Cancellation is forwarded to
 its complete process group, including when the CI executor kills the runner's
 outer process before shell traps can run.

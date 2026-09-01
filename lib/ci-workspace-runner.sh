@@ -67,8 +67,17 @@ if [[ ! "$project_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
   exit 2
 fi
 
+workspace_slot="${CI_WORKSPACE_SLOT:-}"
+if [[ -n "$workspace_slot" && ! "$workspace_slot" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "CI_WORKSPACE_SLOT must contain only letters, numbers, dots, underscores, and hyphens" >&2
+  exit 2
+fi
+
 cache_base="${CI_WORKSPACE_CACHE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/project-ci}"
 cache_root="$cache_base/$project_id/$(uname -m)"
+if [[ -n "$workspace_slot" ]]; then
+  cache_root="$cache_root/$workspace_slot"
+fi
 workspace="$cache_root/workspace"
 preserve_file="$source_workspace/.ci/preserve"
 

@@ -41,6 +41,17 @@
           exit 1
         fi
 
+        CI_PROJECT_ID=example CI_WORKSPACE_SLOT=second CI_WORKSPACE_CACHE_ROOT="$cache" \
+          ci-workspace-run "$source" sh -c \
+          'test "$CI_CACHE_ROOT" = "'"$cache"'/example/'"$(uname -m)"'/second"'
+        test -f "$cache/example/$(uname -m)/second/workspace/current.txt"
+
+        if CI_PROJECT_ID=example CI_WORKSPACE_SLOT='../escape' CI_WORKSPACE_CACHE_ROOT="$cache" \
+          ci-workspace-run "$source" true; then
+          echo "invalid workspace slot unexpectedly succeeded" >&2
+          exit 1
+        fi
+
         child_pid_file="$TMPDIR/child.pid"
         CHILD_PID_FILE="$child_pid_file" CI_PROJECT_ID=example CI_WORKSPACE_CACHE_ROOT="$cache" \
           ci-workspace-run "$source" sh -c \
