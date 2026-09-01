@@ -1,6 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+supervise_command() {
+  local child_pid=""
+
+  # shellcheck disable=SC2329 # Called indirectly by the signal traps below.
+  forward_signal() {
+    if [[ -n "$child_pid" ]]; then
+      kill -s "$1" -- "-$child_pid" 2>/dev/null || true
+    fi
+  }
+
+  trap 'forward_signal TERM' TERM
+  trap 'forward_signal INT' INT
+  trap 'forward_signal HUP' HUP
+
+  setsid "$@" &
+  child_pid=$!
+
+  set +e
+  wait "$child_pid"
+  local status=$?
+  while kill -0 "$child_pid" 2>/dev/null; do
+    wait "$child_pid"
+    status=$?
+  done
+  set -e
+
+  return "$status"
+}
+
+if [[ "${1:-}" == "--internal-supervise" ]]; then
+  shift
+  supervise_command "$@"
+  exit $?
+fi
+
 if [[ $# -lt 2 ]]; then
   echo "usage: ci-workspace-run <source-workspace> <command> [args...]" >&2
   exit 2
@@ -55,27 +90,34 @@ if [[ -x .ci/setup ]]; then
   printf '[ci-workspace] project setup: %ss\n' "$((SECONDS - setup_started))"
 fi
 
-child_pid=""
+runner_path="$0"
+if [[ "$runner_path" != */* ]]; then
+  runner_path="$(command -v "$runner_path")"
+fi
+runner_path="$(realpath "$runner_path")"
+
+supervisor_pid=""
 # shellcheck disable=SC2329 # Called indirectly by the signal traps below.
 forward_signal() {
-  if [[ -n "$child_pid" ]]; then
-    kill -s "$1" -- "-$child_pid" 2>/dev/null || true
+  if [[ -n "$supervisor_pid" ]]; then
+    kill -s "$1" -- "-$supervisor_pid" 2>/dev/null || true
   fi
 }
 
 trap 'forward_signal TERM' TERM
 trap 'forward_signal INT' INT
+trap 'forward_signal HUP' HUP
 
-# Keep the project command in its own process group so CI cancellation reaches
-# nested task runners and their workers, not only the immediate child.
-setsid "$@" &
-child_pid=$!
+# The supervisor receives TERM from the kernel even if the CI executor kills
+# this runner without giving its shell traps a chance to run.
+setsid setpriv --pdeathsig TERM "$runner_path" --internal-supervise "$@" &
+supervisor_pid=$!
 
 set +e
-wait "$child_pid"
+wait "$supervisor_pid"
 status=$?
-while kill -0 "$child_pid" 2>/dev/null; do
-  wait "$child_pid"
+while kill -0 "$supervisor_pid" 2>/dev/null; do
+  wait "$supervisor_pid"
   status=$?
 done
 set -e

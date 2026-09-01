@@ -56,13 +56,21 @@
         test -s "$child_pid_file"
         child_pid="$(cat "$child_pid_file")"
 
-        kill -TERM "$runner_pid"
+        # Gitea can terminate the outer Nix process without delivering a
+        # catchable signal to the workspace runner itself.
+        kill -KILL "$runner_pid"
         set +e
         wait "$runner_pid"
         runner_status=$?
         set -e
 
-        test "$runner_status" -eq 143
+        test "$runner_status" -eq 137
+        for _ in $(seq 1 100); do
+          if ! kill -0 "$child_pid" 2>/dev/null; then
+            break
+          fi
+          sleep 0.01
+        done
         if kill -0 "$child_pid" 2>/dev/null; then
           echo "cancelled command left child process $child_pid running" >&2
           exit 1

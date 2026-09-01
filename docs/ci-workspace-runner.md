@@ -25,5 +25,9 @@ its base with `CI_WORKSPACE_CACHE_ROOT`. Jobs for the same project and machine
 serialize on a file lock so a workspace is never mutated while another command
 uses it.
 
+The project command runs below a small supervisor. Cancellation is forwarded to
+its complete process group, including when the CI executor kills the runner's
+outer process before shell traps can run.
+
 The repository remains responsible for its QA graph. The runner only provides
 workspace reuse, synchronization, locking, and lifecycle hooks.
