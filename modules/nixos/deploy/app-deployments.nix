@@ -206,6 +206,18 @@ let
                   description = "Unfiltered host parameter bindings retained for future compatible descriptors.";
                 };
 
+                bindings = lib.mkOption {
+                  type = lib.types.attrs;
+                  default = { };
+                  description = "Concrete resource bindings checked against candidate Release requirements.";
+                };
+
+                instanceId = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  description = "Stable deployment identity, independent of artifact revision and runtime paths.";
+                };
+
                 secrets = lib.mkOption {
                   type = lib.types.attrsOf (lib.types.strMatching "^/.*");
                   default = { };

@@ -1,6 +1,6 @@
 # Project Runtime
 
-`lib.projectRuntime` is the deep Interface between a repository-owned Project
+`lib.projectRuntime` is the interface between a repository-owned Project
 and its Development or Release Adapter. It owns the versioned Runtime manifest,
 validation, action dispatch, local allocation and supervision, Preparation
 locking, conventional flake apps, and exact descriptor embedding. Repository
@@ -39,8 +39,8 @@ flake apps.
 
 Descriptor v3 adds a Development lifecycle to service Workloads. `on-demand`
 is the default. Managed infrastructure keeps `background` services running in
-every available registered instance, including the canonical Checkout and
-registered worktrees. Background services still use the declared dependency
+instances whose host-owned desired state is active. Paused and retired instances
+stay stopped. Background services still use the declared dependency
 graph and restart policy. They do not need a synthetic Endpoint.
 
 Development keeps the Python controller because it owns port allocation,
@@ -174,3 +174,19 @@ Runtime failures use stable statuses: 64 for invocation/action errors, 65 for
 invalid manifests or identity, 66 for unavailable or unsafe allocations and
 credentials, and 69 when an Adapter cannot execute or a listener cannot be
 allocated.
+
+## Runtime manifest v3
+
+Descriptor v4 uses runtime manifest v3 with an explicit stable `instanceId` and
+resource `bindings`. Both the Python Development runtime and compiled Go Release
+runtime validate the same bindings and resolve declarative environment mappings.
+Release artifacts retain their small compiled runtime without Python dependencies.
+
+The context interface adds `project-context binding NAME FIELD [--json]` and
+`project-context environment [ACTION]`. The latter prints quoted shell exports
+and unsets. `snapshot` includes binding metadata and the instance ID, never secret
+contents. Existing context commands remain available.
+
+V4 requires a host-supplied runtime manifest. Running native devenv locally uses
+its normal local environment; it does not invoke a second Project allocator.
+Legacy descriptors retain their local flake runtime behavior.

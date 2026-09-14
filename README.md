@@ -43,6 +43,7 @@ nix-infra-modules ../nix-infra-modules` for fast local iteration.
 
 | Export | Platform | Purpose | Docs / coverage |
 | --- | --- | --- | --- |
+| `devenvModules.project` | devenv | Native process and task annotations, requirements and JSON contract export | [Project devenv](docs/modules/project-devenv.md), `project-bindings` |
 | `nixosModules.fleet` | NixOS | Complete small-fleet interface and metadata contract | [fleet](docs/modules/fleet.md), `core-example`, `edge-example` |
 | `nixosModules.generatedContract` | NixOS | Generated services, health units, ingress routes, and edge contracts | [fleet](docs/modules/fleet.md), `fleet-generated-services-example`, `edge-contract-example` |
 | `nixosModules.fleetTooling` | NixOS | `vps-services` and `vps-health-check` commands | [fleet](docs/modules/fleet.md) |

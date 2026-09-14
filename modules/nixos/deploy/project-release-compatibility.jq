@@ -120,8 +120,66 @@ def parameter_type_matches($definition; $value):
     else $value | type == "string"
     end;
 
+def is_required:
+  if has("required") then .required else true end;
+
+def release_requirements:
+  (.requirements // {}) | with_entries(select((.value.realizations // ["development", "release"]) | index("release")));
+
+def with_requirement_secrets:
+  . as $descriptor
+  | ($descriptor | release_requirements) as $requirements
+  | .secrets = (
+      ((.secrets // {}) | with_entries(select(
+        .key as $name
+        | (($descriptor.requirements // {}) | has($name) | not) or ($requirements | has($name))
+      )))
+      + ($requirements | with_entries(select(.value.kind == "secret")
+        | .value = {required: (.value | is_required), description: (.value.description // "")}))
+    );
+
+def nonempty_string: type == "string" and length > 0;
+def absolute_path: type == "string" and startswith("/");
+def binding_shape:
+  if .kind == "postgresql" then
+      ((keys - ["kind", "majorVersion", "host", "port", "database", "user", "url", "dataDirectory"]) | length == 0)
+      and (.port | type == "number" and floor == . and . >= 1 and . <= 65535)
+      and ([.host, .database, .user, .url] | all(nonempty_string))
+      and (if has("dataDirectory") then (.dataDirectory | absolute_path) else true end)
+    elif .kind == "directory" then
+      ((keys - ["kind", "path", "persistent"]) | length == 0)
+      and (.path | absolute_path) and (.persistent | type == "boolean")
+    elif .kind == "secret" then
+      ((keys - ["kind", "credential"]) | length == 0)
+      and (.credential | type == "string" and test("^[A-Za-z0-9_.-]+$") and . != "." and . != "..")
+    else false end;
+
+def bind_requirements($available; $secrets):
+  reduce (release_requirements | to_entries[]) as $entry (
+    {values: {}, reasons: []};
+    $entry.key as $name
+    | $entry.value as $requirement
+    | $available[$name] as $binding
+    | if $binding == null then
+        if ($requirement | is_required) then .reasons += ["missing required resource binding: " + $name] else . end
+      elif ($binding | type) != "object" then
+        .reasons += ["resource " + $name + " binding must be an object"]
+      elif $binding.kind != $requirement.kind then
+        .reasons += ["resource " + $name + " requires kind " + $requirement.kind]
+      elif $requirement.kind == "postgresql" and (($requirement.majorVersions // [$requirement.majorVersion]) | index($binding.majorVersion) | not) then
+        .reasons += ["resource " + $name + " requires PostgreSQL " + (($requirement.majorVersions // [$requirement.majorVersion]) | tostring)]
+      elif $requirement.kind == "directory" and $binding.persistent != (if $requirement | has("persistent") then $requirement.persistent else true end) then
+        .reasons += ["resource " + $name + " has incompatible persistence"]
+      elif ($binding | binding_shape | not) then
+        .reasons += ["resource " + $name + " has malformed binding fields"]
+      elif $requirement.kind == "secret" and (($secrets | has($binding.credential // "")) | not) then
+        .reasons += ["resource " + $name + " requires a bound credential"]
+      else .values[$name] = $binding
+      end
+  );
+
 ($host[0]) as $host_policy
-| ($candidate[0]) as $candidate_descriptor
+| ($candidate[0] | with_requirement_secrets) as $candidate_descriptor
 | ($host_policy.descriptor | release_contract) as $expected_contract
 | ($candidate_descriptor | release_contract) as $candidate_contract
 | ($candidate_descriptor.release.health | normalized_health) as $health
@@ -184,7 +242,7 @@ def parameter_type_matches($definition; $value):
           end
       elif $definition | has("default") then
         .values[$name] = $definition.default
-      elif ($definition.required // true) then
+      elif ($definition | is_required) then
         .reasons += ["missing required parameter binding: " + $name]
       else
         .values[$name] = null
@@ -195,12 +253,13 @@ def parameter_type_matches($definition; $value):
     ($secret.key) as $name
     | if $host_policy.bindings.secrets | index($name) then
         .values[$name] = $name
-      elif ($secret.value.required // true) then
+      elif ($secret.value | is_required) then
         .reasons += ["missing required Secret binding: " + $name]
       else
         .
       end
   ) as $secrets
+| ($candidate_descriptor | bind_requirements(($host_policy.bindings.resources // {}); $secrets.values)) as $resources
 | ([
     if $candidate_contract == $expected_contract then empty
     else "Release topology differs from the host-compatible contract"
@@ -213,12 +272,14 @@ def parameter_type_matches($definition; $value):
   + $missing_command_secrets
   + (if ($task_plan.remaining | length) == 0 then [] else ["pre-deploy task dependency graph contains a cycle"] end)
   + $parameters.reasons
-  + $secrets.reasons) as $reasons
+  + $secrets.reasons
+  + $resources.reasons) as $reasons
 | {
     compatible: ($reasons | length == 0),
     reasons: $reasons,
     parameters: $parameters.values,
     secrets: $secrets.values,
+    bindings: $resources.values,
     releasePlan: {
       activationExecutable: ($candidate_descriptor.release.activationExecutable // null),
       commands: $commands,

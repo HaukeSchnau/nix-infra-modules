@@ -35,6 +35,8 @@ type endpoint struct {
 }
 
 type manifest struct {
+	instanceID string
+	bindings   map[string]map[string]any
 	revision   string
 	paths      map[string]string
 	endpoints  map[string]endpoint
@@ -221,11 +223,11 @@ func validateParameter(value any, parameterType string, required bool, name stri
 
 func validateManifest(raw map[string]any, config map[string]any) manifest {
 	schemaVersion := integerValue(raw["schemaVersion"], "/schemaVersion")
-	if schemaVersion != 1 && schemaVersion != 2 {
+	if schemaVersion != 1 && schemaVersion != 2 && schemaVersion != 3 {
 		fail(65, "runtime manifest /schemaVersion: unsupported version")
 	}
 	descriptorSchemaVersion := configInteger(config, "descriptorSchemaVersion", 1)
-	if schemaVersion == 2 && descriptorSchemaVersion < 2 {
+	if schemaVersion >= 2 && descriptorSchemaVersion < 2 {
 		fail(65, "runtime manifest /schemaVersion: version 2 requires a v2 or newer Project descriptor")
 	}
 
@@ -234,6 +236,16 @@ func validateManifest(raw map[string]any, config map[string]any) manifest {
 	})
 	if schemaVersion == 1 {
 		allowedRoot["settings"] = struct{}{}
+	}
+	if schemaVersion == 3 {
+		if descriptorSchemaVersion < 4 {
+			fail(65, "runtime manifest version 3 requires a v4 Project descriptor")
+		}
+		allowedRoot["instanceId"] = struct{}{}
+		allowedRoot["bindings"] = struct{}{}
+	}
+	if descriptorSchemaVersion >= 4 && schemaVersion != 3 {
+		fail(65, "Project descriptor v4 requires runtime manifest version 3")
 	}
 	if unknown := unknownKeys(raw, allowedRoot); len(unknown) > 0 {
 		fail(65, "runtime manifest: unknown fields: %s", strings.Join(unknown, ", "))
@@ -284,7 +296,7 @@ func validateManifest(raw map[string]any, config map[string]any) manifest {
 		}
 		rawEndpoint := object(rawEndpoints[name], "/endpoints/"+name)
 		allowedEndpoint := keySet([]string{"url", "listen", "hostNames", "visibility"})
-		if schemaVersion == 2 {
+		if schemaVersion >= 2 {
 			allowedEndpoint["protocol"] = struct{}{}
 		}
 		if unknown := unknownKeys(rawEndpoint, allowedEndpoint); len(unknown) > 0 {
@@ -300,7 +312,7 @@ func validateManifest(raw map[string]any, config map[string]any) manifest {
 			fail(65, "runtime manifest /endpoints/%s/listen/port: invalid port", name)
 		}
 		protocol := "http"
-		if schemaVersion == 2 {
+		if schemaVersion >= 2 {
 			protocol = stringValue(rawEndpoint["protocol"], "/endpoints/"+name+"/protocol")
 		}
 		if protocol != "http" && protocol != "tcp" {
@@ -461,7 +473,7 @@ func validateManifest(raw map[string]any, config map[string]any) manifest {
 			fail(65, "runtime manifest /secrets/%s: invalid semantic name", name)
 		}
 		credential, ok := secretValues[name].(string)
-		if !ok || !credentialPattern.MatchString(credential) {
+		if !ok || !credentialPattern.MatchString(credential) || credential == "." || credential == ".." {
 			fail(66, "runtime manifest /secrets/%s: unsafe credential filename", name)
 		}
 		if _, ok := declaredSecrets[name]; !ok {
@@ -473,7 +485,15 @@ func validateManifest(raw map[string]any, config map[string]any) manifest {
 		fail(65, "runtime manifest /secrets: undeclared names: %s", strings.Join(undeclaredSecrets, ", "))
 	}
 
+	instanceID := ""
+	bindings := map[string]map[string]any{}
+	if schemaVersion == 3 {
+		instanceID = stringValue(raw["instanceId"], "/instanceId")
+		bindings = validateBindings(configObject(raw, "bindings"), config, secrets)
+	}
 	return manifest{
+		instanceID: instanceID,
+		bindings:   bindings,
 		revision:   revision,
 		paths:      paths,
 		endpoints:  endpoints,
@@ -540,6 +560,7 @@ func executeAction(config map[string]any, action string, arguments []string, act
 	executable := actionExecutable(config, action, activation)
 	value := loadManifest(config)
 	prepareContext(value)
+	applyEnvironment(config, value, action)
 	argv := append([]string{executable}, arguments...)
 	if err := syscall.Exec(executable, argv, os.Environ()); err != nil {
 		fail(69, "could not execute action %s: %v", action, err)
@@ -646,6 +667,10 @@ func contextSnapshot(config map[string]any, value manifest) map[string]any {
 	if value.revision != "" {
 		result["revision"] = value.revision
 	}
+	if value.instanceID != "" {
+		result["instanceId"] = value.instanceID
+		result["bindings"] = value.bindings
+	}
 	return result
 }
 
@@ -738,7 +763,29 @@ func contextQuery(config map[string]any, arguments []string) int {
 		if len(arguments) != 1 {
 			fail(64, "usage: project-context instance-id")
 		}
-		return 1
+		if value.instanceID == "" {
+			return 1
+		}
+		printValue(value.instanceID, false)
+	case "binding":
+		rest, jsonOutput := removeFlag(arguments[1:], "--json")
+		if len(rest) != 2 {
+			fail(64, "usage: project-context binding <name> <field> [--json]")
+		}
+		bound := bindingValue(value, rest[0], rest[1])
+		if bound == nil {
+			return 1
+		}
+		printValue(bound, jsonOutput)
+	case "environment":
+		if len(arguments) > 2 {
+			fail(64, "usage: project-context environment [action]")
+		}
+		action := ""
+		if len(arguments) == 2 {
+			action = arguments[1]
+		}
+		printEnvironment(config, value, action)
 	default:
 		fail(64, "unknown project-context command: %s", arguments[0])
 	}

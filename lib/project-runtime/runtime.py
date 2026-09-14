@@ -11,6 +11,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -18,6 +19,8 @@ import tempfile
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, NoReturn
+
+import bindings
 
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -81,13 +84,20 @@ def require_absolute_path(value: Any, pointer: str) -> str:
     return result
 
 
-def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
+def validate_manifest(
+    raw: Mapping[str, Any], config: Mapping[str, Any]
+) -> dict[str, Any]:
     schema_version = raw.get("schemaVersion")
-    if schema_version not in (1, 2):
+    if schema_version not in (1, 2, 3):
         fail(65, "runtime manifest /schemaVersion: unsupported version")
     descriptor_schema_version = config.get("descriptorSchemaVersion", 1)
-    if schema_version == 2 and descriptor_schema_version < 2:
-        fail(65, "runtime manifest /schemaVersion: version 2 requires a v2 or newer Project descriptor")
+    if descriptor_schema_version >= 4 and schema_version != 3:
+        fail(65, "Project descriptor v4 requires runtime manifest version 3")
+    if schema_version >= 2 and descriptor_schema_version < 2:
+        fail(
+            65,
+            "runtime manifest /schemaVersion: version 2 requires a v2 or newer Project descriptor",
+        )
 
     allowed_root = {
         "schemaVersion",
@@ -100,8 +110,16 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
         "settings",
         "secrets",
     }
-    if schema_version == 2:
+    if schema_version >= 2:
         allowed_root.remove("settings")
+    if schema_version == 3:
+        if descriptor_schema_version < 4:
+            fail(
+                65,
+                "runtime manifest /schemaVersion: version 3 requires a v4 Project descriptor",
+            )
+        allowed_root.update(("instanceId", "bindings"))
+        require_string(raw.get("instanceId"), "/instanceId")
     unknown_root = set(raw) - allowed_root
     if unknown_root:
         fail(65, "runtime manifest: unknown fields: " + ", ".join(sorted(unknown_root)))
@@ -128,13 +146,19 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
         fail(65, "runtime manifest /paths: must be an object")
     unknown_paths = set(paths) - {"checkout", "state", "cache", "runtime"}
     if unknown_paths:
-        fail(65, "runtime manifest /paths: unknown fields: " + ", ".join(sorted(unknown_paths)))
+        fail(
+            65,
+            "runtime manifest /paths: unknown fields: "
+            + ", ".join(sorted(unknown_paths)),
+        )
     required_paths = ["state", "runtime"]
     if config["realization"] == "development":
         required_paths.extend(["checkout", "cache"])
     normalized_paths = dict(paths)
     for name in required_paths:
-        normalized_paths[name] = require_absolute_path(paths.get(name), f"/paths/{name}")
+        normalized_paths[name] = require_absolute_path(
+            paths.get(name), f"/paths/{name}"
+        )
 
     endpoints = raw.get("endpoints")
     if not isinstance(endpoints, dict):
@@ -144,7 +168,7 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
         if not NAME_RE.fullmatch(name) or not isinstance(endpoint, dict):
             fail(65, f"runtime manifest /endpoints/{name}: invalid Endpoint")
         allowed_endpoint = {"url", "listen", "hostNames", "visibility"}
-        if schema_version == 2:
+        if schema_version >= 2:
             allowed_endpoint.add("protocol")
         unknown_endpoint = set(endpoint) - allowed_endpoint
         if unknown_endpoint:
@@ -165,21 +189,35 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
             )
         host = require_string(listen.get("host"), f"/endpoints/{name}/listen/host")
         port = listen.get("port")
-        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        if (
+            not isinstance(port, int)
+            or isinstance(port, bool)
+            or not 1 <= port <= 65535
+        ):
             fail(65, f"runtime manifest /endpoints/{name}/listen/port: invalid port")
         protocol = "http" if schema_version == 1 else endpoint.get("protocol")
         if protocol not in ("http", "tcp"):
-            fail(65, f"runtime manifest /endpoints/{name}/protocol: must be http or tcp")
+            fail(
+                65, f"runtime manifest /endpoints/{name}/protocol: must be http or tcp"
+            )
         if protocol == "http":
             url = require_string(endpoint.get("url"), f"/endpoints/{name}/url")
             host_names = endpoint.get("hostNames", [])
-            if not isinstance(host_names, list) or not all(
-                isinstance(item, str) and item for item in host_names
-            ) or len(host_names) != len(set(host_names)):
+            if (
+                not isinstance(host_names, list)
+                or not all(isinstance(item, str) and item for item in host_names)
+                or len(host_names) != len(set(host_names))
+            ):
                 fail(65, f"runtime manifest /endpoints/{name}/hostNames: invalid list")
             visibility = endpoint.get("visibility")
-            if visibility is not None and visibility not in ("local", "tailnet", "public"):
-                fail(65, f"runtime manifest /endpoints/{name}/visibility: invalid value")
+            if visibility is not None and visibility not in (
+                "local",
+                "tailnet",
+                "public",
+            ):
+                fail(
+                    65, f"runtime manifest /endpoints/{name}/visibility: invalid value"
+                )
             normalized_endpoints[name] = {
                 **endpoint,
                 "url": url,
@@ -226,7 +264,10 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
             )
 
     if "parameters" in raw and "settings" in raw:
-        fail(65, "runtime manifest: set parameters, not both parameters and legacy settings")
+        fail(
+            65,
+            "runtime manifest: set parameters, not both parameters and legacy settings",
+        )
     parameters = raw.get("parameters", raw.get("settings", {}))
     if not isinstance(parameters, dict):
         fail(65, "runtime manifest /parameters: must be an object")
@@ -273,7 +314,11 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
     for name, credential in secrets.items():
         if not CREDENTIAL_RE.fullmatch(name):
             fail(65, f"runtime manifest /secrets/{name}: invalid semantic name")
-        if not isinstance(credential, str) or not CREDENTIAL_RE.fullmatch(credential):
+        if (
+            not isinstance(credential, str)
+            or not CREDENTIAL_RE.fullmatch(credential)
+            or credential in (".", "..")
+        ):
             fail(66, f"runtime manifest /secrets/{name}: unsafe credential filename")
     unknown_secrets = set(secrets) - set(config.get("secrets", []))
     if unknown_secrets:
@@ -282,6 +327,12 @@ def validate_manifest(raw: Mapping[str, Any], config: Mapping[str, Any]) -> dict
             "runtime manifest /secrets: undeclared names: "
             + ", ".join(sorted(unknown_secrets)),
         )
+
+    if schema_version == 3:
+        try:
+            bindings.validate_bindings(raw.get("bindings", {}), config, secrets)
+        except ValueError as error:
+            fail(65, f"runtime manifest {error}")
 
     return {
         **raw,
@@ -296,7 +347,10 @@ def runtime_root() -> pathlib.Path:
     configured = os.environ.get("XDG_RUNTIME_DIR")
     if configured:
         return pathlib.Path(configured) / "project-runtime"
-    return pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / f"project-runtime-{os.getuid()}"
+    return (
+        pathlib.Path(os.environ.get("TMPDIR", "/tmp"))
+        / f"project-runtime-{os.getuid()}"
+    )
 
 
 def port_available(port: int) -> bool:
@@ -313,22 +367,29 @@ def local_manifest(config: Mapping[str, Any]) -> pathlib.Path:
     identity = hashlib.sha256(str(checkout).encode()).hexdigest()[:20]
     root = runtime_root() / config["project"] / identity
     manifest_path = root / "runtime.json"
-    state = pathlib.Path(
-        os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")
-    ) / config["project"] / "instances" / identity
-    cache = pathlib.Path(
-        os.environ.get("XDG_CACHE_HOME", pathlib.Path.home() / ".cache")
-    ) / config["project"] / "instances" / identity
+    state = (
+        pathlib.Path(
+            os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")
+        )
+        / config["project"]
+        / "instances"
+        / identity
+    )
+    cache = (
+        pathlib.Path(os.environ.get("XDG_CACHE_HOME", pathlib.Path.home() / ".cache"))
+        / config["project"]
+        / "instances"
+        / identity
+    )
 
     with exclusive_lock(runtime_root() / "local-allocations.lock"):
         descriptor_schema_version = config.get("descriptorSchemaVersion", 1)
         target_schema_version = 1 if descriptor_schema_version == 1 else 2
         if manifest_path.exists():
             existing = load_json(manifest_path, label="runtime manifest")
-            if (
-                existing.get("schemaVersion") == target_schema_version
-                and existing.get("paths", {}).get("checkout") == str(checkout)
-            ):
+            if existing.get("schemaVersion") == target_schema_version and existing.get(
+                "paths", {}
+            ).get("checkout") == str(checkout):
                 validate_manifest(existing, config)
                 return manifest_path
 
@@ -351,9 +412,10 @@ def local_manifest(config: Mapping[str, Any]) -> pathlib.Path:
         size = end - start + 1
         for name in sorted(config["endpoints"]):
             protocol = config.get("endpointProtocols", {}).get(name, "http")
-            offset = int(
-                hashlib.sha256(f"{checkout}/{name}".encode()).hexdigest()[:8], 16
-            ) % size
+            offset = (
+                int(hashlib.sha256(f"{checkout}/{name}".encode()).hexdigest()[:8], 16)
+                % size
+            )
             for step in range(size):
                 candidate = start + ((offset + step) % size)
                 if candidate not in used and port_available(candidate):
@@ -408,6 +470,11 @@ def load_manifest(config: Mapping[str, Any]) -> tuple[pathlib.Path, dict[str, An
     configured = os.environ.get("PROJECT_RUNTIME_FILE")
     if configured:
         path = pathlib.Path(configured)
+    elif config.get("descriptorSchemaVersion", 1) >= 4:
+        fail(
+            66,
+            "Project v4 requires a bound Runtime Context. Use `project dev up` or run the native devenv graph locally.",
+        )
     elif config["realization"] == "development":
         path = local_manifest(config)
         os.environ["PROJECT_RUNTIME_FILE"] = str(path)
@@ -432,7 +499,9 @@ def prepare_context(manifest: Mapping[str, Any]) -> None:
         fail(66, "PROJECT_SECRETS_DIR must be an absolute path")
 
 
-def preparation_lock(manifest: Mapping[str, Any]) -> contextlib.AbstractContextManager[None]:
+def preparation_lock(
+    manifest: Mapping[str, Any],
+) -> contextlib.AbstractContextManager[None]:
     checkout = pathlib.Path(manifest["paths"]["checkout"]).resolve()
     digest = hashlib.sha256(str(checkout).encode()).hexdigest()[:24]
     return exclusive_lock(runtime_root() / "locks" / f"prepare-{digest}.lock")
@@ -452,23 +521,36 @@ def execute_action(
         fail(64, f"undeclared Project action: {action}")
     _, manifest = load_manifest(config)
     prepare_context(manifest)
+    try:
+        environment = os.environ.copy()
+        for name, value in bindings.environment_values(
+            config, manifest, action
+        ).items():
+            if value is None:
+                environment.pop(name, None)
+            else:
+                environment[name] = value
+    except (ValueError, OSError) as error:
+        fail(66, f"Project environment: {error}")
     is_preparation = action == config.get("preparationAction")
     context = preparation_lock(manifest) if is_preparation else contextlib.nullcontext()
     with context:
         if replace and not is_preparation:
             try:
-                os.execvpe(executable, [executable, *arguments], os.environ)
+                os.execvpe(executable, [executable, *arguments], environment)
             except OSError as error:
                 fail(69, f"could not execute action {action}: {error}")
         try:
             return subprocess.run(
-                [executable, *arguments], env=os.environ, check=False
+                [executable, *arguments], env=environment, check=False
             ).returncode
         except OSError as error:
             fail(69, f"could not execute action {action}: {error}")
 
 
-def dependency_order(workloads: Mapping[str, Any], selected: Sequence[str]) -> list[str]:
+def dependency_order(
+    workloads: Mapping[str, Any], selected: Sequence[str]
+) -> list[str]:
     ordered: list[str] = []
     visiting: set[str] = set()
     visited: set[str] = set()
@@ -564,6 +646,12 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
     subparsers.add_parser("snapshot")
     subparsers.add_parser("revision")
     subparsers.add_parser("instance-id")
+    binding_parser = subparsers.add_parser("binding")
+    binding_parser.add_argument("name")
+    binding_parser.add_argument("field")
+    binding_parser.add_argument("--json", action="store_true")
+    environment_parser = subparsers.add_parser("environment")
+    environment_parser.add_argument("action", nargs="?", default="")
     try:
         options = parser.parse_args(arguments)
     except SystemExit as error:
@@ -578,7 +666,8 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
             "project": manifest["project"],
             "realization": manifest["realization"],
             "revision": manifest.get("revision"),
-            "instanceId": (
+            "instanceId": manifest.get("instanceId")
+            or (
                 pathlib.Path(manifest["paths"]["runtime"]).name
                 if manifest["realization"] == "development"
                 else None
@@ -586,6 +675,7 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
             "paths": manifest["paths"],
             "endpoints": manifest["endpoints"],
             "parameters": manifest["parameters"],
+            "bindings": manifest.get("bindings", {}),
             "secretFiles": {
                 name: str(root / credential)
                 for name, credential in manifest["secrets"].items()
@@ -602,7 +692,10 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
             auxiliary = config.get("auxiliaryEndpoints", {}).get(options.name, {})
             endpoint_name = auxiliary.get(options.port)
             if endpoint_name is None:
-                fail(66, f"Project auxiliary port is unavailable: {options.name}.{options.port}")
+                fail(
+                    66,
+                    f"Project auxiliary port is unavailable: {options.name}.{options.port}",
+                )
         endpoint = manifest["endpoints"].get(endpoint_name)
         if endpoint is None:
             fail(66, f"Project Endpoint is unavailable: {endpoint_name}")
@@ -615,7 +708,10 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
         }
         value = values[options.field]
         if value is None:
-            fail(66, f"Project Endpoint field is unavailable: {endpoint_name}.{options.field}")
+            fail(
+                66,
+                f"Project Endpoint field is unavailable: {endpoint_name}.{options.field}",
+            )
     elif options.command == "parameter":
         if options.name not in config.get("parameterDefinitions", {}):
             fail(66, f"Project parameter is undeclared: {options.name}")
@@ -630,9 +726,32 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
         if value is None:
             return 1
     elif options.command == "instance-id":
-        if manifest["realization"] != "development":
+        value = manifest.get("instanceId")
+        # TODO: Remove path-derived IDs after all v1/v2 runtimes have migrated.
+        if value is None and manifest["realization"] == "development":
+            value = pathlib.Path(manifest["paths"]["runtime"]).name
+        if value is None:
             return 1
-        value = pathlib.Path(manifest["paths"]["runtime"]).name
+    elif options.command == "binding":
+        try:
+            value = bindings.binding_value(manifest, options.name, options.field)
+        except (ValueError, OSError) as error:
+            fail(66, f"Project binding: {error}")
+        if value is None:
+            return 1
+    elif options.command == "environment":
+        try:
+            for name, value in bindings.environment_values(
+                config, manifest, options.action
+            ).items():
+                print(
+                    f"unset {name}"
+                    if value is None
+                    else f"export {name}={shlex.quote(value)}"
+                )
+        except (ValueError, OSError) as error:
+            fail(66, f"Project environment: {error}")
+        return 0
     else:
         credential = manifest["secrets"].get(options.name)
         if credential is None:
@@ -645,7 +764,11 @@ def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
             fail(66, f"Project Secret file is missing or empty: {options.name}")
         value = str(value)
 
-    if getattr(options, "json", False) or value is None or isinstance(value, (dict, list, bool)):
+    if (
+        getattr(options, "json", False)
+        or value is None
+        or isinstance(value, (dict, list, bool))
+    ):
         print(json.dumps(value, separators=(",", ":")))
     else:
         print(value)

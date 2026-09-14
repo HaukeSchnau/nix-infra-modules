@@ -1,5 +1,6 @@
 { lib }:
 let
+  projectRequirements = import ./project-requirements.nix { inherit lib; };
   fail = context: message: throw "project descriptor ${context}: ${message}";
   ensure =
     context: condition: message: value:
@@ -242,17 +243,24 @@ let
     let
       context = "development";
       attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context ([
-        "commands"
-        "endpoints"
-        "preparation"
-        "workloads"
-      ]) attrs;
+      checked = checkKeys context (
+        [
+          "commands"
+          "endpoints"
+          "preparation"
+          "workloads"
+        ]
+        ++ lib.optional (schemaVersion >= 4) "providers"
+      ) attrs;
       endpointInput = checked.endpoints or { };
       workloadInput = checked.workloads or { };
-      impliedWorkloads = lib.mapAttrs (_: endpoint: {
-        action = endpoint.workload or null;
-      }) endpointInput;
+      impliedWorkloads =
+        if schemaVersion >= 4 then
+          { }
+        else
+          lib.mapAttrs (_: endpoint: {
+            action = endpoint.workload or null;
+          }) endpointInput;
       mergedWorkloads = lib.recursiveUpdate impliedWorkloads workloadInput;
       workloads = lib.mapAttrs (
         name: workload:
@@ -266,7 +274,7 @@ let
               "kind"
               "secrets"
             ]
-            ++ lib.optional (schemaVersion == 3) "lifecycle"
+            ++ lib.optional (schemaVersion >= 3) "lifecycle"
           ) (ensure itemContext (isAttrs workload) "must be an attribute set" workload);
           action = if (item.action or null) == null then name else item.action;
           dependsOn = item.dependsOn or [ ];
@@ -287,7 +295,7 @@ let
               (
                 ensure itemContext
                   (
-                    schemaVersion != 3
+                    schemaVersion < 3
                     || builtins.elem lifecycle [
                       "background"
                       "on-demand"
@@ -295,7 +303,7 @@ let
                   )
                   "lifecycle must be background or on-demand"
                   (
-                    ensure itemContext (schemaVersion != 3 || lifecycle != "background" || kind == "service")
+                    ensure itemContext (schemaVersion < 3 || lifecycle != "background" || kind == "service")
                       "background lifecycle requires kind service"
                       (
                         {
@@ -303,7 +311,7 @@ let
                           dependsOn = checkedDependsOn;
                           secrets = checkedSecrets;
                         }
-                        // lib.optionalAttrs (schemaVersion == 3) { inherit lifecycle; }
+                        // lib.optionalAttrs (schemaVersion >= 3) { inherit lifecycle; }
                       )
                   )
               )
@@ -323,13 +331,21 @@ let
         let
           itemContext = "development.endpoints.${name}";
           checkedName = checkName itemContext name;
-          item = checkKeys itemContext [
-            "health"
-            "protocol"
-            "workload"
-          ] (ensure itemContext (isAttrs endpoint) "must be an attribute set" endpoint);
+          item = checkKeys itemContext (
+            [
+              "health"
+              "protocol"
+              "workload"
+            ]
+            ++ lib.optionals (schemaVersion >= 4) [
+              "port"
+              "publication"
+            ]
+          ) (ensure itemContext (isAttrs endpoint) "must be an attribute set" endpoint);
           workload = item.workload or name;
           protocol = item.protocol or "http";
+          port = item.port or null;
+          publication = item.publication or "preview";
         in
         builtins.seq checkedName (
           ensure itemContext (isString workload && builtins.hasAttr workload workloads)
@@ -351,18 +367,33 @@ let
                   else
                     "protocol must be http or tcp"
                 )
-                {
-                  inherit protocol workload;
-                  health = normalizeHealth {
-                    context = "${itemContext}.health";
-                    defaults = {
-                      intervalSec = 1;
-                      requestTimeoutSec = 15;
-                    };
-                    inherit protocol;
-                    value = item.health or { };
-                  };
-                }
+                (
+                  ensure itemContext (port == null || (isInt port && port >= 1 && port <= 65535))
+                    "port must be null or between 1 and 65535"
+                    (
+                      ensure itemContext
+                        (builtins.elem publication [
+                          "private"
+                          "preview"
+                        ])
+                        "publication must be private or preview"
+                        (
+                          {
+                            inherit protocol workload;
+                            health = normalizeHealth {
+                              context = "${itemContext}.health";
+                              defaults = {
+                                intervalSec = 1;
+                                requestTimeoutSec = 15;
+                              };
+                              inherit protocol;
+                              value = item.health or { };
+                            };
+                          }
+                          // lib.optionalAttrs (schemaVersion >= 4) { inherit port publication; }
+                        )
+                    )
+                )
             )
         )
       ) endpointInput;
@@ -859,15 +890,21 @@ let
       checked = checkKeys context [
         "$schema"
         "development"
+        "environment"
         "parameters"
         "project"
         "release"
+        "requirements"
         "schemaVersion"
         "secrets"
       ] attrs;
       schemaVersion = checked.schemaVersion or null;
       project = checkName "project" (checked.project or null);
-      secrets = lib.mapAttrs normalizeSecret (checked.secrets or { });
+      requirements = projectRequirements.normalize (checked.requirements or { });
+      environment = projectRequirements.normalizeEnvironment (checked.environment or { });
+      secrets =
+        lib.mapAttrs normalizeSecret (checked.secrets or { })
+        // projectRequirements.secretDefinitions requirements;
       parameters = lib.mapAttrs normalizeParameter (checked.parameters or { });
       result = {
         inherit
@@ -878,7 +915,17 @@ let
           ;
         development =
           if checked ? development && checked.development != null then
-            normalizeDevelopment schemaVersion secrets checked.development
+            let
+              development = normalizeDevelopment schemaVersion secrets checked.development;
+            in
+            development
+            // lib.optionalAttrs (schemaVersion >= 4) {
+              providers = projectRequirements.normalizeProviders {
+                requirements = projectRequirements.forRealization "development" requirements;
+                inherit (development) workloads;
+                providers = checked.development.providers or { };
+              };
+            }
           else
             null;
         release =
@@ -886,28 +933,40 @@ let
             normalizeRelease schemaVersion secrets checked.release
           else
             null;
-      };
+      }
+      // lib.optionalAttrs (schemaVersion >= 4) { inherit requirements environment; };
     in
     ensure "schemaVersion"
       (builtins.elem schemaVersion [
         1
         2
         3
+        4
       ])
       "unsupported schemaVersion ${toString schemaVersion}"
       (
-        ensure "root"
+        ensure "root" (schemaVersion >= 4 || (requirements == { } && environment == { }))
+          "requirements and runtime environment mappings require schemaVersion 4"
           (
-            schemaVersion == 1
-            || (
-              checked ? development && checked.development != null && checked ? release && checked.release != null
-            )
-          )
-          "schemaVersion 2 or newer requires both Development and Release realizations"
-          (
-            ensure "project" (
-              expectedProject == null || expectedProject == project
-            ) "expected ${toString expectedProject}, got ${project}" (builtins.deepSeq result result)
+            ensure "root"
+              (
+                schemaVersion == 1
+                || (schemaVersion >= 4 && (result.development != null || result.release != null))
+                || (
+                  checked ? development && checked.development != null && checked ? release && checked.release != null
+                )
+              )
+              "schemaVersion 2/3 requires both realizations; schemaVersion 4 requires at least one"
+              (
+                ensure "project" (expectedProject == null || expectedProject == project)
+                  "expected ${toString expectedProject}, got ${project}"
+                  (
+                    builtins.deepSeq (projectRequirements.validateEnvironment {
+                      descriptor = result;
+                      inherit environment;
+                    }) (builtins.deepSeq result result)
+                  )
+              )
           )
       );
 
@@ -1010,12 +1069,14 @@ let
       ) "descriptor does not define a Release realization" normalized.release;
       allowedPolicy = [
         "approvedOci"
+        "bindings"
         "delivery"
         "domain"
         "environment"
         "environmentFiles"
         "exposeRevision"
         "healthRecovery"
+        "instanceId"
         "jobs"
         "parameters"
         "path"
@@ -1035,7 +1096,13 @@ let
       };
       secretBindings = checkedPolicy.secrets or { };
       missingSecrets = lib.filter (
-        name: normalized.secrets.${name}.required && !(builtins.hasAttr name secretBindings)
+        name:
+        normalized.secrets.${name}.required
+        && !(builtins.hasAttr name secretBindings)
+        && (
+          !(normalized.requirements or { } ? ${name})
+          || builtins.elem "release" normalized.requirements.${name}.realizations
+        )
       ) (builtins.attrNames normalized.secrets);
       approvedOci = checkStringList "release policy.approvedOci" (checkedPolicy.approvedOci or [ ]);
       requestedOci = builtins.attrNames release.ociAuxiliaries;
@@ -1137,6 +1204,8 @@ let
                 approvedOci = approvedOci;
                 inherit resources;
                 secrets = secretBindings;
+                bindings = checkedPolicy.bindings or { };
+                instanceId = checkedPolicy.instanceId or null;
               };
               source = checkedPolicy.source;
             }

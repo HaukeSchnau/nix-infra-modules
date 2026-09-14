@@ -131,11 +131,17 @@ allocated auxiliary endpoints. Secret values are exposed with systemd
 `LoadCredential`; `PROJECT_SECRETS_DIR` points to that credential directory.
 Repositories derive framework-specific variables such as database or auth URLs
 from this small manifest rather than requiring those variables in infra.
-Descriptor v2 and newer Releases use Runtime manifest v2. It marks the
+Descriptor v2 and v3 Releases use Runtime manifest v2. It marks the
 service Endpoint as HTTP and exposes auxiliary TCP listeners without inventing
 application-specific URLs; repository actions construct those from
 `project-context`. Descriptor v1 retains its original manifest shape for
-rolling compatibility. UDP auxiliaries are not supported by Runtime v2.
+rolling compatibility. UDP auxiliaries are not supported by these runtimes.
+
+Descriptor v4 uses Runtime manifest v3. Set `policy.instanceId` to a stable
+placement identity and `policy.bindings` to concrete resource bindings. The host
+provider owns creation, access policy and backups; the public adapter validates
+the supplied bindings. Secret bindings reference names in `policy.secrets`.
+Runtime environment mappings resolve from those bindings before each action.
 
 The updater installs that manifest in deployment state and cuts it over
 atomically with the `current` package symlink. Rollback restores the previous

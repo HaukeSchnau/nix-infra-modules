@@ -89,7 +89,13 @@ let
   projectAuxiliaryPorts = if isProject then cfg.project.auxiliaryPorts else { };
   projectJobs = if isProject then cfg.project.jobs else { };
   projectMemory = if isProject then cfg.project.resources.memory else { };
-  projectRuntimeSchemaVersion = if isProject && descriptor.schemaVersion >= 2 then 2 else 1;
+  projectRuntimeSchemaVersion =
+    if isProject && descriptor.schemaVersion >= 4 then
+      3
+    else if isProject && descriptor.schemaVersion >= 2 then
+      2
+    else
+      1;
   unitName = "app-deployment-${name}";
   updateUnitName = "${unitName}-update";
   activationUnitName = "${unitName}-activate";
@@ -127,8 +133,8 @@ let
               port = projectAuxiliaryPorts.${auxiliaryName}.${portName};
             };
           in
-          if projectRuntimeSchemaVersion == 2 && port.protocol != "tcp" then
-            throw "app-deployment/${name}: Project Runtime v2 cannot expose UDP auxiliary Endpoint ${endpointName}"
+          if projectRuntimeSchemaVersion >= 2 && port.protocol != "tcp" then
+            throw "app-deployment/${name}: Project Runtime cannot expose UDP auxiliary Endpoint ${endpointName}"
           else
             {
               name = endpointName;
@@ -156,7 +162,7 @@ let
       port = cfg.port;
     };
   }
-  // lib.optionalAttrs (projectRuntimeSchemaVersion == 2) {
+  // lib.optionalAttrs (projectRuntimeSchemaVersion >= 2) {
     protocol = "http";
     hostNames = lib.optional (cfg.domain != null) cfg.domain;
     visibility =
@@ -168,21 +174,31 @@ let
         "tailnet";
   };
   primaryRuntimeEndpointName =
-    if projectRuntimeSchemaVersion == 2 then projectRelease.action else "default";
+    if projectRuntimeSchemaVersion >= 2 then projectRelease.action else "default";
   projectRuntimeBaseManifest = pkgs.writeText "project-release-runtime-base-${name}.json" (
-    builtins.toJSON {
-      schemaVersion = projectRuntimeSchemaVersion;
-      project = name;
-      realization = "release";
-      paths = {
-        state = runtimeDir;
-        runtime = runtimeDir;
-      };
-      endpoints = {
-        ${primaryRuntimeEndpointName} = defaultRuntimeEndpoint;
+    builtins.toJSON (
+      {
+        schemaVersion = projectRuntimeSchemaVersion;
+        project = name;
+        realization = "release";
+        paths = {
+          state = runtimeDir;
+          runtime = runtimeDir;
+        };
+        endpoints = {
+          ${primaryRuntimeEndpointName} = defaultRuntimeEndpoint;
+        }
+        // auxiliaryRuntimeEndpoints;
       }
-      // auxiliaryRuntimeEndpoints;
-    }
+      // lib.optionalAttrs (projectRuntimeSchemaVersion >= 3) {
+        instanceId =
+          if cfg.project.instanceId != null then
+            cfg.project.instanceId
+          else
+            throw "app-deployments.${name}: Project v4 requires a stable instanceId";
+        bindings = { };
+      }
+    )
     + "\n"
   );
   projectBindingPolicy = pkgs.writeText "project-release-bindings-${name}.json" (
@@ -192,6 +208,7 @@ let
       bindings = {
         parameters = cfg.project.parameterBindings;
         secrets = builtins.attrNames projectSecrets;
+        resources = cfg.project.bindings;
       };
     }
     + "\n"
@@ -550,6 +567,7 @@ let
 
         jq -S -s --arg revision "$revision" \
           '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
+            + (if .[0].schemaVersion >= 3 then {bindings: .[1].bindings} else {} end)
             + (if $revision == "" then {} else {revision: $revision} end)' \
           ${lib.escapeShellArg projectRuntimeBaseManifest} "$result" > "$runtime"
         jq -S '.releasePlan' "$result" > "$plan"
@@ -970,6 +988,7 @@ let
     ''}
     expected_runtime="$(${pkgs.jq}/bin/jq -S -s --arg revision "$revision" \
       '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
+        + (if .[0].schemaVersion >= 3 then {bindings: .[1].bindings} else {} end)
         + (if $revision == "" then {} else {revision: $revision} end)' \
       ${lib.escapeShellArg projectRuntimeBaseManifest} <(printf '%s\n' "$result"))"
     actual_runtime="$(${pkgs.jq}/bin/jq -S . "$runtime")"
@@ -1009,6 +1028,7 @@ let
     ''}
     expected_runtime="$(${pkgs.jq}/bin/jq -S -s --arg revision "$revision" \
       '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
+        + (if .[0].schemaVersion >= 3 then {bindings: .[1].bindings} else {} end)
         + (if $revision == "" then {} else {revision: $revision} end)' \
       ${lib.escapeShellArg projectRuntimeBaseManifest} <(printf '%s\n' "$result"))"
     expected_release_plan="$(${pkgs.jq}/bin/jq -S '.releasePlan' <<<"$result")"

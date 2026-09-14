@@ -7,7 +7,7 @@ NixOS implementation details.
 The public helper is exported as `lib.projectDescriptor`:
 
 - `load { path; expectedProject?; }` reads and normalizes JSON.
-- `normalize { descriptor; expectedProject?; }` validates schema v1 through v3 and
+- `normalize { descriptor; expectedProject?; }` validates schema v1 through v4 and
   fills defaults. Normalization is idempotent.
 - `requireRealizations { descriptor; expectedProject?; }` additionally requires
   both Development and Release. It supports auditing v1 repositories during a
@@ -24,9 +24,11 @@ The public helper is exported as `lib.projectDescriptor`:
 
 ## Shape
 
-Schema v3 is the current Project contract. It adds background Development
-workloads and interactive commands to the paired Development and Release model
-introduced by v2:
+Schema v4 adds requirements, runtime environment references and independently
+optional Development and Release capabilities. At least one capability is required.
+V1 through v3 retain their existing meanings.
+
+The following v3 example documents the previous paired contract:
 
 ```json
 {
@@ -95,9 +97,9 @@ property is authoring metadata and is omitted from the normalized descriptor.
 
 Schema v1 and v2 remain supported without semantic changes. Only
 `schemaVersion` and `project` are always required in v1, and a v1 descriptor may
-define either or both realizations. New Projects should emit v3.
+define either or both realizations. New Projects should emit v4.
 
-Defaults are intentionally aggressive. Development Endpoints imply same-named
+In v1 through v3, Development Endpoints imply same-named
 workloads and actions. Release defaults to backend `service`, package
 `projectRelease`, executable `project-release-runtime`, health path `/`, and no
 state, ingress customization, jobs, or OCI auxiliaries. OCI port protocol
@@ -190,3 +192,51 @@ This keeps operational policy out of the portable descriptor without
 duplicating runtime projection in private adapters. Maintenance actions receive
 fixed low-priority CPU/IO defaults rather than an arbitrary systemd
 configuration escape hatch.
+
+## Requirements and bindings in v4
+
+A requirement names what the application needs. The host chooses a provider and
+supplies a binding. Requirements are scoped with `realizations`, defaulting to
+both capabilities. The supported resource kinds are:
+
+- `postgresql`: `majorVersion: 17` or `majorVersions: [16, 17]`, plus a logical
+  relative `dataDirectory`. A binding reports the actual `majorVersion`, `host`,
+  `port`, `user`, `database` and `url`. Native development providers also supply
+  a `dataDirectory`. Accepting multiple versions does not migrate stored data.
+- `directory`: a relative `path` and `persistent`, defaulting to true. The
+  binding supplies its absolute path and persistence policy.
+- `secret`: an account credential, or `generate: {bytes: 32}` for an instance
+  secret. Generation produces a hexadecimal string from that many random bytes.
+  The binding names a credential file; secret values never enter the manifest.
+
+`required` defaults to true. Missing required resources, incompatible versions,
+malformed bindings and unbound credential references fail before an action runs.
+The Release compatibility check rejects incompatible bindings before activation.
+Neither executable runtime allocates resources. Allocation belongs to the host
+adapter, which must preserve instance ownership when preparing new generations.
+
+`environment.development` and `environment.release` contain `common` and `actions`
+maps. A value is a literal string or one runtime reference:
+
+```json
+{
+  "DATABASE_URL": {"binding": "database", "field": "url"},
+  "SESSION_KEY": {"binding": "session", "field": "value"},
+  "UPLOADS": {"binding": "uploads", "field": "path"},
+  "PORT": {"endpoint": "web", "field": "listen.port"},
+  "INSTANCE_ID": {"instance": "id"}
+}
+```
+
+Other selectors are `parameter`, `secret` for a credential path, and `path`
+with an optional relative `append`. An absent optional reference unsets the
+variable, preventing accidental inheritance. Values are resolved when consumed;
+`secret` and binding `file` resolve paths, while binding `value` reads a secret.
+
+V4 endpoints explicitly name workloads. They no longer imply a second workload.
+`port` documents the native listener preference; the adapter allocates the actual
+listener. `publication: "private"` prohibits publication overrides, while
+`"preview"` permits exposure under host policy.
+
+Native devenv authors can declare the graph and these annotations together with
+[the Project module](./project-devenv.md), then export the JSON contract.

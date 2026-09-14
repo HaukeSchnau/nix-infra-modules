@@ -85,6 +85,7 @@ let
       ''
         ${lib.optionalString (!isRelease) ''
           install -Dm0555 ${developmentRuntimeImplementation} $out/libexec/project-runtime/runtime.py
+          install -Dm0444 ${./project-runtime/bindings.py} $out/libexec/project-runtime/bindings.py
         ''}
         makeWrapper ${runtimeExecutable} $out/bin/${mainProgram} \
           --add-flags "${runtimeArguments}" \
@@ -153,7 +154,13 @@ rec {
         inherit descriptor;
         values = localParameters;
       };
-      runtimeSchemaVersion = if descriptor.schemaVersion >= 2 then 2 else 1;
+      runtimeSchemaVersion =
+        if descriptor.schemaVersion >= 4 then
+          3
+        else if descriptor.schemaVersion >= 2 then
+          2
+        else
+          1;
       expectedActions = lib.unique (
         [ development.preparation.action ]
         ++ map (workload: workload.action) (lib.attrValues development.workloads)
@@ -176,6 +183,8 @@ rec {
           realization = "development";
           entrypoint = "bin/${descriptor.project}-project-runtime";
           inherit development;
+          requirements = descriptor.requirements or { };
+          environment = descriptor.environment.development or { };
         };
         config = {
           schemaVersion = 1;
@@ -195,6 +204,8 @@ rec {
             portTo
           ];
           localParameters = resolvedLocalParameters;
+          requirements = descriptor.requirements or { };
+          environment = descriptor.environment.development or { };
         };
       };
       executable = lib.getExe package;
@@ -311,6 +322,8 @@ rec {
           parameterDefinitions = descriptor.parameters;
           secrets = builtins.attrNames descriptor.secrets;
           inherit auxiliaryEndpoints;
+          requirements = descriptor.requirements or { };
+          environment = descriptor.environment.release or { };
         }
         // lib.optionalAttrs (descriptor.schemaVersion >= 2) {
           endpoints = releaseEndpoints;
