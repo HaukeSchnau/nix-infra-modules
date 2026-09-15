@@ -190,3 +190,10 @@ contents. Existing context commands remain available.
 V4 requires a host-supplied runtime manifest. Running native devenv locally uses
 its normal local environment; it does not invoke a second Project allocator.
 Legacy descriptors retain their local flake runtime behavior.
+
+## Generated descriptors
+
+Service and static release helpers accept `descriptor`, an evaluated Nix
+attribute set, and generate the embedded JSON during the build. Use this with
+[shared project definitions](./project-definition.md) to keep production
+independent of devenv. The existing `descriptorPath` argument remains supported.

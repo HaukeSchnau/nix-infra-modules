@@ -1,8 +1,10 @@
 # Project Descriptor Schemas
 
-A Project descriptor is repository-owned, versioned JSON. It describes what a
-repository can run in Development and Release without embedding fleet policy or
-NixOS implementation details.
+A Project descriptor is versioned JSON generated from repository-owned Nix
+definitions. See [shared project definitions](./project-definition.md) for the
+current authoring layout. Development and Release artifacts each embed the
+metadata they need, without fleet policy or NixOS implementation details.
+Existing repositories with checked-in JSON remain supported during migration.
 
 The public helper is exported as `lib.projectDescriptor`:
 

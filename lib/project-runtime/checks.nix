@@ -91,7 +91,7 @@ let
     '';
   service = runtime.mkServiceRelease {
     inherit pkgs;
-    descriptorPath = serviceDescriptor;
+    descriptor = builtins.fromJSON (builtins.readFile serviceDescriptor);
     defaultAction = "serve";
     payloads = [
       (pkgs.runCommand "runtime-service-payload" { } ''
@@ -486,7 +486,7 @@ in
             PROJECT_RUNTIME_FILE="$release_manifest" ${service.package}/bin/activate-release
             test "$(tr '\n' ' ' < "$state/release.log")" = 'serve backup activation '
             test -f ${service.package}/share/runtime-service-fixture/value
-            cmp ${serviceDescriptor} ${service.package}/share/project/descriptor.json
+            diff <(${pkgs.jq}/bin/jq --sort-keys . ${serviceDescriptor}) <(${pkgs.jq}/bin/jq --sort-keys . ${service.package}/share/project/descriptor.json)
 
             test -f ${static.package}/index.html
             cmp ${staticDescriptor} ${static.package}/share/project/descriptor.json

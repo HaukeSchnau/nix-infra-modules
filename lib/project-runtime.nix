@@ -255,16 +255,20 @@ rec {
       };
 
   mkServiceRelease =
-    {
+    args@{
       pkgs,
-      descriptorPath,
+      descriptor ? null,
+      descriptorPath ? pkgs.writeText "project.json" (builtins.toJSON args.descriptor + "\n"),
       payloads ? [ ],
       actions,
       defaultAction ? null,
       activation ? null,
     }:
+    assert lib.assertMsg (
+      (args ? descriptor) != (args ? descriptorPath)
+    ) "project runtime: provide exactly one of descriptor or descriptorPath";
     let
-      raw = rawDescriptor descriptorPath;
+      raw = if (args.descriptor or null) == null then rawDescriptor descriptorPath else args.descriptor;
       descriptor = projectDescriptor.normalize { descriptor = raw; };
       release =
         if descriptor.release == null || descriptor.release.backend != "service" then
@@ -367,13 +371,17 @@ rec {
       };
 
   mkStaticRelease =
-    {
+    args@{
       pkgs,
-      descriptorPath,
+      descriptor ? null,
+      descriptorPath ? pkgs.writeText "project.json" (builtins.toJSON args.descriptor + "\n"),
       root,
     }:
+    assert lib.assertMsg (
+      (args ? descriptor) != (args ? descriptorPath)
+    ) "project runtime: provide exactly one of descriptor or descriptorPath";
     let
-      raw = rawDescriptor descriptorPath;
+      raw = if (args.descriptor or null) == null then rawDescriptor descriptorPath else args.descriptor;
       descriptor = projectDescriptor.normalize { descriptor = raw; };
       release =
         if descriptor.release == null || descriptor.release.backend != "static" then
