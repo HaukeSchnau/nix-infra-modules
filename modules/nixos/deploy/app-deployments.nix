@@ -823,7 +823,7 @@ let
           checks.append({"path": path, "status": error.code})
         except (OSError, TimeoutError) as error:
           checks.append({"path": path, "status": None, "error": str(error)})
-      return {"ok": bool(checks) and all(check.get("status") == 200 for check in checks), "checks": checks}
+      return {"ok": bool(checks) and all(200 <= (check.get("status") or 0) < 300 for check in checks), "checks": checks}
 
     def iso_mtime(path):
       try:
