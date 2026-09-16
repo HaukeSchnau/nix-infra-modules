@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
-"""Portable Project Runtime dispatcher and local Development adapter."""
+"""Project runtime context queries for managed native development."""
 
 from __future__ import annotations
 
 import argparse
-import contextlib
-import fcntl
-import hashlib
 import json
 import os
 import pathlib
 import re
 import shlex
-import socket
-import subprocess
 import sys
-import tempfile
-import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, NoReturn
 
 import bindings
@@ -45,30 +38,6 @@ def load_json(path: pathlib.Path, *, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         fail(65, f"{label} {path}: root must be an object")
     return value
-
-
-def atomic_json(path: pathlib.Path, value: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(value, stream, indent=2, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temporary)
-
-
-@contextlib.contextmanager
-def exclusive_lock(path: pathlib.Path) -> Iterator[None]:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with path.open("a+", encoding="utf-8") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        yield
 
 
 def require_string(value: Any, pointer: str) -> str:
@@ -343,143 +312,15 @@ def validate_manifest(
     }
 
 
-def runtime_root() -> pathlib.Path:
-    configured = os.environ.get("XDG_RUNTIME_DIR")
-    if configured:
-        return pathlib.Path(configured) / "project-runtime"
-    return (
-        pathlib.Path(os.environ.get("TMPDIR", "/tmp"))
-        / f"project-runtime-{os.getuid()}"
-    )
-
-
-def port_available(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        try:
-            listener.bind(("127.0.0.1", port))
-        except OSError:
-            return False
-    return True
-
-
-def local_manifest(config: Mapping[str, Any]) -> pathlib.Path:
-    checkout = pathlib.Path.cwd().resolve()
-    identity = hashlib.sha256(str(checkout).encode()).hexdigest()[:20]
-    root = runtime_root() / config["project"] / identity
-    manifest_path = root / "runtime.json"
-    state = (
-        pathlib.Path(
-            os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")
-        )
-        / config["project"]
-        / "instances"
-        / identity
-    )
-    cache = (
-        pathlib.Path(os.environ.get("XDG_CACHE_HOME", pathlib.Path.home() / ".cache"))
-        / config["project"]
-        / "instances"
-        / identity
-    )
-
-    with exclusive_lock(runtime_root() / "local-allocations.lock"):
-        descriptor_schema_version = config.get("descriptorSchemaVersion", 1)
-        target_schema_version = 1 if descriptor_schema_version == 1 else 2
-        if manifest_path.exists():
-            existing = load_json(manifest_path, label="runtime manifest")
-            if existing.get("schemaVersion") == target_schema_version and existing.get(
-                "paths", {}
-            ).get("checkout") == str(checkout):
-                validate_manifest(existing, config)
-                return manifest_path
-
-        endpoints: dict[str, Any] = {}
-        used: set[int] = set()
-        for candidate in runtime_root().glob("*/*/runtime.json"):
-            if candidate == manifest_path:
-                continue
-            try:
-                allocated = load_json(candidate, label="local runtime manifest")
-                allocated_checkout = pathlib.Path(allocated["paths"]["checkout"])
-                if allocated_checkout.exists():
-                    used.update(
-                        endpoint["listen"]["port"]
-                        for endpoint in allocated.get("endpoints", {}).values()
-                    )
-            except (KeyError, TypeError, RuntimeFailure):
-                continue
-        start, end = config["localPortRange"]
-        size = end - start + 1
-        for name in sorted(config["endpoints"]):
-            protocol = config.get("endpointProtocols", {}).get(name, "http")
-            offset = (
-                int(hashlib.sha256(f"{checkout}/{name}".encode()).hexdigest()[:8], 16)
-                % size
-            )
-            for step in range(size):
-                candidate = start + ((offset + step) % size)
-                if candidate not in used and port_available(candidate):
-                    used.add(candidate)
-                    if target_schema_version == 1:
-                        endpoint = {
-                            "url": f"http://127.0.0.1:{candidate}",
-                            "hostNames": [],
-                            "visibility": "local",
-                            "listen": {"host": "127.0.0.1", "port": candidate},
-                        }
-                    else:
-                        endpoint = {
-                            "protocol": protocol,
-                            "listen": {"host": "127.0.0.1", "port": candidate},
-                        }
-                        if protocol == "http":
-                            endpoint.update(
-                                {
-                                    "url": f"http://127.0.0.1:{candidate}",
-                                    "hostNames": [],
-                                    "visibility": "local",
-                                }
-                            )
-                    endpoints[name] = endpoint
-                    break
-            else:
-                fail(69, "local Project Runtime listener range is exhausted")
-
-        value = {
-            "schemaVersion": target_schema_version,
-            "project": config["project"],
-            "realization": "development",
-            "paths": {
-                "checkout": str(checkout),
-                "state": str(state),
-                "cache": str(cache),
-                "runtime": str(root),
-            },
-            "endpoints": endpoints,
-            "parameters": config.get("localParameters", {}),
-            # A descriptor declares semantic requirements, not concrete local
-            # bindings. Local actions may fall back to repository-owned env
-            # files; managed adapters populate this map with real credentials.
-            "secrets": {},
-        }
-        atomic_json(manifest_path, value)
-    return manifest_path
-
-
 def load_manifest(config: Mapping[str, Any]) -> tuple[pathlib.Path, dict[str, Any]]:
     configured = os.environ.get("PROJECT_RUNTIME_FILE")
     if configured:
         path = pathlib.Path(configured)
-    elif config.get("descriptorSchemaVersion", 1) >= 4:
+    else:
         fail(
             66,
-            "Project v4 requires a bound Runtime Context. Use `project dev up` or run the native devenv graph locally.",
+            "PROJECT_RUNTIME_FILE is required; use native devenv for local development",
         )
-    elif config["realization"] == "development":
-        path = local_manifest(config)
-        os.environ["PROJECT_RUNTIME_FILE"] = str(path)
-    else:
-        fail(66, "PROJECT_RUNTIME_FILE is required for a Release")
     return path, validate_manifest(load_json(path, label="runtime manifest"), config)
 
 
@@ -497,126 +338,6 @@ def prepare_context(manifest: Mapping[str, Any]) -> None:
         fail(66, f"PROJECT_SECRETS_DIR does not exist: {secrets_dir}")
     if not pathlib.Path(secrets_dir).is_absolute():
         fail(66, "PROJECT_SECRETS_DIR must be an absolute path")
-
-
-def preparation_lock(
-    manifest: Mapping[str, Any],
-) -> contextlib.AbstractContextManager[None]:
-    checkout = pathlib.Path(manifest["paths"]["checkout"]).resolve()
-    digest = hashlib.sha256(str(checkout).encode()).hexdigest()[:24]
-    return exclusive_lock(runtime_root() / "locks" / f"prepare-{digest}.lock")
-
-
-def execute_action(
-    config: Mapping[str, Any],
-    action: str,
-    arguments: Sequence[str] = (),
-    *,
-    replace: bool,
-    activation: bool = False,
-) -> int:
-    actions = config["actions"]
-    executable = config.get("activation") if activation else actions.get(action)
-    if not isinstance(executable, str):
-        fail(64, f"undeclared Project action: {action}")
-    _, manifest = load_manifest(config)
-    prepare_context(manifest)
-    try:
-        environment = os.environ.copy()
-        for name, value in bindings.environment_values(
-            config, manifest, action
-        ).items():
-            if value is None:
-                environment.pop(name, None)
-            else:
-                environment[name] = value
-    except (ValueError, OSError) as error:
-        fail(66, f"Project environment: {error}")
-    is_preparation = action == config.get("preparationAction")
-    context = preparation_lock(manifest) if is_preparation else contextlib.nullcontext()
-    with context:
-        if replace and not is_preparation:
-            try:
-                os.execvpe(executable, [executable, *arguments], environment)
-            except OSError as error:
-                fail(69, f"could not execute action {action}: {error}")
-        try:
-            return subprocess.run(
-                [executable, *arguments], env=environment, check=False
-            ).returncode
-        except OSError as error:
-            fail(69, f"could not execute action {action}: {error}")
-
-
-def dependency_order(
-    workloads: Mapping[str, Any], selected: Sequence[str]
-) -> list[str]:
-    ordered: list[str] = []
-    visiting: set[str] = set()
-    visited: set[str] = set()
-
-    def visit(name: str) -> None:
-        if name not in workloads:
-            fail(64, f"unknown Development Workload: {name}")
-        if name in visited:
-            return
-        if name in visiting:
-            fail(65, f"cyclic Development Workload dependency: {name}")
-        visiting.add(name)
-        for dependency in workloads[name].get("dependsOn", []):
-            visit(dependency)
-        visiting.remove(name)
-        visited.add(name)
-        ordered.append(name)
-
-    for name in selected:
-        visit(name)
-    return ordered
-
-
-def supervise(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(prog="project-runtime dev")
-    parser.add_argument("--only")
-    try:
-        options = parser.parse_args(arguments)
-    except SystemExit as error:
-        return 0 if error.code == 0 else 64
-
-    _, manifest = load_manifest(config)
-    prepare_context(manifest)
-    preparation = config.get("preparationAction")
-    if preparation:
-        status = execute_action(config, preparation, replace=False)
-        if status != 0:
-            return status
-
-    workloads = config["workloads"]
-    selected = [options.only] if options.only else sorted(workloads)
-    ordered = dependency_order(workloads, selected)
-    processes: list[subprocess.Popen[bytes]] = []
-    try:
-        for name in ordered:
-            action = workloads[name]["action"]
-            executable = config["actions"][action]
-            processes.append(subprocess.Popen([executable], env=os.environ))
-        while processes:
-            for process in processes:
-                status = process.poll()
-                if status is not None:
-                    return status
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        return 130
-    finally:
-        for process in processes:
-            if process.poll() is None:
-                process.terminate()
-        for process in processes:
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=10)
-            if process.poll() is None:
-                process.kill()
-    return 0
 
 
 def context_query(config: Mapping[str, Any], arguments: Sequence[str]) -> int:
@@ -783,34 +504,7 @@ def main(arguments: Sequence[str]) -> int:
 
     if remaining and remaining[0] == "context":
         return context_query(config, remaining[1:])
-    if remaining and remaining[0] == "dev":
-        if config["realization"] != "development":
-            fail(64, "dev is only available for a Development Runtime")
-        return supervise(config, remaining[1:])
-    if (
-        remaining
-        and remaining[0] == "workload"
-        and config.get("descriptorSchemaVersion", 1) != 1
-        and config["realization"] == "development"
-    ):
-        if len(remaining) != 2 or remaining[1] not in config["workloads"]:
-            fail(64, "usage: project runtime workload <name>")
-        action = config["workloads"][remaining[1]]["action"]
-        return execute_action(config, action, replace=True)
-    if remaining == ["--activate"]:
-        if not config.get("activation"):
-            fail(64, "this Release has no activation action")
-        return execute_action(config, "activation", replace=True, activation=True)
-
-    if config["realization"] == "release" and not remaining:
-        action = config.get("defaultAction")
-    elif remaining:
-        action = remaining[0]
-    else:
-        fail(64, "usage: project runtime <action> [arguments...]")
-    if not isinstance(action, str):
-        fail(64, "this Project Runtime has no default action")
-    return execute_action(config, action, remaining[1:], replace=True)
+    fail(64, "usage: project context runtime --config FILE context <query>")
 
 
 if __name__ == "__main__":

@@ -1,69 +1,27 @@
 # Project Runtime
 
-`lib.projectRuntime` is the interface between a repository-owned Project
-and its Development or Release Adapter. It owns the versioned Runtime manifest,
-validation, action dispatch, local allocation and supervision, Preparation
-locking, conventional flake apps, and exact descriptor embedding. Repository
-actions remain opaque executables, so Bun, pnpm, Expo, Vite, databases, and
-application-specific environment variables never enter infrastructure.
+`lib.projectRuntime` builds immutable service and static releases. It owns their
+versioned runtime manifest, validation, action dispatch, context queries and
+embedded descriptor.
 
 ## Development
 
-```nix
-runtime = inputs.nix-infra-modules.lib.projectRuntime.mkDevelopment {
-  inherit pkgs;
-  descriptorPath = ./project.json;
-  disallowedRequisites = [ releaseApplication ];
-  actions = {
-    prepare = lib.getExe prepareAction;
-    web = lib.getExe webAction;
-    mobile = lib.getExe mobileAction;
-  };
-};
+Development tools, setup tasks and processes belong in `devenv.nix`. Shared
+requirements and release policy belong in `project.nix`. See
+[shared project definitions](./project-definition.md).
 
-packages.projectRuntime = runtime.package;
-apps = runtime.apps;
-checks = runtime.checks;
-```
-
-Action names must exactly match the normalized Preparation, Workload, and command actions.
-The constructor returns `prepare`, `dev`, and one `dev-<workload>` app. Local
-Development allocates stable, distinct loopback listeners per physical Checkout
-without putting ports in repository configuration. Infrastructure invokes the
-pinned `package` against any mutable Checkout; that path never evaluates the
-mutable flake.
-
-The generated dispatcher serializes Preparation by physical Checkout. The same
-lock covers canonical Checkouts, ad-hoc git worktrees, jj workspaces, and local
-flake apps.
-
-Descriptor v3 adds a Development lifecycle to service Workloads. `on-demand`
-is the default. Managed infrastructure keeps `background` services running in
-instances whose host-owned desired state is active. Paused and retired instances
-stay stopped. Background services still use the declared dependency
-graph and restart policy. They do not need a synthetic Endpoint.
-
-Development keeps the Python controller because it owns port allocation,
-locking, and multi-process supervision. Development packages are tooling and
-do not enter a production Release closure.
-
-`dev --only <workload>` retains dependency-recursive local behavior. Managed
-infrastructure uses `project-runtime workload <name>` to execute exactly one
-Workload while it realizes the repository-declared dependency graph itself.
-This prevents independently activated Endpoints from starting duplicate copies
-of a shared dependency.
-
-Pass release payloads or other forbidden dependencies through
-`disallowedRequisites`. Nix then fails the Development runtime build if an
-action captures one of them. Development actions should launch mutable Checkout
-source and keep compiled Release payloads in `mkServiceRelease`.
+The former `mkDevelopment` constructor, flake development apps, local allocator
+and custom process supervisor have been removed. Managed development uses a
+native devenv manager with a host-supplied runtime context. The Python
+`project-context` helper remains available for querying that context and resolving
+environment mappings. It does not launch workloads.
 
 ## Release
 
 ```nix
 release = inputs.nix-infra-modules.lib.projectRuntime.mkServiceRelease {
   inherit pkgs;
-  descriptorPath = ./project.json;
+  descriptor = project;
   payloads = [ application ];
   actions = {
     web = lib.getExe serveAction;
@@ -85,9 +43,9 @@ optional activation wrapper, and the byte-for-byte repository descriptor at
 
 Service Releases use a small statically linked Go dispatcher. The Go compiler
 is only a build input, and neither Go nor Python enters the Release closure.
-The compiled dispatcher implements the same Runtime manifest validation,
-`project-context` queries, action selection, argument forwarding, and failure
-statuses as the Development controller.
+The compiled dispatcher validates Runtime manifests, answers `project-context`
+queries, selects actions and forwards arguments. Its context queries and failure
+statuses agree with the Python context helper used by native development.
 
 Static Releases use `mkStaticRelease { descriptorPath; root; ...; }`. It combines
 the site root with the same exact descriptor artifact and adds no service
@@ -118,9 +76,8 @@ token_file="$(project-context secret-file authToken --required)"
 
 `project-context` also supports `path <name>`. It never prints Secret values;
 `secret-file` returns only a validated path beneath the credential directory.
-Local manifests do not claim descriptor Secrets are bound. Repository actions
-may use an optional `secret-file` query and retain their ordinary local env-file
-fallback; managed adapters bind and enforce required Secrets.
+Managed adapters bind and enforce required Secrets. Native local development
+uses the repository's devenv configuration for credentials.
 
 `project-context instance-id` returns the stable Development instance identity. It separates
 telemetry, caches, and other diagnostic output from concurrent Checkouts. Release runtimes return
@@ -155,7 +112,7 @@ allocation, hostnames and visibility, absolute paths, Secret values, schedules,
 resources, placement, and publication.
 
 The Runtime Module owns only the Seam: manifest protocol, validation,
-compatibility, context queries, dispatch, generic local lifecycle, and artifact
+compatibility, context queries, dispatch, and artifact
 identity. It does not infer application environment variables or package-manager
 commands.
 
@@ -189,7 +146,8 @@ contents. Existing context commands remain available.
 
 V4 requires a host-supplied runtime manifest. Running native devenv locally uses
 its normal local environment; it does not invoke a second Project allocator.
-Legacy descriptors retain their local flake runtime behavior.
+Retained release artifacts keep their pinned runtime. Older descriptor readers remain
+available for production rollback.
 
 ## Generated descriptors
 
