@@ -1,52 +1,13 @@
 # Shared application requirements and release policy, independent of devenv.
+# Evaluated by `lib.projectDefinition` for releases and imported by the devenv
+# module for development; both produce the same normalized descriptor.
 { config, lib, ... }:
 let
   inherit (lib) mkOption types;
+  projectTypes = import ./types.nix { inherit lib; };
+  inherit (projectTypes) clean nullable;
   cfg = config.project;
-  omitNull = lib.filterAttrs (_: value: value != null);
-  clean =
-    value:
-    if builtins.isAttrs value then
-      lib.mapAttrs (_: clean) (omitNull value)
-    else if builtins.isList value then
-      map clean value
-    else
-      value;
-  semanticName = types.strMatching "^[A-Za-z0-9_.-]+$";
-  nullable =
-    type:
-    mkOption {
-      type = types.nullOr type;
-      default = null;
-    };
-  environmentType = types.attrsOf (
-    types.either types.str (
-      types.submodule {
-        options = {
-          binding = nullable semanticName;
-          endpoint = nullable semanticName;
-          parameter = nullable semanticName;
-          secret = nullable semanticName;
-          path = nullable (
-            types.enum [
-              "checkout"
-              "state"
-              "cache"
-              "runtime"
-            ]
-          );
-          instance = nullable (types.enum [ "id" ]);
-          field = nullable types.str;
-          append = nullable types.str;
-        };
-      }
-    )
-  );
-  environment = lib.mapAttrs (_: value: if builtins.isAttrs value then omitNull value else value);
-  environmentOption = mkOption {
-    type = environmentType;
-    default = { };
-  };
+
   requirementType = types.submodule {
     options = {
       kind = mkOption {
@@ -92,27 +53,106 @@ let
       );
     };
   };
+
+  # A PostgreSQL package pins the declared major version unless a range is given.
   requirements = lib.mapAttrs (
     name: value:
     let
-      declared = omitNull (builtins.removeAttrs value [ "package" ]);
+      declared = clean (builtins.removeAttrs value [ "package" ]);
       major =
         if value.package == null then null else lib.toInt (lib.versions.major value.package.version);
     in
-    if major == null then
+    if value.package != null && value.kind != "postgresql" then
+      throw "project.requirements.${name}: package is only supported for postgresql"
+    else if major == null then
       declared
+    else if
+      (value.majorVersion != null && value.majorVersion != major)
+      || (value.majorVersions != null && !(builtins.elem major value.majorVersions))
+    then
+      throw "project.requirements.${name}: the PostgreSQL package must satisfy majorVersion"
     else
-      assert lib.assertMsg (
-        value.kind == "postgresql"
-        && (value.majorVersion == null || value.majorVersion == major)
-        && (value.majorVersions == null || builtins.elem major value.majorVersions)
-      ) "project.requirements.${name}: the PostgreSQL package must satisfy majorVersion";
       declared // lib.optionalAttrs (value.majorVersions == null) { majorVersion = major; }
   ) cfg.requirements;
+
+  # Secret requirements referenced by an environment map. Actions need them
+  # bound, so they never have to be listed separately.
+  secretReferences =
+    environment:
+    lib.unique (
+      lib.concatMap (
+        value:
+        lib.optional (
+          builtins.isAttrs value
+          && value ? binding
+          && (cfg.requirements.${value.binding}.kind or null) == "secret"
+        ) value.binding
+      ) (builtins.attrValues environment)
+    );
+
+  release = cfg.release;
+  releaseCommon = clean (cfg.environment // release.environment);
+  # Every release entry point with its own environment, keyed by action name.
+  releaseEntryPoints =
+    lib.optional (release.backend != "static") {
+      action = if release.action == null then "web" else release.action;
+      environment = release.serviceEnvironment;
+    }
+    ++
+      lib.concatMap
+        (
+          group:
+          lib.mapAttrsToList (name: entry: {
+            action = if entry.action == null then name else entry.action;
+            inherit (entry) environment;
+          }) release.${group}
+        )
+        [
+          "commands"
+          "maintenanceJobs"
+          "preDeployTasks"
+        ];
+  releaseActions = lib.foldl' (
+    result: entry:
+    let
+      environment = clean entry.environment;
+    in
+    if environment == { } then
+      result
+    else if result ? ${entry.action} && result.${entry.action} != environment then
+      throw "project.release: action ${entry.action} is declared with two different environments"
+    else
+      result // { ${entry.action} = environment; }
+  ) { } releaseEntryPoints;
+  withSecrets =
+    entries:
+    lib.mapAttrs (
+      name: entry:
+      let
+        action = if entry.action == null then name else entry.action;
+        explicit = if entry.secrets == null then [ ] else entry.secrets;
+        inferred = secretReferences (releaseCommon // (releaseActions.${action} or { }));
+        secrets = lib.unique (explicit ++ inferred);
+      in
+      clean (builtins.removeAttrs entry [ "environment" ])
+      // lib.optionalAttrs (secrets != [ ]) { inherit secrets; }
+    ) entries;
+  releaseDeclaration =
+    clean (
+      builtins.removeAttrs release [
+        "environment"
+        "serviceEnvironment"
+      ]
+    )
+    // {
+      commands = withSecrets release.commands;
+      maintenanceJobs = withSecrets release.maintenanceJobs;
+      preDeployTasks = withSecrets release.preDeployTasks;
+    };
 in
 {
   options.project = {
-    name = nullable (types.strMatching "^[a-z0-9][a-z0-9-]{0,62}$");
+    name = nullable projectTypes.name;
     requirements = mkOption {
       type = types.attrsOf requirementType;
       default = { };
@@ -148,34 +188,34 @@ in
       );
       default = { };
     };
-    environment = environmentOption;
-    release = nullable (import ./release-type.nix { inherit lib; });
-    releaseEnvironment = mkOption {
-      type = types.submodule {
-        options.common = environmentOption;
-        options.actions = mkOption {
-          type = types.attrsOf environmentType;
-          default = { };
-        };
-      };
+    environment = mkOption {
+      type = projectTypes.environment;
       default = { };
+      description = "Environment shared by every development and release action.";
     };
+    development.environment = mkOption {
+      type = projectTypes.environment;
+      default = { };
+      description = "Additional environment for every development process and task.";
+    };
+    release = nullable (import ./release-type.nix { inherit lib; });
     declaration = mkOption {
       type = types.attrs;
       readOnly = true;
       internal = true;
     };
   };
+
   config.project.declaration = {
     schemaVersion = 4;
     project = cfg.name;
     inherit requirements;
-    parameters = lib.mapAttrs (_: omitNull) cfg.parameters;
-    release = clean cfg.release;
-    environment = lib.optionalAttrs (cfg.release != null) {
+    parameters = lib.mapAttrs (_: clean) cfg.parameters;
+    release = if release == null then null else releaseDeclaration;
+    environment = lib.optionalAttrs (release != null) {
       release = {
-        common = environment cfg.releaseEnvironment.common;
-        actions = lib.mapAttrs (_: environment) cfg.releaseEnvironment.actions;
+        common = releaseCommon;
+        actions = releaseActions;
       };
     };
   };

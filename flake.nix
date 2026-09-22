@@ -30,11 +30,12 @@
     in
     {
       lib.projectDefinition = import ./lib/project-definition.nix { inherit lib; };
+      lib.projectFlake = import ./lib/project-flake.nix { inherit lib; };
+      lib.projectSource = import ./lib/project-source.nix { inherit lib; };
       projectModules.default = ./modules/project;
 
       lib.projectDescriptor = import ./lib/project-descriptor.nix { inherit lib; };
       lib.projectRuntime = import ./lib/project-runtime.nix { inherit lib; };
-      lib.projectRequirements = import ./lib/project-requirements.nix { inherit lib; };
       lib.topology = import ./lib/fleet-topology { inherit lib; };
 
       devenvModules.project = ./modules/devenv/project.nix;
@@ -148,7 +149,6 @@
               ./modules/home-manager/colors/checks.nix
               ./modules/project/checks.nix
               ./lib/project-runtime/checks.nix
-              ./lib/project-runtime/binding-checks.nix
               ./lib/fleet-topology/checks.nix
             ]
           );

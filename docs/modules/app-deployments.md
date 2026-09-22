@@ -54,7 +54,7 @@ new configurations should declare the app directly.
 
 ## Project Release Adapter
 
-Repositories that publish a [Project descriptor](project-descriptor.md)
+Repositories that publish a [Project definition](project-definition.md)
 can keep application-specific runtime knowledge in the repository and pass only
 host policy through private infrastructure:
 

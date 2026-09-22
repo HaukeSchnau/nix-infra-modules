@@ -11,7 +11,9 @@ let
   hasSops = options ? sops;
   serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
   nixFlakeService = import ./nix-flake-service.nix;
-  projectDescriptor = import ../../../lib/project-descriptor.nix { inherit lib; };
+  projectPlanner = lib.getExe (
+    (import ../../../lib/project-runtime.nix { inherit lib; }).package pkgs
+  );
 
   appType = lib.types.submodule (
     { name, ... }:
@@ -190,7 +192,7 @@ let
               options = {
                 descriptor = lib.mkOption {
                   type = lib.types.attrs;
-                  description = "Repository-authored schemaVersion 1 Project descriptor.";
+                  description = "Normalized schema-v4 Project descriptor.";
                 };
 
                 parameters = lib.mkOption {
@@ -487,13 +489,9 @@ let
     in
     if index == null then null else cfg.projectPortRange.from + index;
 
-  projectDescriptors = lib.mapAttrs (
-    name: app:
-    projectDescriptor.normalize {
-      descriptor = app.project.descriptor;
-      expectedProject = name;
-    }
-  ) (lib.filterAttrs (_: app: app.project != null) apps);
+  projectDescriptors = lib.mapAttrs (_: app: app.project.descriptor) (
+    lib.filterAttrs (_: app: app.project != null) apps
+  );
   projectAuxiliaryPortRequests = lib.concatLists (
     lib.mapAttrsToList (
       appName: descriptor:
@@ -708,11 +706,7 @@ let
       lib.mapAttrs (
         name: app:
         let
-          release =
-            (projectDescriptor.normalize {
-              descriptor = app.project.descriptor;
-              expectedProject = name;
-            }).release;
+          inherit (app.project.descriptor) release;
           tokenPath =
             if app.source.giteaTokenSecretName == null then
               null
@@ -1034,7 +1028,7 @@ let
           if not isinstance(descriptor, dict):
             self.send_json(400, {"error": "preflight requires a descriptor object"})
             return
-          if not app["bindingPolicyFile"] or not app["compatibilityProgram"]:
+          if not app["bindingPolicyFile"]:
             self.send_json(400, {"error": "app does not use the Project adapter"})
             return
           with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as candidate:
@@ -1042,11 +1036,10 @@ let
             candidate.flush()
             result = subprocess.run(
               [
-                "${pkgs.jq}/bin/jq",
-                "-n",
-                "--slurpfile", "host", app["bindingPolicyFile"],
-                "--slurpfile", "candidate", candidate.name,
-                "-f", app["compatibilityProgram"],
+                "${projectPlanner}",
+                "plan-release",
+                "--host", app["bindingPolicyFile"],
+                "--candidate", candidate.name,
               ],
               check=False,
               capture_output=True,
@@ -1194,7 +1187,6 @@ in
           options = {
             bindingPolicyFile = lib.mkOption { type = lib.types.str; };
             compatibilityFile = lib.mkOption { type = lib.types.str; };
-            compatibilityProgram = lib.mkOption { type = lib.types.str; };
             deliveryMode = lib.mkOption {
               type = lib.types.enum [
                 "source"
@@ -1256,11 +1248,7 @@ in
           ++ lib.mapAttrsToList (name: app: {
             assertion =
               app.project == null
-              ||
-                (projectDescriptor.normalize {
-                  descriptor = app.project.descriptor;
-                  expectedProject = name;
-                }).release != null;
+              || (app.project.descriptor.project == name && app.project.descriptor.release != null);
             message = "vps.services.appDeployments.apps.${name}: Project descriptor must define the matching Release realization.";
           }) resolvedApps
           ++ lib.concatLists (

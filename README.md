@@ -43,7 +43,9 @@ nix-infra-modules ../nix-infra-modules` for fast local iteration.
 
 | Export | Platform | Purpose | Docs / coverage |
 | --- | --- | --- | --- |
-| `devenvModules.project` | devenv | Native process and task annotations, requirements and JSON contract export | [Project devenv](docs/modules/project-devenv.md), `project-bindings` |
+| `lib.projectFlake`, `lib.projectDefinition`, `projectModules.default` | Nix | Project authoring (`project.nix`) and release flake outputs | [Project definition](docs/modules/project-definition.md), `project-definition` |
+| `devenvModules.project` | devenv | Native process and task annotations and contract export | [Project devenv](docs/modules/project-devenv.md), `project-definition` |
+| `lib.projectRuntime` | Nix | Release artifacts, runtime context and release planning | [Project runtime](docs/modules/project-runtime.md), `project-runtime` |
 | `nixosModules.fleet` | NixOS | Complete small-fleet interface and metadata contract | [fleet](docs/modules/fleet.md), `core-example`, `edge-example` |
 | `nixosModules.generatedContract` | NixOS | Generated services, health units, ingress routes, and edge contracts | [fleet](docs/modules/fleet.md), `fleet-generated-services-example`, `edge-contract-example` |
 | `nixosModules.fleetTooling` | NixOS | `vps-services` and `vps-health-check` commands | [fleet](docs/modules/fleet.md) |
@@ -63,8 +65,9 @@ nix-infra-modules ../nix-infra-modules` for fast local iteration.
 
 Available helpers:
 
-- `lib.projectDescriptor` (`load`, `normalize`, `resolveParameters`, and
-  `releaseApp`)
+- `lib.projectDescriptor` (`normalize`, `resolveParameters`, `releaseApp`,
+  `forRealization`, `releaseTaskOrder`)
+- `lib.projectSource`
 - `lib.nixos.nixFlakeService`
 - `lib.nixos.generatedInventory`
 - `lib.nixos.generatedTypes`

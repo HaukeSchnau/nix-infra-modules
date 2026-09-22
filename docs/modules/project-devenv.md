@@ -1,60 +1,57 @@
 # Authoring a Project with devenv
 
-Import `devenvModules.project`, or `modules/devenv/project.nix` from a pinned
-non-flake devenv input. Native devenv owns packages, setup tasks, process
-dependencies and readiness checks. Project annotations export the graph's public
-workloads, commands, requirements and interfaces.
+Native devenv owns development tools, setup tasks, processes, dependencies and
+readiness. The Project annotations mark which processes and tasks are public
+and export the normalized contract a managed host runs.
 
 ```nix
-{ config, inputs, pkgs, ... }:
+{ inputs, pkgs, ... }:
 {
-  imports = [ (inputs.projectSdk + "/modules/devenv/project.nix") ];
-  packages = [ pkgs.postgresql_17 ];
-  project = {
-    enable = true;
-    name = "example";
-    requirements.database = {
-      kind = "postgresql";
-      package = pkgs.postgresql_17;
-      dataDirectory = "postgres";
-    };
-    requirements.session = { kind = "secret"; generate.bytes = 32; };
-    environment.DATABASE_URL = { binding = "database"; field = "url"; };
-  };
+  imports = [
+    (inputs.projectSdk + "/modules/devenv/project.nix")
+    ./project.nix
+  ];
+  project.enable = true;
+  project.requirements.database.package = pkgs.postgresql_17;
 
-  # Attach this metadata to the application's native PostgreSQL process.
-  processes.database.project.provides.database = {};
-  processes.web.project = {
-    endpoints.web = { port = 3000; health.paths = [ "/health" ]; };
-    environment = {
-      PORT = { endpoint = "web"; field = "listen.port"; };
-      SESSION_KEY = { binding = "session"; field = "value"; };
-    };
+  processes.database = {
+    exec = "postgres -D \"$PGDATA\"";
+    project.provides.database = { };
   };
-  tasks."example:console".project.command = "console";
+  processes.web = {
+    exec = "my-server";
+    after = [ "devenv:processes:database" ];
+    project.endpoints.web.port = 3000;
+  };
+  processes.worker.project.lifecycle = "background";
+  tasks."example:console" = {
+    exec = "my-console";
+    project.command = "console";
+  };
 }
 ```
 
-The process executions and task dependencies above are supplied by the application's
-existing devenv modules. Use `.project.lifecycle = "background"` to request a
-process while the managed instance is active. A command annotation exposes a native
-task without repeating its graph. Secret dependencies are inferred from development
-environment references; explicit `.project.secrets` remains available.
+Pin the SDK in `devenv.yaml` to a full commit SHA with `flake: false`.
 
-`project.requirements.<name>.package` derives the PostgreSQL major version and the
-native provider's actual version. Set `majorVersions = [16 17]` when the application
-supports several host versions. The selected native package must belong to that set.
+- `processes.<name>.project.endpoints.<name>` publishes a listener. `port` is
+  the default for plain `devenv up`; managed hosts assign their own. The
+  endpoint serving the release action (`web` by default) inherits `paths` and
+  `startupTimeoutSec` from `release.health`; set `health` to override fields.
+  `publication = "private"` keeps an endpoint off the network.
+- `lifecycle = "background"` runs a process whenever the instance is active.
+- `provides.<requirement>` marks the native PostgreSQL process for a
+  requirement. The host allocates its port and data directory.
+- `tasks.<name>.project.command` exposes the task as `project dev <command>`.
+- `project.environment` on a process or task adds action-specific variables.
+  Secrets referenced by any environment the action sees are inferred;
+  `project.secrets` adds more.
 
-`project.release` declares the Release execution metadata. `project.releaseEnvironment`
-provides its `common` and `actions` environment maps. Omitting Release exports a
-development-only contract.
+Do not repeat dependencies or startup commands in `project.nix`; the graph
+lives in devenv only.
 
-`config.project.contract` is the normalized JSON-compatible value, and
-`config.project.contractFile` is its generated file. A host adapter can expose an
-explicit export command and compare the committed `project.json` to this value
-during preparation. Preparing a generation must not silently accept stale JSON.
-Inspection and planning consume the exported JSON without evaluating repository Nix.
-
-Managed execution sets `PROJECT_DEVENV_MANAGED=1`. The module then resolves common
-environment values on shell entry and action values immediately before each process
-or task. Ordinary local devenv keeps its native environment and resource lifecycle.
+`config.project.contract` is the normalized descriptor with development and
+release; `config.project.contractFile` is the same as JSON. Managed execution
+sets `PROJECT_DEVENV_MANAGED=1`, and the annotated processes and tasks then
+resolve their environment with `project-context environment <action>` before
+they start. Plain local devenv keeps its own environment, so process scripts
+should default variables the host would otherwise supply.

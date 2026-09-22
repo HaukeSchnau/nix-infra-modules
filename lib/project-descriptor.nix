@@ -1,164 +1,35 @@
+# Normalizes a Project declaration into the schema-v4 descriptor that hosts
+# and release tooling consume. Declarations come from the typed modules in
+# modules/project and modules/devenv, so this file applies defaults and checks
+# only what option types cannot express: references between sections, cycles,
+# and path and name safety. Normalizing a normalized descriptor is a no-op.
 { lib }:
 let
-  projectRequirements = import ./project-requirements.nix { inherit lib; };
   fail = context: message: throw "project descriptor ${context}: ${message}";
-  ensure =
-    context: condition: message: value:
-    if condition then value else fail context message;
-  isAttrs = value: builtins.isAttrs value;
-  isString = value: builtins.isString value;
-  isBool = value: builtins.isBool value;
-  isInt = value: builtins.isInt value;
-  namePattern = "^[a-z0-9][a-z0-9-]{0,62}$";
-  semanticNamePattern = "^[A-Za-z0-9_.-]+$";
-  executableNamePattern = "^[A-Za-z0-9._+-]+$";
-  headerNamePattern = "^[A-Za-z0-9-]+$";
-
-  checkKeys =
-    context: allowed: value:
+  # Returns value when every check holds and reports the first failure otherwise.
+  checked =
+    context: checks: value:
     let
-      unknown = lib.subtractLists allowed (builtins.attrNames value);
+      failed = lib.findFirst (item: !item.ok) null checks;
     in
-    ensure context (unknown == [ ]) "unknown fields: ${lib.concatStringsSep ", " unknown}" value;
+    if failed == null then value else fail context failed.message;
+  check = ok: message: { inherit ok message; };
 
-  checkName =
-    context: name:
-    ensure context (
-      isString name && builtins.match namePattern name != null
-    ) "must be a lowercase kebab-case name of at most 63 characters" name;
+  isName = value: builtins.match "^[a-z0-9][a-z0-9-]{0,62}$" value != null;
+  isSemanticName = value: builtins.match "^[A-Za-z0-9_.-]+$" value != null;
+  isExecutableName = value: builtins.match "^[A-Za-z0-9._+-]+$" value != null;
+  isAbsolutePath = value: lib.hasPrefix "/" value;
+  isRelativePath =
+    value:
+    builtins.match "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$" value != null
+    && lib.all (part: part != "." && part != "..") (lib.splitString "/" value);
+  isSingleLine = value: value != "" && !(lib.hasInfix "\n" value);
+  namesValid = values: lib.all isName (builtins.attrNames values);
+  allDeclared = declared: names: lib.all (name: declared ? ${name}) names;
 
-  checkSemanticName =
-    context: name:
-    ensure context (
-      isString name && builtins.match semanticNamePattern name != null
-    ) "must contain only letters, digits, underscores, dots, and hyphens" name;
-
-  checkStringList =
-    context: values:
-    ensure context (
-      builtins.isList values && lib.all isString values
-    ) "must be a list of strings" values;
-
-  normalizeSecret =
-    name: value:
-    let
-      context = "secrets.${name}";
-      checkedName = checkSemanticName context name;
-      attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context [ "description" "required" ] attrs;
-      description = checked.description or "";
-      required = checked.required or true;
-    in
-    builtins.seq checkedName (
-      ensure context (isString description) "description must be a string" (
-        ensure context (isBool required) "required must be a boolean" {
-          inherit description required;
-        }
-      )
-    );
-
-  parameterTypes = [
-    "boolean"
-    "integer"
-    "number"
-    "string"
-  ];
-  parameterMatches =
-    type: value:
-    if type == "boolean" then
-      isBool value
-    else if type == "integer" then
-      isInt value
-    else if type == "number" then
-      isInt value || builtins.isFloat value
-    else
-      isString value;
-  normalizeParameter =
-    name: value:
-    let
-      context = "parameters.${name}";
-      checkedName = checkSemanticName context name;
-      attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context [
-        "default"
-        "description"
-        "required"
-        "type"
-      ] attrs;
-      type = checked.type or "string";
-      required = checked.required or (!(checked ? default));
-      description = checked.description or "";
-      defaultIsValid = !(checked ? default) || parameterMatches type checked.default;
-    in
-    builtins.seq checkedName (
-      ensure context (builtins.elem type parameterTypes)
-        "type must be one of ${lib.concatStringsSep ", " parameterTypes}"
-        (
-          ensure context (isBool required) "required must be a boolean" (
-            ensure context (isString description) "description must be a string" (
-              ensure context defaultIsValid "default does not match type ${type}" (
-                {
-                  inherit description required type;
-                }
-                // lib.optionalAttrs (checked ? default) { inherit (checked) default; }
-              )
-            )
-          )
-        )
-    );
-
-  normalizeHealth =
-    {
-      context,
-      defaults ? { },
-      protocol ? "http",
-      value,
-    }:
-    let
-      attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      allowedFields = [
-        "intervalSec"
-        "requestTimeoutSec"
-        "startupTimeoutSec"
-      ]
-      ++ lib.optional (protocol == "http") "paths";
-      checked = checkKeys context allowedFields attrs;
-      paths = if protocol == "http" then checked.paths or [ "/" ] else null;
-      startupTimeoutSec = checked.startupTimeoutSec or (defaults.startupTimeoutSec or 60);
-      intervalSec = checked.intervalSec or (defaults.intervalSec or 2);
-      requestTimeoutSec = checked.requestTimeoutSec or (defaults.requestTimeoutSec or 5);
-    in
-    ensure context
-      (
-        protocol != "http"
-        || (
-          builtins.isList paths
-          && paths != [ ]
-          && lib.all (path: isString path && lib.hasPrefix "/" path) paths
-        )
-      )
-      "paths must be a non-empty list of absolute HTTP paths"
-      (
-        ensure context (isInt startupTimeoutSec && startupTimeoutSec > 0)
-          "startupTimeoutSec must be a positive integer"
-          (
-            ensure context (isInt intervalSec && intervalSec > 0) "intervalSec must be a positive integer" (
-              ensure context (isInt requestTimeoutSec && requestTimeoutSec > 0)
-                "requestTimeoutSec must be a positive integer"
-                {
-                  inherit
-                    intervalSec
-                    requestTimeoutSec
-                    startupTimeoutSec
-                    ;
-                }
-              // lib.optionalAttrs (protocol == "http") { inherit paths; }
-            )
-          )
-      );
-
+  # Depth-first order of nodes with `dependsOn`; `valid` is false for a cycle.
   graphTraversal =
-    workloads:
+    nodes:
     let
       visit =
         name: visiting: visited:
@@ -184,700 +55,528 @@ let
                   valid = true;
                   inherit visited;
                 }
-                workloads.${name}.dependsOn;
+                nodes.${name}.dependsOn;
           in
           {
             inherit (result) valid;
             visited = result.visited ++ lib.optional result.valid name;
           };
-      result = lib.foldl' (state: name: if state.valid then visit name [ ] state.visited else state) {
-        valid = true;
-        visited = [ ];
-      } (builtins.attrNames workloads);
     in
-    result;
+    lib.foldl' (state: name: if state.valid then visit name [ ] state.visited else state) {
+      valid = true;
+      visited = [ ];
+    } (builtins.attrNames nodes);
 
-  graphIsAcyclic = workloads: (graphTraversal workloads).valid;
+  parameterMatches =
+    type: value:
+    {
+      boolean = builtins.isBool value;
+      integer = builtins.isInt value;
+      number = builtins.isInt value || builtins.isFloat value;
+      string = builtins.isString value;
+    }
+    .${type};
 
-  graphOrder = workloads: (graphTraversal workloads).visited;
+  normalizeParameter =
+    name: value:
+    let
+      type = value.type or "string";
+      normalized = {
+        inherit type;
+        description = value.description or "";
+        required = value.required or (!(value ? default));
+      }
+      // lib.optionalAttrs (value ? default) { inherit (value) default; };
+    in
+    checked "parameters.${name}" [
+      (check (isSemanticName name) "invalid parameter name")
+      (check (
+        !(value ? default) || parameterMatches type value.default
+      ) "default does not match type ${type}")
+    ] normalized;
 
-  normalizeCommand =
+  normalizeRequirement =
+    name: value:
+    let
+      context = "requirements.${name}";
+      common = {
+        inherit (value) kind;
+        description = value.description or "";
+        required = value.required or true;
+        realizations =
+          value.realizations or [
+            "development"
+            "release"
+          ];
+      };
+      majorVersions = value.majorVersions or [ (value.majorVersion or null) ];
+      specific =
+        {
+          postgresql = {
+            majorVersions = lib.unique majorVersions;
+            dataDirectory = value.dataDirectory or name;
+          };
+          directory = {
+            persistent = value.persistent or true;
+            path = value.path or name;
+          };
+          secret.generate =
+            if (value.generate or null) == null then null else { bytes = value.generate.bytes or 32; };
+        }
+        .${value.kind};
+    in
+    checked context (
+      [
+        (check (isSemanticName name) "invalid requirement name")
+        (check (common.realizations != [ ]) "realizations must not be empty")
+      ]
+      ++ lib.optionals (value.kind == "postgresql") [
+        (check (
+          lib.all (version: builtins.isInt version && version >= 10) majorVersions
+          && !(value ? majorVersion && value ? majorVersions && value.majorVersion != null)
+        ) "declare majorVersion or a non-empty majorVersions list of integers of at least 10")
+        (check (isRelativePath specific.dataDirectory) "dataDirectory must be a relative path")
+      ]
+      ++ lib.optional (value.kind == "directory") (
+        check (isRelativePath specific.path) "path must be a relative path"
+      )
+    ) (common // specific);
+
+  forRealization =
+    realization: requirements:
+    lib.filterAttrs (_: requirement: builtins.elem realization requirement.realizations) requirements;
+
+  normalizeHealth =
     {
       context,
-      name,
-      secrets,
+      protocol ? "http",
+      defaults ? { },
       value,
-      withDependencies ? false,
     }:
     let
-      checkedName = checkName context name;
-      attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context (
-        [
-          "action"
-          "secrets"
-        ]
-        ++ lib.optional withDependencies "dependsOn"
-      ) attrs;
-      action = checked.action or name;
-      secretNames = checkStringList "${context}.secrets" (checked.secrets or [ ]);
-      dependsOn =
-        if withDependencies then checkStringList "${context}.dependsOn" (checked.dependsOn or [ ]) else [ ];
+      paths = value.paths or [ "/" ];
     in
-    builtins.seq checkedName (
-      ensure context (isString action && action != "") "action must be a non-empty string" (
-        ensure context (lib.all (secret: builtins.hasAttr secret secrets) secretNames)
-          "Secrets must reference declared names"
-          (
-            {
-              inherit action;
-              secrets = secretNames;
-            }
-            // lib.optionalAttrs withDependencies { inherit dependsOn; }
-          )
-      )
-    );
+    checked context
+      [
+        (check (
+          protocol != "http" || (paths != [ ] && lib.all isAbsolutePath paths)
+        ) "paths must be a non-empty list of absolute HTTP paths")
+      ]
+      (
+        {
+          startupTimeoutSec = value.startupTimeoutSec or 60;
+          intervalSec = value.intervalSec or (defaults.intervalSec or 2);
+          requestTimeoutSec = value.requestTimeoutSec or (defaults.requestTimeoutSec or 5);
+        }
+        // lib.optionalAttrs (protocol == "http") { inherit paths; }
+      );
+
+  normalizeProvider =
+    requirements: workloads: name: value:
+    let
+      requirement = requirements.${name} or { };
+      normalized = {
+        workload = value.workload or name;
+        port = value.port or 5432;
+        database = value.database or "postgres";
+        user = value.user or "postgres";
+        majorVersion = value.majorVersion or (builtins.head requirement.majorVersions);
+      };
+    in
+    checked "development.providers.${name}" [
+      (check (
+        (requirement.kind or null) == "postgresql"
+      ) "must implement a declared PostgreSQL requirement")
+      (check (builtins.elem normalized.majorVersion (
+        requirement.majorVersions or [ ]
+      )) "provider majorVersion must satisfy the PostgreSQL requirement")
+      (check (
+        (workloads.${normalized.workload}.kind or null) == "service"
+      ) "workload must name a native service")
+    ] normalized;
 
   normalizeDevelopment =
-    schemaVersion: secrets: value:
+    {
+      secrets,
+      requirements,
+      value,
+    }:
     let
-      context = "development";
-      attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context (
-        [
-          "commands"
-          "endpoints"
-          "preparation"
-          "workloads"
-        ]
-        ++ lib.optional (schemaVersion >= 4) "providers"
-      ) attrs;
-      endpointInput = checked.endpoints or { };
-      workloadInput = checked.workloads or { };
-      impliedWorkloads =
-        if schemaVersion >= 4 then
-          { }
-        else
-          lib.mapAttrs (_: endpoint: {
-            action = endpoint.workload or null;
-          }) endpointInput;
-      mergedWorkloads = lib.recursiveUpdate impliedWorkloads workloadInput;
-      workloads = lib.mapAttrs (
-        name: workload:
-        let
-          itemContext = "development.workloads.${name}";
-          checkedName = checkName itemContext name;
-          item = checkKeys itemContext (
-            [
-              "action"
-              "dependsOn"
-              "kind"
-              "secrets"
-            ]
-            ++ lib.optional (schemaVersion >= 3) "lifecycle"
-          ) (ensure itemContext (isAttrs workload) "must be an attribute set" workload);
-          action = if (item.action or null) == null then name else item.action;
-          dependsOn = item.dependsOn or [ ];
-          kind = item.kind or "service";
-          lifecycle = item.lifecycle or "on-demand";
-          secretNames = item.secrets or [ ];
-          checkedDependsOn = checkStringList "${itemContext}.dependsOn" dependsOn;
-          checkedSecrets = checkStringList "${itemContext}.secrets" secretNames;
-        in
-        builtins.seq checkedName (
-          ensure itemContext (isString action && action != "") "action must be a non-empty string" (
-            ensure itemContext
-              (builtins.elem kind [
-                "service"
-                "task"
-              ])
-              "kind must be service or task"
-              (
-                ensure itemContext
-                  (
-                    schemaVersion < 3
-                    || builtins.elem lifecycle [
-                      "background"
-                      "on-demand"
-                    ]
-                  )
-                  "lifecycle must be background or on-demand"
-                  (
-                    ensure itemContext (schemaVersion < 3 || lifecycle != "background" || kind == "service")
-                      "background lifecycle requires kind service"
-                      (
-                        {
-                          inherit action kind;
-                          dependsOn = checkedDependsOn;
-                          secrets = checkedSecrets;
-                        }
-                        // lib.optionalAttrs (schemaVersion >= 3) { inherit lifecycle; }
-                      )
-                  )
-              )
-          )
-        )
-      ) mergedWorkloads;
-      commands = lib.mapAttrs (
-        name: value:
-        normalizeCommand {
-          context = "development.commands.${name}";
-          inherit name secrets value;
-          withDependencies = true;
-        }
-      ) (checked.commands or { });
+      workloads = lib.mapAttrs (name: workload: {
+        action = workload.action or name;
+        kind = workload.kind or "service";
+        dependsOn = workload.dependsOn or [ ];
+        secrets = workload.secrets or [ ];
+        lifecycle = workload.lifecycle or "on-demand";
+      }) (value.workloads or { });
+      commands = lib.mapAttrs (name: command: {
+        action = command.action or name;
+        dependsOn = command.dependsOn or [ ];
+        secrets = command.secrets or [ ];
+      }) (value.commands or { });
       endpoints = lib.mapAttrs (
         name: endpoint:
         let
-          itemContext = "development.endpoints.${name}";
-          checkedName = checkName itemContext name;
-          item = checkKeys itemContext (
-            [
-              "health"
-              "protocol"
-              "workload"
-            ]
-            ++ lib.optionals (schemaVersion >= 4) [
-              "port"
-              "publication"
-            ]
-          ) (ensure itemContext (isAttrs endpoint) "must be an attribute set" endpoint);
-          workload = item.workload or name;
-          protocol = item.protocol or "http";
-          port = item.port or null;
-          publication = item.publication or "preview";
+          protocol = endpoint.protocol or "http";
         in
-        builtins.seq checkedName (
-          ensure itemContext (isString workload && builtins.hasAttr workload workloads)
-            "references unknown workload ${toString workload}"
-            (
-              ensure itemContext
-                (
-                  if schemaVersion == 1 then
-                    protocol == "http"
-                  else
-                    builtins.elem protocol [
-                      "http"
-                      "tcp"
-                    ]
-                )
-                (
-                  if schemaVersion == 1 then
-                    "protocol must be http in schemaVersion 1"
-                  else
-                    "protocol must be http or tcp"
-                )
-                (
-                  ensure itemContext (port == null || (isInt port && port >= 1 && port <= 65535))
-                    "port must be null or between 1 and 65535"
-                    (
-                      ensure itemContext
-                        (builtins.elem publication [
-                          "private"
-                          "preview"
-                        ])
-                        "publication must be private or preview"
-                        (
-                          {
-                            inherit protocol workload;
-                            health = normalizeHealth {
-                              context = "${itemContext}.health";
-                              defaults = {
-                                intervalSec = 1;
-                                requestTimeoutSec = 15;
-                              };
-                              inherit protocol;
-                              value = item.health or { };
-                            };
-                          }
-                          // lib.optionalAttrs (schemaVersion >= 4) { inherit port publication; }
-                        )
-                    )
-                )
-            )
-        )
-      ) endpointInput;
-      preparationInput = checked.preparation or { };
-      preparationChecked =
-        checkKeys "development.preparation"
-          [
-            "action"
-            "secrets"
-            "timeoutSec"
-          ]
-          (
-            ensure "development.preparation" (isAttrs preparationInput) "must be an attribute set"
-              preparationInput
-          );
+        {
+          inherit protocol;
+          workload = endpoint.workload or name;
+          port = endpoint.port or null;
+          publication = endpoint.publication or "preview";
+          health = normalizeHealth {
+            context = "development.endpoints.${name}.health";
+            inherit protocol;
+            defaults = {
+              intervalSec = 1;
+              requestTimeoutSec = 15;
+            };
+            value = endpoint.health or { };
+          };
+        }
+      ) (value.endpoints or { });
       preparation = {
-        action = preparationChecked.action or "prepare";
-        secrets = checkStringList "development.preparation.secrets" (preparationChecked.secrets or [ ]);
-        timeoutSec = preparationChecked.timeoutSec or 900;
+        action = value.preparation.action or "prepare";
+        secrets = value.preparation.secrets or [ ];
+        timeoutSec = value.preparation.timeoutSec or 900;
       };
-      workloadReferencesValid = lib.all (
-        workload:
-        lib.all (dependency: builtins.hasAttr dependency workloads) workload.dependsOn
-        && lib.all (secret: builtins.hasAttr secret secrets) workload.secrets
-      ) (builtins.attrValues workloads);
-      commandReferencesValid = lib.all (
-        command: lib.all (dependency: builtins.hasAttr dependency workloads) command.dependsOn
-      ) (builtins.attrValues commands);
-      endpointTargetsServices = lib.all (endpoint: workloads.${endpoint.workload}.kind == "service") (
-        builtins.attrValues endpoints
+      providers = lib.mapAttrs (normalizeProvider (forRealization "development" requirements) workloads) (
+        value.providers or { }
+      );
+      secretLists = map (item: item.secrets) (
+        builtins.attrValues workloads ++ builtins.attrValues commands ++ [ preparation ]
       );
     in
-    ensure context (schemaVersion >= 3 || commands == { }) "commands require schemaVersion 3" (
-      ensure "development.preparation" (isString preparation.action && preparation.action != "")
-        "action must be a non-empty string"
-        (
-          ensure "development.preparation" (isInt preparation.timeoutSec && preparation.timeoutSec > 0)
-            "timeoutSec must be a positive integer"
-            (
-              ensure context (workloadReferencesValid && commandReferencesValid)
-                "Workload and command dependencies and Secrets must reference declared names"
-                (
-                  ensure context (schemaVersion == 1 || graphIsAcyclic workloads)
-                    "Workload dependency graph must be acyclic"
-                    (
-                      ensure context endpointTargetsServices "Endpoints must target service Workloads" (
-                        ensure context (lib.all (secret: builtins.hasAttr secret secrets) preparation.secrets)
-                          "Preparation Secrets must reference declared names"
-                          {
-                            inherit
-                              commands
-                              endpoints
-                              preparation
-                              workloads
-                              ;
-                          }
-                      )
-                    )
-                )
-            )
-        )
-    );
+    checked "development"
+      [
+        (check (
+          namesValid workloads && namesValid commands && namesValid endpoints
+        ) "workload, command and endpoint names must be lowercase kebab-case")
+        (check (lib.all (workload: workload.kind == "service" || workload.lifecycle == "on-demand") (
+          builtins.attrValues workloads
+        )) "background lifecycle requires kind service")
+        (check (lib.all (item: allDeclared workloads item.dependsOn) (
+          builtins.attrValues workloads ++ builtins.attrValues commands
+        )) "dependencies must reference declared workloads")
+        (check (lib.all (allDeclared secrets) secretLists) "Secrets must reference declared names")
+        (check (graphTraversal workloads).valid "workload dependency graph must be acyclic")
+        (check (lib.all (endpoint: (workloads.${endpoint.workload}.kind or null) == "service") (
+          builtins.attrValues endpoints
+        )) "endpoints must target declared service workloads")
+      ]
+      {
+        inherit
+          commands
+          endpoints
+          preparation
+          providers
+          workloads
+          ;
+      };
 
   normalizeIngress =
     value:
     let
-      context = "release.ingress";
-      attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context [
-        "cacheRules"
-        "compression"
-        "redirects"
-        "requestBodyMaxBytes"
-        "responseHeaders"
-        "streamCloseDelaySec"
-      ] attrs;
-      compression = checked.compression or false;
-      requestBodyMaxBytes = checked.requestBodyMaxBytes or null;
-      responseHeaders = checked.responseHeaders or { };
-      streamCloseDelaySec = checked.streamCloseDelaySec or null;
-      redirects = lib.imap0 (
-        index: redirect:
-        let
-          itemContext = "${context}.redirects[${toString index}]";
-          item = checkKeys itemContext [
-            "from"
-            "permanent"
-            "status"
-            "to"
-          ] (ensure itemContext (isAttrs redirect) "must be an attribute set" redirect);
-          from = item.from or null;
-          to = item.to or null;
-          permanent = item.permanent or null;
-          status =
-            if item ? status then
-              item.status
-            else if permanent == false then
-              307
-            else
-              308;
-        in
-        ensure itemContext (isString from && lib.hasPrefix "/" from) "from must be an absolute path" (
-          ensure itemContext (isString to && lib.hasPrefix "/" to) "to must be an absolute path" (
-            ensure itemContext (!(item ? status && item ? permanent)) "set either status or permanent, not both"
-              (
-                ensure itemContext (permanent == null || isBool permanent) "permanent must be a boolean" (
-                  ensure itemContext
-                    (builtins.elem status [
-                      301
-                      302
-                      307
-                      308
-                    ])
-                    "status must be 301, 302, 307, or 308"
-                    {
-                      inherit from status to;
-                    }
-                )
-              )
-          )
-        )
-      ) (checked.redirects or [ ]);
-      cacheRules = lib.imap0 (
-        index: rule:
-        let
-          itemContext = "${context}.cacheRules[${toString index}]";
-          item = checkKeys itemContext [
-            "paths"
-            "value"
-          ] (ensure itemContext (isAttrs rule) "must be an attribute set" rule);
-          paths = item.paths or [ ];
-          cacheValue = item.value or null;
-        in
-        ensure itemContext
-          (
-            builtins.isList paths
-            && paths != [ ]
-            && lib.all (path: isString path && lib.hasPrefix "/" path) paths
-          )
-          "paths must be a non-empty list of absolute path matchers"
-          (
-            ensure itemContext (isString cacheValue && cacheValue != "" && !(lib.hasInfix "\n" cacheValue))
-              "value must be a non-empty single-line Cache-Control value"
-              {
-                inherit paths;
-                value = cacheValue;
-              }
-          )
-      ) (checked.cacheRules or [ ]);
+      redirects = map (redirect: {
+        inherit (redirect) from to;
+        status =
+          if (redirect.status or null) != null then
+            redirect.status
+          else if (redirect.permanent or null) == false then
+            307
+          else
+            308;
+      }) (value.redirects or [ ]);
+      cacheRules = map (rule: { inherit (rule) paths value; }) (value.cacheRules or [ ]);
+      responseHeaders = value.responseHeaders or { };
     in
-    ensure context (isBool compression) "compression must be a boolean" (
-      ensure context
-        (requestBodyMaxBytes == null || (isInt requestBodyMaxBytes && requestBodyMaxBytes > 0))
-        "requestBodyMaxBytes must be null or a positive integer"
-        (
-          ensure context
-            (
-              isAttrs responseHeaders
-              && lib.all (header: builtins.match headerNamePattern header != null) (
-                builtins.attrNames responseHeaders
-              )
-              && lib.all (value: isString value && !(lib.hasInfix "\n" value)) (
-                builtins.attrValues responseHeaders
-              )
-            )
-            "responseHeaders must map header names to strings"
-            (
-              ensure context
-                (streamCloseDelaySec == null || (isInt streamCloseDelaySec && streamCloseDelaySec > 0))
-                "streamCloseDelaySec must be null or a positive integer"
-                {
-                  inherit
-                    cacheRules
-                    compression
-                    redirects
-                    requestBodyMaxBytes
-                    responseHeaders
-                    streamCloseDelaySec
-                    ;
-                }
-            )
-        )
-    );
+    checked "release.ingress"
+      [
+        (check (lib.all (
+          redirect: isAbsolutePath redirect.from && isAbsolutePath redirect.to
+        ) redirects) "redirects must use absolute paths")
+        (check (lib.all (
+          redirect: (redirect.status or null) == null || (redirect.permanent or null) == null
+        ) (value.redirects or [ ])) "set either status or permanent on a redirect, not both")
+        (check (lib.all (
+          rule: rule.paths != [ ] && lib.all isAbsolutePath rule.paths && isSingleLine rule.value
+        ) cacheRules) "cache rules need absolute paths and a single-line value")
+        (check (
+          lib.all (header: builtins.match "^[A-Za-z0-9-]+$" header != null) (
+            builtins.attrNames responseHeaders
+          )
+          && lib.all isSingleLine (builtins.attrValues responseHeaders)
+        ) "responseHeaders must map header names to single-line values")
+      ]
+      {
+        inherit cacheRules redirects responseHeaders;
+        compression = value.compression or false;
+        requestBodyMaxBytes = value.requestBodyMaxBytes or null;
+        streamCloseDelaySec = value.streamCloseDelaySec or null;
+      };
 
-  normalizeJobSchedule =
+  normalizeSchedule =
     context: value:
     let
-      attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context [
-        "cadence"
-        "calendar"
-        "interval"
-      ] attrs;
-      calendar = checked.calendar or null;
-      interval = checked.interval or null;
-      requestedCadence = checked.cadence or null;
-      cadence =
-        if interval == null then
-          null
-        else if requestedCadence == null then
-          "spaced"
-        else
-          requestedCadence;
+      calendar = value.calendar or null;
+      interval = value.interval or null;
+      cadence = value.cadence or null;
     in
-    ensure context ((calendar == null) != (interval == null))
-      "must set exactly one of calendar or interval"
-      (
-        ensure context (calendar == null || (isString calendar && calendar != ""))
-          "calendar must be a non-empty string"
-          (
-            ensure context (interval == null || (isString interval && interval != ""))
-              "interval must be a non-empty string"
-              (
-                ensure context
-                  (
-                    cadence == null
-                    || builtins.elem cadence [
-                      "fixed"
-                      "spaced"
-                    ]
-                  )
-                  "cadence must be fixed or spaced for interval schedules"
-                  (
-                    ensure context (interval != null || requestedCadence == null)
-                      "cadence only applies to interval schedules"
-                      {
-                        inherit calendar interval;
-                        cadence = if interval == null then null else cadence;
-                      }
-                  )
-              )
-          )
-      );
-
-  normalizeJob =
-    secrets: name: value:
-    let
-      context = "release.maintenanceJobs.${name}";
-      checkedName = checkName context name;
-      attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context [
-        "action"
-        "schedule"
-        "secrets"
-      ] attrs;
-      action = checked.action or name;
-      schedule =
-        if checked ? schedule then normalizeJobSchedule "${context}.schedule" checked.schedule else null;
-      secretNames = checked.secrets or [ ];
-      checkedSecrets = checkStringList "${context}.secrets" secretNames;
-    in
-    builtins.seq checkedName (
-      ensure context (isString action && action != "") "action must be a non-empty string" (
-        ensure context (lib.all (secret: builtins.hasAttr secret secrets) checkedSecrets)
-          "Secrets must reference declared names"
-          {
-            inherit action;
-            secrets = checkedSecrets;
-          }
-        // lib.optionalAttrs (schedule != null) { inherit schedule; }
-      )
-    );
-
-  normalizePreDeployTask =
-    secrets: name: value:
-    let
-      context = "release.preDeployTasks.${name}";
-      checkedName = checkName context name;
-      attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context [
-        "action"
-        "dependsOn"
-        "failureMode"
-        "secrets"
-        "timeoutSec"
-      ] attrs;
-      action = checked.action or name;
-      dependsOn = checkStringList "${context}.dependsOn" (checked.dependsOn or [ ]);
-      secretNames = checkStringList "${context}.secrets" (checked.secrets or [ ]);
-      failureMode = checked.failureMode or "fail";
-      timeoutSec = checked.timeoutSec or 900;
-    in
-    builtins.seq checkedName (
-      ensure context (isString action && action != "") "action must be a non-empty string" (
-        ensure context
-          (builtins.elem failureMode [
-            "fail"
-            "defer"
-          ])
-          "failureMode must be fail or defer"
-          (
-            ensure context (isInt timeoutSec && timeoutSec > 0) "timeoutSec must be a positive integer" (
-              ensure context (lib.all (secret: builtins.hasAttr secret secrets) secretNames)
-                "Secrets must reference declared names"
-                {
-                  inherit
-                    action
-                    dependsOn
-                    failureMode
-                    timeoutSec
-                    ;
-                  secrets = secretNames;
-                }
-            )
-          )
-      )
-    );
-
-  normalizeOci =
-    name: value:
-    let
-      context = "release.ociAuxiliaries.${name}";
-      checkedName = checkName context name;
-      attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context [
-        "command"
-        "image"
-        "ports"
-      ] attrs;
-      image = checked.image or "";
-      command = checked.command or [ ];
-      checkedCommand = checkStringList "${context}.command" command;
-      ports = lib.mapAttrs (
-        portName: port:
-        let
-          portContext = "${context}.ports.${portName}";
-          checkedPortName = checkName portContext portName;
-          portAttrs = checkKeys portContext [
-            "containerPort"
-            "protocol"
-          ] (ensure portContext (isAttrs port) "must be an attribute set" port);
-          containerPort = portAttrs.containerPort or null;
-          protocol = portAttrs.protocol or "tcp";
-        in
-        builtins.seq checkedPortName (
-          ensure portContext (isInt containerPort && containerPort >= 1 && containerPort <= 65535)
-            "containerPort must be a valid TCP or UDP port"
-            (
-              ensure portContext
-                (builtins.elem protocol [
-                  "tcp"
-                  "udp"
-                ])
-                "protocol must be tcp or udp"
-                {
-                  inherit containerPort protocol;
-                }
-            )
-        )
-      ) (checked.ports or { });
-    in
-    builtins.seq checkedName (
-      ensure context (isString image && builtins.match "^.+@sha256:[0-9a-fA-F]{64}$" image != null)
-        "image must be pinned by sha256 digest"
-        {
-          command = checkedCommand;
-          inherit image ports;
-        }
-    );
+    checked context
+      [
+        (check ((calendar == null) != (interval == null)) "must set exactly one of calendar or interval")
+        (check (interval != null || cadence == null) "cadence only applies to interval schedules")
+      ]
+      {
+        inherit calendar interval;
+        cadence =
+          if interval == null then
+            null
+          else if cadence == null then
+            "spaced"
+          else
+            cadence;
+      };
 
   normalizeRelease =
-    schemaVersion: secrets: value:
+    secrets: value:
     let
-      context = "release";
-      attrs = ensure context (isAttrs value) "must be an attribute set" value;
-      checked = checkKeys context ([
-        "action"
-        "activationExecutable"
-        "backend"
-        "commands"
-        "executable"
-        "health"
-        "ingress"
-        "maintenanceJobs"
-        "ociAuxiliaries"
-        "package"
-        "preDeployTasks"
-        "stateDirectories"
-      ]) attrs;
-      backend = checked.backend or "service";
-      action = checked.action or (if backend == "service" then "web" else null);
-      package = checked.package or "projectRelease";
-      executable =
-        checked.executable or (if backend == "service" then "project-release-runtime" else null);
-      activationExecutable = checked.activationExecutable or null;
-      stateDirectories = checked.stateDirectories or [ ];
-      maintenanceJobs = lib.mapAttrs (normalizeJob secrets) (checked.maintenanceJobs or { });
-      commands = lib.mapAttrs (
-        name: command:
-        normalizeCommand {
-          context = "release.commands.${name}";
-          inherit name secrets;
-          value = command;
+      backend = value.backend or "service";
+      isService = backend == "service";
+      entryPoint = name: entry: {
+        action = entry.action or name;
+        secrets = entry.secrets or [ ];
+      };
+      commands = lib.mapAttrs entryPoint (value.commands or { });
+      maintenanceJobs = lib.mapAttrs (
+        name: job:
+        entryPoint name job
+        // lib.optionalAttrs ((job.schedule or null) != null) {
+          schedule = normalizeSchedule "release.maintenanceJobs.${name}.schedule" job.schedule;
         }
-      ) (checked.commands or { });
-      preDeployTasks = lib.mapAttrs (normalizePreDeployTask secrets) (checked.preDeployTasks or { });
-      preDeployReferencesValid = lib.all (
-        task: lib.all (dependency: builtins.hasAttr dependency preDeployTasks) task.dependsOn
-      ) (builtins.attrValues preDeployTasks);
-      validRelative =
-        path:
-        isString path
-        && builtins.match "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$" path != null
-        && lib.all (segment: segment != "." && segment != "..") (lib.splitString "/" path);
+      ) (value.maintenanceJobs or { });
+      preDeployTasks = lib.mapAttrs (
+        name: task:
+        entryPoint name task
+        // {
+          dependsOn = task.dependsOn or [ ];
+          failureMode = task.failureMode or "fail";
+          timeoutSec = task.timeoutSec or 900;
+        }
+      ) (value.preDeployTasks or { });
+      ociAuxiliaries = lib.mapAttrs (_: auxiliary: {
+        inherit (auxiliary) image;
+        command = auxiliary.command or [ ];
+        ports = lib.mapAttrs (_: port: {
+          inherit (port) containerPort;
+          protocol = port.protocol or "tcp";
+        }) (auxiliary.ports or { });
+      }) (value.ociAuxiliaries or { });
+      normalized = {
+        inherit
+          backend
+          commands
+          maintenanceJobs
+          ociAuxiliaries
+          preDeployTasks
+          ;
+        action = value.action or (if isService then "web" else null);
+        package = value.package or "projectRelease";
+        executable = value.executable or (if isService then "project-release-runtime" else null);
+        activationExecutable = value.activationExecutable or null;
+        stateDirectories = value.stateDirectories or [ ];
+        health = normalizeHealth {
+          context = "release.health";
+          value = value.health or { };
+        };
+        ingress = normalizeIngress (value.ingress or { });
+      };
+      entryPoints =
+        builtins.attrValues commands
+        ++ builtins.attrValues maintenanceJobs
+        ++ builtins.attrValues preDeployTasks;
     in
-    ensure context (schemaVersion >= 3 || commands == { }) "commands require schemaVersion 3" (
-      ensure context
-        (builtins.elem backend [
-          "service"
-          "static"
-        ])
-        "backend must be service or static"
+    checked "release" [
+      (check (isSemanticName normalized.package) "package must be a simple flake package attribute name")
+      (check
         (
-          ensure context (isString package && builtins.match semanticNamePattern package != null)
-            "package must be a simple flake package attribute name"
-            (
-              ensure context
-                (
-                  (
-                    backend == "service"
-                    && isString executable
-                    && builtins.match executableNamePattern executable != null
-                  )
-                  || (backend == "static" && executable == null)
-                )
-                "service releases require an executable and static releases must not define one"
-                (
-                  ensure context (backend == "static" || (isString action && action != ""))
-                    "service releases require a non-empty action"
-                    (
-                      ensure context
-                        (
-                          activationExecutable == null
-                          || (
-                            isString activationExecutable && builtins.match executableNamePattern activationExecutable != null
-                          )
-                        )
-                        "activationExecutable must be null or a simple executable name"
-                        (
-                          ensure context (builtins.isList stateDirectories && lib.all validRelative stateDirectories)
-                            "stateDirectories must contain safe relative paths"
-                            (
-                              ensure context (backend == "service" || maintenanceJobs == { })
-                                "maintenanceJobs require the service backend"
-                                (
-                                  ensure context (backend == "service" || commands == { }) "commands require the service backend" (
-                                    ensure context (backend == "service" || preDeployTasks == { })
-                                      "preDeployTasks require the service backend"
-                                      (
-                                        ensure context (schemaVersion >= 2 || preDeployTasks == { })
-                                          "preDeployTasks require schemaVersion 2 or newer"
-                                          (
-                                            ensure context preDeployReferencesValid "preDeployTask dependencies must reference declared tasks" (
-                                              ensure context (graphIsAcyclic preDeployTasks) "preDeployTask dependency graph must be acyclic" {
-                                                inherit action;
-                                                inherit
-                                                  activationExecutable
-                                                  backend
-                                                  commands
-                                                  executable
-                                                  maintenanceJobs
-                                                  package
-                                                  preDeployTasks
-                                                  stateDirectories
-                                                  ;
-                                                health = normalizeHealth {
-                                                  context = "release.health";
-                                                  value = checked.health or { };
-                                                };
-                                                ingress = normalizeIngress (checked.ingress or { });
-                                                ociAuxiliaries = lib.mapAttrs normalizeOci (checked.ociAuxiliaries or { });
-                                              }
-                                            )
-                                          )
-                                      )
-                                  )
-                                )
-                            )
-                        )
-                    )
-                )
-            )
+          if isService then
+            normalized.executable != null && isExecutableName normalized.executable && normalized.action != ""
+          else
+            (value.executable or null) == null
+            && commands == { }
+            && maintenanceJobs == { }
+            && preDeployTasks == { }
         )
-    );
+        "service releases need an action and executable; static releases declare neither nor entry points"
+      )
+      (check (
+        normalized.activationExecutable == null || isExecutableName normalized.activationExecutable
+      ) "activationExecutable must be a simple executable name")
+      (check (lib.all isRelativePath normalized.stateDirectories) "stateDirectories must contain safe relative paths")
+      (check (
+        namesValid commands
+        && namesValid maintenanceJobs
+        && namesValid preDeployTasks
+        && namesValid ociAuxiliaries
+        && lib.all (auxiliary: namesValid auxiliary.ports) (builtins.attrValues ociAuxiliaries)
+      ) "command, job, task and auxiliary names must be lowercase kebab-case")
+      (check (lib.all (
+        entry: allDeclared secrets entry.secrets
+      ) entryPoints) "Secrets must reference declared names")
+      (check (lib.all (task: allDeclared preDeployTasks task.dependsOn) (
+        builtins.attrValues preDeployTasks
+      )) "preDeployTask dependencies must reference declared tasks")
+      (check (graphTraversal preDeployTasks).valid "preDeployTask dependency graph must be acyclic")
+    ] normalized;
+
+  bindingFields = {
+    postgresql = [
+      "kind"
+      "majorVersion"
+      "host"
+      "port"
+      "database"
+      "user"
+      "url"
+      "dataDirectory"
+    ];
+    directory = [
+      "kind"
+      "path"
+      "persistent"
+    ];
+    secret = [
+      "kind"
+      "file"
+      "value"
+      "credential"
+    ];
+  };
+  endpointFields = [
+    "url"
+    "protocol"
+    "listen.host"
+    "listen.port"
+    "hostNames"
+  ];
+
+  # Endpoints and actions a realization's environment may refer to.
+  realizationTargets =
+    realization: definition:
+    if realization == "development" then
+      {
+        endpoints = builtins.attrNames definition.endpoints;
+        actions = null;
+      }
+    else
+      {
+        endpoints =
+          lib.optional (definition.action != null) definition.action
+          ++ lib.concatLists (
+            lib.mapAttrsToList (
+              auxiliary: value: map (port: "${auxiliary}-${port}") (builtins.attrNames value.ports)
+            ) definition.ociAuxiliaries
+          );
+        actions =
+          lib.optional (definition.action != null) definition.action
+          ++ map (entry: entry.action) (
+            builtins.attrValues definition.preDeployTasks
+            ++ builtins.attrValues definition.maintenanceJobs
+            ++ builtins.attrValues definition.commands
+          );
+      };
+
+  normalizeEnvironmentValue =
+    {
+      context,
+      requirements,
+      parameters,
+      endpoints,
+    }:
+    value:
+    let
+      selectors = lib.intersectLists [ "binding" "endpoint" "parameter" "path" "instance" ] (
+        builtins.attrNames value
+      );
+      selector = builtins.head selectors;
+      field = value.field or null;
+      needsField = builtins.elem selector [
+        "binding"
+        "endpoint"
+      ];
+    in
+    if builtins.isString value then
+      value
+    else
+      checked context [
+        (check (
+          builtins.length selectors == 1
+          &&
+            builtins.length (builtins.attrNames value)
+            == 1 + (if needsField then 1 else 0) + (if value ? append then 1 else 0)
+        ) "must select exactly one binding, endpoint, parameter, path or instance field")
+        (check (needsField == (field != null)) "binding and endpoint references need a field")
+        (check (
+          !(value ? append) || (selector == "path" && isRelativePath value.append)
+        ) "append must be a relative path on a path reference")
+        (check (
+          selector != "binding"
+          || (
+            requirements ? ${value.binding}
+            && builtins.elem field bindingFields.${requirements.${value.binding}.kind}
+          )
+        ) "references an undeclared requirement or unknown binding field")
+        (check (
+          selector != "parameter" || parameters ? ${value.parameter}
+        ) "references an undeclared parameter")
+        (check (
+          selector != "endpoint"
+          || (builtins.elem value.endpoint endpoints && builtins.elem field endpointFields)
+        ) "references an unknown endpoint or field")
+      ] value;
+
+  normalizeEnvironment =
+    descriptor: environment:
+    lib.mapAttrs (
+      realization: value:
+      let
+        context = "environment.${realization}";
+        definition = descriptor.${realization} or null;
+        targets = realizationTargets realization definition;
+        normalizeMap =
+          mapContext: values:
+          lib.mapAttrs (
+            variable:
+            normalizeEnvironmentValue {
+              context = "${mapContext}.${variable}";
+              requirements = forRealization realization descriptor.requirements;
+              inherit (descriptor) parameters;
+              inherit (targets) endpoints;
+            }
+          ) values;
+        actions = value.actions or { };
+        variables =
+          builtins.attrNames (value.common or { })
+          ++ lib.concatMap builtins.attrNames (builtins.attrValues actions);
+      in
+      checked context
+        [
+          (check (definition != null) "requires the corresponding realization")
+          (check (lib.all (
+            name: builtins.match "^[A-Za-z_][A-Za-z0-9_]*$" name != null
+          ) variables) "invalid environment variable name")
+          # The devenv adapter checks development actions against its native task graph.
+          (check (
+            targets.actions == null
+            || lib.all (action: builtins.elem action targets.actions) (builtins.attrNames actions)
+          ) "references an undeclared action")
+        ]
+        {
+          common = normalizeMap "${context}.common" (value.common or { });
+          actions = lib.mapAttrs (action: normalizeMap "${context}.actions.${action}") actions;
+        }
+    ) environment;
 
   normalize =
     {
@@ -885,102 +584,43 @@ let
       expectedProject ? null,
     }:
     let
-      context = "root";
-      attrs = ensure context (isAttrs descriptor) "must be an attribute set" descriptor;
-      checked = checkKeys context [
-        "$schema"
-        "development"
-        "environment"
-        "parameters"
-        "project"
-        "release"
-        "requirements"
-        "schemaVersion"
-        "secrets"
-      ] attrs;
-      schemaVersion = checked.schemaVersion or null;
-      project = checkName "project" (checked.project or null);
-      requirements = projectRequirements.normalize (checked.requirements or { });
-      environment = projectRequirements.normalizeEnvironment (checked.environment or { });
-      secrets =
-        lib.mapAttrs normalizeSecret (checked.secrets or { })
-        // projectRequirements.secretDefinitions requirements;
-      parameters = lib.mapAttrs normalizeParameter (checked.parameters or { });
-      result = {
-        inherit
-          parameters
-          project
-          schemaVersion
-          secrets
-          ;
-        development =
-          if checked ? development && checked.development != null then
-            let
-              development = normalizeDevelopment schemaVersion secrets checked.development;
-            in
-            development
-            // lib.optionalAttrs (schemaVersion >= 4) {
-              providers = projectRequirements.normalizeProviders {
-                requirements = projectRequirements.forRealization "development" requirements;
-                inherit (development) workloads;
-                providers = checked.development.providers or { };
-              };
-            }
-          else
-            null;
-        release =
-          if checked ? release && checked.release != null then
-            normalizeRelease schemaVersion secrets checked.release
-          else
-            null;
-      }
-      // lib.optionalAttrs (schemaVersion >= 4) { inherit requirements environment; };
-    in
-    ensure "schemaVersion"
-      (builtins.elem schemaVersion [
-        1
-        2
-        3
-        4
-      ])
-      "unsupported schemaVersion ${toString schemaVersion}"
-      (
-        ensure "root" (schemaVersion >= 4 || (requirements == { } && environment == { }))
-          "requirements and runtime environment mappings require schemaVersion 4"
-          (
-            ensure "root"
-              (
-                schemaVersion == 1
-                || (schemaVersion >= 4 && (result.development != null || result.release != null))
-                || (
-                  checked ? development && checked.development != null && checked ? release && checked.release != null
-                )
-              )
-              "schemaVersion 2/3 requires both realizations; schemaVersion 4 requires at least one"
-              (
-                ensure "project" (expectedProject == null || expectedProject == project)
-                  "expected ${toString expectedProject}, got ${project}"
-                  (
-                    builtins.deepSeq (projectRequirements.validateEnvironment {
-                      descriptor = result;
-                      inherit environment;
-                    }) (builtins.deepSeq result result)
-                  )
-              )
-          )
+      requirements = lib.mapAttrs normalizeRequirement (descriptor.requirements or { });
+      secrets = lib.mapAttrs (_: requirement: { inherit (requirement) description required; }) (
+        lib.filterAttrs (_: requirement: requirement.kind == "secret") requirements
       );
-
-  requireRealizations =
-    {
-      descriptor,
-      expectedProject ? null,
-    }:
-    let
-      normalized = normalize { inherit descriptor expectedProject; };
+      realizations = {
+        inherit (descriptor) project schemaVersion;
+        inherit requirements secrets;
+        parameters = lib.mapAttrs normalizeParameter (descriptor.parameters or { });
+        development =
+          if (descriptor.development or null) == null then
+            null
+          else
+            normalizeDevelopment {
+              inherit secrets requirements;
+              value = descriptor.development;
+            };
+        release =
+          if (descriptor.release or null) == null then null else normalizeRelease secrets descriptor.release;
+      };
+      result = realizations // {
+        environment = normalizeEnvironment realizations (descriptor.environment or { });
+      };
     in
-    ensure "root" (
-      normalized.development != null && normalized.release != null
-    ) "Project must define both Development and Release realizations" normalized;
+    checked "root" [
+      (check (
+        descriptor.schemaVersion or null == 4
+      ) "unsupported schemaVersion; regenerate with the current SDK")
+      (check (
+        builtins.isString descriptor.project && isName descriptor.project
+      ) "project must be a lowercase kebab-case name")
+      (check (
+        expectedProject == null || expectedProject == descriptor.project
+      ) "expected project ${toString expectedProject}, got ${toString descriptor.project}")
+      (check (
+        result.development != null || result.release != null
+      ) "declare development, release, or both")
+    ] (builtins.deepSeq result result);
 
   resolveParameters =
     {
@@ -989,246 +629,152 @@ let
       values ? { },
     }:
     let
-      normalized = normalize { inherit descriptor; };
-      unknown = lib.subtractLists (builtins.attrNames normalized.parameters) (builtins.attrNames values);
+      unknown = lib.subtractLists (builtins.attrNames descriptor.parameters) (builtins.attrNames values);
       resolved = lib.mapAttrs (
         name: definition:
-        if builtins.hasAttr name values then
-          ensure "parameters.${name}" (parameterMatches definition.type
-            values.${name}
-          ) "value does not match type ${definition.type}" values.${name}
+        if values ? ${name} then
+          checked "parameters.${name}" [
+            (check (parameterMatches definition.type
+              values.${name}
+            ) "value does not match type ${definition.type}")
+          ] values.${name}
         else if definition ? default then
           definition.default
         else if definition.required then
           fail "parameters.${name}" "a value is required"
         else
           null
-      ) normalized.parameters;
+      ) descriptor.parameters;
     in
-    ensure "parameters" (
-      allowUnknown || unknown == [ ]
-    ) "unknown values: ${lib.concatStringsSep ", " unknown}" resolved;
+    checked "parameters" [
+      (check (allowUnknown || unknown == [ ]) "unknown values: ${lib.concatStringsSep ", " unknown}")
+    ] resolved;
 
-  load =
-    {
-      path,
-      expectedProject ? null,
-    }:
-    normalize {
-      descriptor = builtins.fromJSON (builtins.readFile path);
-      inherit expectedProject;
-    };
-
-  normalizeReleaseResources =
-    value:
-    let
-      checked = checkKeys "release policy.resources" [ "memory" ] (
-        ensure "release policy.resources" (isAttrs value) "must be an attribute set" value
-      );
-      memory =
-        checkKeys "release policy.resources.memory"
-          [
-            "high"
-            "max"
-            "swapMax"
-          ]
-          (
-            ensure "release policy.resources.memory" (isAttrs (
-              checked.memory or { }
-            )) "must be an attribute set" (checked.memory or { })
-          );
-      checkLimit =
-        name:
-        let
-          limit = memory.${name} or null;
-        in
-        ensure "release policy.resources.memory.${name}" (
-          limit == null || (isString limit && limit != "" && !(lib.hasInfix "\n" limit))
-        ) "must be null or a non-empty systemd size string" limit;
-    in
-    {
-      memory = {
-        high = checkLimit "high";
-        max = checkLimit "max";
-        swapMax = checkLimit "swapMax";
-      };
-    };
-
+  # Projects a normalized descriptor and typed host policy into the settings
+  # consumed by the app-deployments module.
   releaseApp =
     {
       descriptor,
       policy,
     }:
     let
-      normalized = normalize {
-        inherit descriptor;
-        expectedProject = policy.project or null;
-      };
-      release = ensure "release" (
-        normalized.release != null
-      ) "descriptor does not define a Release realization" normalized.release;
-      allowedPolicy = [
-        "approvedOci"
-        "bindings"
-        "delivery"
-        "domain"
-        "environment"
-        "environmentFiles"
-        "exposeRevision"
-        "healthRecovery"
-        "instanceId"
-        "jobs"
-        "parameters"
-        "path"
-        "port"
-        "project"
-        "public"
-        "resources"
-        "runtime"
-        "secrets"
-        "source"
-      ];
-      checkedPolicy = checkKeys "release policy" allowedPolicy policy;
-      parameters = resolveParameters {
-        allowUnknown = true;
-        descriptor = normalized;
-        values = checkedPolicy.parameters or { };
-      };
-      secretBindings = checkedPolicy.secrets or { };
-      missingSecrets = lib.filter (
-        name:
-        normalized.secrets.${name}.required
-        && !(builtins.hasAttr name secretBindings)
-        && (
-          !(normalized.requirements or { } ? ${name})
-          || builtins.elem "release" normalized.requirements.${name}.realizations
-        )
-      ) (builtins.attrNames normalized.secrets);
-      approvedOci = checkStringList "release policy.approvedOci" (checkedPolicy.approvedOci or [ ]);
-      requestedOci = builtins.attrNames release.ociAuxiliaries;
-      unapprovedOci = lib.subtractLists approvedOci requestedOci;
-      jobs = ensure "release policy.jobs" (isAttrs (
-        checkedPolicy.jobs or { }
-      )) "must be an attribute set" (checkedPolicy.jobs or { });
-      activeJobDeclarations = lib.filterAttrs (
-        name: job:
-        let
-          policy = jobs.${name} or { };
-        in
-        (policy.enable or true) && ((job ? schedule) || builtins.hasAttr name jobs)
-      ) release.maintenanceJobs;
-      activeJobs = lib.mapAttrs (
-        name: job:
-        let
-          context = "release policy.jobs.${name}";
-          policy = jobs.${name} or { };
-          explicitCalendar = policy.calendar or null;
-          explicitInterval = policy.interval or null;
-          hasExplicitSchedule = explicitCalendar != null || explicitInterval != null;
-          defaultSchedule = job.schedule or null;
-          calendar =
-            if hasExplicitSchedule then
-              explicitCalendar
-            else if defaultSchedule == null then
-              null
-            else
-              defaultSchedule.calendar;
-          interval =
-            if hasExplicitSchedule then
-              explicitInterval
-            else if defaultSchedule == null then
-              null
-            else
-              defaultSchedule.interval;
-          defaultCadence = if defaultSchedule == null then "spaced" else defaultSchedule.cadence or "spaced";
-          requestedCadence = policy.cadence or null;
-          cadence =
-            if interval == null then
-              null
-            else if requestedCadence == null then
-              defaultCadence
-            else
-              requestedCadence;
-        in
-        ensure context ((calendar == null) != (interval == null))
-          "must set exactly one of calendar or interval, either in the descriptor or host policy"
+      release =
+        if descriptor.release == null then
+          fail "release" "descriptor does not define a Release realization"
+        else
+          descriptor.release;
+      secretBindings = policy.secrets or { };
+      releaseSecrets = lib.filterAttrs (
+        name: _: builtins.elem "release" descriptor.requirements.${name}.realizations
+      ) descriptor.secrets;
+      # A bound secret requirement is satisfied by the credential of the same name.
+      resourceBindings =
+        lib.mapAttrs (name: _: {
+          kind = "secret";
+          credential = name;
+        }) (lib.intersectAttrs releaseSecrets secretBindings)
+        // (policy.bindings or { });
+      missingSecrets = lib.filter (name: releaseSecrets.${name}.required && !(secretBindings ? ${name})) (
+        builtins.attrNames releaseSecrets
+      );
+      approvedOci = policy.approvedOci or [ ];
+      unapprovedOci = lib.subtractLists approvedOci (builtins.attrNames release.ociAuxiliaries);
+      jobPolicies = policy.jobs or { };
+      activeJobs =
+        lib.mapAttrs
           (
-            ensure context
-              (
-                cadence == null
-                || builtins.elem cadence [
-                  "fixed"
-                  "spaced"
-                ]
-              )
-              "cadence must be fixed or spaced for interval schedules"
-              (
-                ensure context (calendar == null || (policy.cadence or null) == null)
-                  "cadence only applies to interval schedules"
-                  {
-                    inherit calendar cadence interval;
-                    onBootSec = policy.onBootSec or "5min";
-                    persistent = policy.persistent or true;
-                    randomizedDelaySec = policy.randomizedDelaySec or "0";
-                  }
-              )
+            name: job:
+            let
+              jobPolicy = jobPolicies.${name} or { };
+              explicit = (jobPolicy.calendar or null) != null || (jobPolicy.interval or null) != null;
+              schedule = job.schedule or null;
+              calendar = if explicit then jobPolicy.calendar or null else schedule.calendar or null;
+              interval = if explicit then jobPolicy.interval or null else schedule.interval or null;
+              # A host interval keeps the repository cadence unless it overrides it.
+              repositoryCadence = if schedule == null then "spaced" else schedule.cadence or "spaced";
+              cadence =
+                if interval == null then
+                  null
+                else if (jobPolicy.cadence or null) == null then
+                  repositoryCadence
+                else
+                  jobPolicy.cadence;
+            in
+            checked "release policy.jobs.${name}"
+              [
+                (check (
+                  (calendar == null) != (interval == null)
+                ) "must set exactly one of calendar or interval, either in the descriptor or host policy")
+                (check (
+                  calendar == null || (jobPolicy.cadence or null) == null
+                ) "cadence only applies to interval schedules")
+              ]
+              {
+                inherit calendar cadence interval;
+                onBootSec = jobPolicy.onBootSec or "5min";
+                persistent = jobPolicy.persistent or true;
+                randomizedDelaySec = jobPolicy.randomizedDelaySec or "0";
+              }
           )
-      ) activeJobDeclarations;
-      resources = normalizeReleaseResources (checkedPolicy.resources or { });
-      exposeRevision = ensure "release policy.exposeRevision" (
-        !(checkedPolicy.exposeRevision or false) || normalized.schemaVersion >= 2
-      ) "requires Project descriptor schemaVersion 2 or newer" (checkedPolicy.exposeRevision or false);
+          (
+            lib.filterAttrs (
+              name: job: (jobPolicies.${name}.enable or true) && (job ? schedule || jobPolicies ? ${name})
+            ) release.maintenanceJobs
+          );
     in
-    ensure "release policy" (missingSecrets == [ ])
-      "missing required Secret bindings: ${lib.concatStringsSep ", " missingSecrets}"
+    checked "release policy"
+      [
+        (check (
+          missingSecrets == [ ]
+        ) "missing required Secret bindings: ${lib.concatStringsSep ", " missingSecrets}")
+        (check (
+          unapprovedOci == [ ]
+        ) "OCI auxiliaries require explicit approval: ${lib.concatStringsSep ", " unapprovedOci}")
+      ]
       (
-        ensure "release policy" (unapprovedOci == [ ])
-          "OCI auxiliaries require explicit approval: ${lib.concatStringsSep ", " unapprovedOci}"
-          (
-            {
-              inherit (release)
-                backend
-                executable
-                package
-                ;
-              health = release.health;
-              project = {
-                # Keep the repository form for artifact compatibility;
-                # deployment bindings remain a separate host-owned input.
-                inherit descriptor;
-                jobs = activeJobs;
-                parameterBindings = checkedPolicy.parameters or { };
-                healthRecovery = checkedPolicy.healthRecovery or { };
-                inherit exposeRevision;
-                inherit parameters;
-                approvedOci = approvedOci;
-                inherit resources;
-                secrets = secretBindings;
-                bindings = checkedPolicy.bindings or { };
-                instanceId = checkedPolicy.instanceId or null;
-              };
-              source = checkedPolicy.source;
-            }
-            // lib.optionalAttrs (checkedPolicy ? delivery) { inherit (checkedPolicy) delivery; }
-            // lib.optionalAttrs (checkedPolicy ? domain) { inherit (checkedPolicy) domain; }
-            // lib.optionalAttrs (checkedPolicy ? environment) { inherit (checkedPolicy) environment; }
-            // lib.optionalAttrs (checkedPolicy ? environmentFiles) {
-              inherit (checkedPolicy) environmentFiles;
-            }
-            // lib.optionalAttrs (checkedPolicy ? path) { inherit (checkedPolicy) path; }
-            // lib.optionalAttrs (checkedPolicy ? port) { inherit (checkedPolicy) port; }
-            // lib.optionalAttrs (checkedPolicy ? public) { inherit (checkedPolicy) public; }
-            // lib.optionalAttrs (checkedPolicy ? runtime) { inherit (checkedPolicy) runtime; }
-          )
+        {
+          inherit (release) backend executable package;
+          inherit (release) health;
+          project = {
+            inherit descriptor approvedOci;
+            jobs = activeJobs;
+            parameterBindings = policy.parameters or { };
+            healthRecovery = policy.healthRecovery or { };
+            exposeRevision = policy.exposeRevision or false;
+            parameters = resolveParameters {
+              allowUnknown = true;
+              inherit descriptor;
+              values = policy.parameters or { };
+            };
+            resources.memory = {
+              high = policy.resources.memory.high or null;
+              max = policy.resources.memory.max or null;
+              swapMax = policy.resources.memory.swapMax or null;
+            };
+            secrets = secretBindings;
+            bindings = resourceBindings;
+            instanceId = policy.instanceId or null;
+          };
+          inherit (policy) source;
+        }
+        // lib.getAttrs (lib.intersectLists [
+          "delivery"
+          "domain"
+          "environment"
+          "environmentFiles"
+          "path"
+          "port"
+          "public"
+          "runtime"
+        ] (builtins.attrNames policy)) policy
       );
 in
 {
   inherit
-    load
+    forRealization
     normalize
-    requireRealizations
     releaseApp
     resolveParameters
     ;
-  releaseTaskOrder = release: graphOrder release.preDeployTasks;
+  releaseTaskOrder = release: (graphTraversal release.preDeployTasks).visited;
 }

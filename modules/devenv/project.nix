@@ -1,3 +1,6 @@
+# Project annotations for native devenv processes and tasks. Devenv owns the
+# development graph; these options mark its public workloads, endpoints and
+# commands and export the normalized contract consumed by managed hosts.
 {
   config,
   lib,
@@ -6,68 +9,51 @@
 }:
 let
   inherit (lib) mkOption types;
+  projectTypes = import ../project/types.nix { inherit lib; };
+  inherit (projectTypes) clean nullable;
   cfg = config.project;
   descriptorLib = import ../../lib/project-descriptor.nix { inherit lib; };
-  omitNull = lib.filterAttrs (_: value: value != null);
-  semanticName = types.strMatching "^[A-Za-z0-9_.-]+$";
-  nullable =
-    type:
-    mkOption {
-      type = types.nullOr type;
-      default = null;
-    };
-  environmentType = types.attrsOf (
-    types.either types.str (
-      types.submodule {
-        options = {
-          binding = nullable semanticName;
-          endpoint = nullable semanticName;
-          parameter = nullable semanticName;
-          secret = nullable semanticName;
-          path = nullable (
-            types.enum [
-              "checkout"
-              "state"
-              "cache"
-              "runtime"
-            ]
-          );
-          instance = nullable (types.enum [ "id" ]);
-          field = nullable types.str;
-          append = nullable types.str;
-        };
-      }
-    )
-  );
-  environment = lib.mapAttrs (_: value: if builtins.isAttrs value then omitNull value else value);
-  environmentOption = mkOption {
-    type = environmentType;
-    default = { };
-  };
   requirements = cfg.declaration.requirements;
-  endpointType = types.submodule {
-    options = {
-      protocol = mkOption {
-        type = types.enum [
-          "http"
-          "tcp"
-        ];
-        default = "http";
-      };
-      port = nullable types.port;
-      publication = mkOption {
-        type = types.enum [
-          "private"
-          "preview"
-        ];
-        default = "preview";
-      };
-      health = mkOption {
-        type = types.attrs;
-        default = { };
+  releaseAction =
+    if cfg.release == null || cfg.release.backend == "static" then
+      null
+    else if cfg.release.action == null then
+      "web"
+    else
+      cfg.release.action;
+
+  endpointType =
+    { name, ... }:
+    {
+      options = {
+        protocol = mkOption {
+          type = types.enum [
+            "http"
+            "tcp"
+          ];
+          default = "http";
+        };
+        port = nullable types.port;
+        publication = mkOption {
+          type = types.enum [
+            "private"
+            "preview"
+          ];
+          default = "preview";
+        };
+        health = mkOption {
+          # The endpoint serving the release action checks the same paths with the
+          # same startup budget. Polling keeps development defaults.
+          type = projectTypes.healthInheriting (
+            if name == releaseAction && cfg.release.health != null then
+              { inherit (cfg.release.health) paths startupTimeoutSec; }
+            else
+              { }
+          );
+          default = { };
+        };
       };
     };
-  };
   providerType = types.submodule {
     options = {
       majorVersion = nullable types.ints.positive;
@@ -76,15 +62,16 @@ let
         default = 5432;
       };
       database = mkOption {
-        type = semanticName;
+        type = projectTypes.semanticName;
         default = "postgres";
       };
       user = mkOption {
-        type = semanticName;
+        type = projectTypes.semanticName;
         default = "postgres";
       };
     };
   };
+  # Managed hosts resolve the environment immediately before each action runs.
   exportEnvironment = action: ''
     if [[ "''${PROJECT_DEVENV_MANAGED:-}" == 1 ]]; then
       project_environment="$(project-context environment ${lib.escapeShellArg action})" || exit "$?"
@@ -92,80 +79,80 @@ let
       unset project_environment
     fi
   '';
-  processMetadata = { config, name, ... }: {
-    options.project = {
-      lifecycle = mkOption {
-        type = types.enum [
-          "on-demand"
-          "background"
-        ];
-        default = "on-demand";
-      };
-      endpoints = mkOption {
-        type = types.attrsOf endpointType;
-        default = { };
-      };
-      provides = mkOption {
-        type = types.attrsOf providerType;
-        default = { };
-      };
-      environment = environmentOption;
-      secrets = mkOption {
-        type = types.listOf semanticName;
-        default = [ ];
-      };
+  withEnvironment =
+    name: environment: value:
+    lib.optionalString (cfg.enable && environment != { }) (exportEnvironment name) + value;
+  sharedOptions = {
+    environment = mkOption {
+      type = projectTypes.environment;
+      default = { };
     };
-    options.exec = mkOption {
-      type = types.str;
-      apply =
-        value:
-        lib.optionalString (cfg.enable && config.project.environment != { }) (exportEnvironment name)
-        + value;
+    secrets = mkOption {
+      type = types.listOf projectTypes.semanticName;
+      default = [ ];
+      description = "Secrets needed beyond those referenced by the environment.";
     };
   };
-  taskMetadata = { config, name, ... }: {
-    options.project = {
-      command = nullable (types.strMatching "^[a-z0-9][a-z0-9-]{0,62}$");
-      environment = environmentOption;
-      secrets = mkOption {
-        type = types.listOf semanticName;
-        default = [ ];
+  processMetadata =
+    { config, name, ... }:
+    {
+      options.project = sharedOptions // {
+        lifecycle = mkOption {
+          type = types.enum [
+            "on-demand"
+            "background"
+          ];
+          default = "on-demand";
+        };
+        endpoints = mkOption {
+          type = types.attrsOf (types.submodule endpointType);
+          default = { };
+        };
+        provides = mkOption {
+          type = types.attrsOf providerType;
+          default = { };
+        };
+      };
+      options.exec = mkOption {
+        type = types.str;
+        apply = withEnvironment name config.project.environment;
       };
     };
-    options.exec = mkOption {
-      type = types.nullOr types.str;
-      apply =
-        value:
-        if value == null then
-          null
-        else
-          lib.optionalString (cfg.enable && config.project.environment != { }) (exportEnvironment name)
-          + value;
+  taskMetadata =
+    { config, name, ... }:
+    {
+      options.project = sharedOptions // {
+        command = nullable projectTypes.name;
+      };
+      options.exec = mkOption {
+        type = types.nullOr types.str;
+        apply =
+          value: if value == null then null else withEnvironment name config.project.environment value;
+      };
     };
-  };
-  commandTasks = lib.filterAttrs (_: task: task.project.command != null) config.tasks;
-  common = environment cfg.environment;
+
+  common = clean (cfg.environment // cfg.development.environment);
   secretReferences =
-    values:
+    environment:
     lib.unique (
       lib.concatMap (
         value:
-        if !builtins.isAttrs value then
-          [ ]
-        else if value ? secret then
-          [ value.secret ]
-        else if value ? binding && requirements.${value.binding}.kind or null == "secret" then
-          [ value.binding ]
-        else
-          [ ]
-      ) (lib.attrValues values)
+        lib.optional (
+          builtins.isAttrs value
+          && value ? binding
+          && (requirements.${value.binding}.kind or null) == "secret"
+        ) value.binding
+      ) (builtins.attrValues environment)
     );
   commonSecrets = secretReferences common;
-  processEnvironment = lib.mapAttrs (
-    _: process: environment process.project.environment
-  ) config.processes;
-  taskEnvironment = lib.mapAttrs (_: task: environment task.project.environment) (
-    lib.filterAttrs (_: task: task.project.environment != { }) config.tasks
+  secretsFor =
+    item:
+    lib.unique (
+      commonSecrets ++ item.project.secrets ++ secretReferences (clean item.project.environment)
+    );
+  commandTasks = lib.filterAttrs (_: task: task.project.command != null) config.tasks;
+  actionEnvironments = lib.filterAttrs (_: value: value != { }) (
+    lib.mapAttrs (_: item: clean item.project.environment) (config.processes // config.tasks)
   );
   mergeUnique =
     context: sets:
@@ -174,10 +161,10 @@ let
       let
         duplicate = lib.intersectLists (lib.attrNames result) (lib.attrNames value);
       in
-      assert lib.assertMsg (
-        duplicate == [ ]
-      ) "project ${context}: duplicate names ${lib.concatStringsSep ", " duplicate}";
-      result // value
+      if duplicate != [ ] then
+        throw "project ${context}: duplicate names ${lib.concatStringsSep ", " duplicate}"
+      else
+        result // value
     ) { } sets;
 in
 {
@@ -212,24 +199,20 @@ in
               workloads = lib.mapAttrs (name: process: {
                 action = name;
                 inherit (process.project) lifecycle;
-                secrets = lib.unique (
-                  commonSecrets ++ process.project.secrets ++ secretReferences processEnvironment.${name}
-                );
+                secrets = secretsFor process;
               }) config.processes;
               commands = mergeUnique "commands" (
                 lib.mapAttrsToList (name: task: {
                   ${task.project.command} = {
                     action = name;
-                    secrets = lib.unique (
-                      commonSecrets ++ task.project.secrets ++ secretReferences (environment task.project.environment)
-                    );
+                    secrets = secretsFor task;
                   };
                 }) commandTasks
               );
               endpoints = mergeUnique "endpoints" (
                 lib.mapAttrsToList (
                   workload: process:
-                  lib.mapAttrs (_: endpoint: endpoint // { inherit workload; }) process.project.endpoints
+                  lib.mapAttrs (_: endpoint: clean endpoint // { inherit workload; }) process.project.endpoints
                 ) config.processes
               );
               providers = mergeUnique "providers" (
@@ -237,7 +220,7 @@ in
                   workload: process:
                   lib.mapAttrs (
                     name: provider:
-                    omitNull provider
+                    clean provider
                     // {
                       inherit workload;
                     }
@@ -251,7 +234,7 @@ in
             environment = cfg.declaration.environment // {
               development = {
                 inherit common;
-                actions = lib.filterAttrs (_: value: value != { }) (processEnvironment // taskEnvironment);
+                actions = actionEnvironments;
               };
             };
           };

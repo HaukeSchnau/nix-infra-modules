@@ -1,3 +1,5 @@
+# Runtime behaviour of release artifacts, development context queries and
+# host release planning, using a descriptor authored through the modules.
 {
   lib,
   pkgs,
@@ -5,252 +7,232 @@
 }:
 let
   runtime = import ../project-runtime.nix { inherit lib; };
-  descriptor = import ../project-descriptor.nix { inherit lib; };
-  developmentDescriptor = ./fixtures/development.json;
-  pairedV2Descriptor = ./fixtures/paired-v2.json;
-  pairedDescriptor = ./fixtures/paired-v3.json;
-  pairedNormalized = descriptor.normalize {
-    descriptor = builtins.fromJSON (builtins.readFile pairedDescriptor);
+  descriptorLib = import ../project-descriptor.nix { inherit lib; };
+  project = {
+    project = {
+      name = "runtime-fixture";
+      requirements = {
+        database = {
+          kind = "postgresql";
+          majorVersion = 17;
+        };
+        uploads.kind = "directory";
+        token.kind = "secret";
+        optional = {
+          kind = "secret";
+          required = false;
+        };
+      };
+      parameters.flavour.default = "plain";
+      environment = {
+        DATABASE_URL = {
+          binding = "database";
+          field = "url";
+        };
+        UPLOADS = {
+          binding = "uploads";
+          field = "path";
+        };
+        INSTANCE_ID.instance = "id";
+        LITERAL = "it's literal";
+        OPTIONAL = {
+          binding = "optional";
+          field = "value";
+        };
+      };
+      release = {
+        serviceEnvironment.WEB_PORT = {
+          endpoint = "web";
+          field = "listen.port";
+        };
+        commands.console.environment.TOKEN = {
+          binding = "token";
+          field = "value";
+        };
+        preDeployTasks.migrate = { };
+        ociAuxiliaries.cache = {
+          image = "example.invalid/cache@sha256:${lib.fixedWidthString 64 "0" ""}";
+          ports.redis.containerPort = 6379;
+        };
+      };
+    };
   };
-  invalidBackgroundTaskDescriptor = lib.recursiveUpdate pairedNormalized {
-    development.workloads.web.kind = "task";
+  descriptor = import ../project-definition.nix { inherit lib; } { modules = [ project ]; };
+  developmentDescriptor = descriptorLib.normalize {
+    descriptor = descriptor // {
+      development = {
+        workloads.web = { };
+        endpoints.web = { };
+      };
+    };
   };
-  serviceDescriptor = ./fixtures/service-release.json;
-  staticDescriptor = ./fixtures/static-release.json;
-  cycleDescriptor = builtins.fromJSON (builtins.readFile ./fixtures/v2-cycle.json);
-  incompleteDescriptor = builtins.fromJSON (builtins.readFile ./fixtures/v2-missing-release.json);
-  tcpPathsDescriptor = builtins.fromJSON (builtins.readFile ./fixtures/v2-tcp-paths.json);
-  action =
-    name: body:
-    toString (
-      pkgs.writeShellScript name ''
-        set -eu
-        ${body}
-      ''
-    );
-  commandAction = action "runtime-command-console" ''
-    state="$(project-context path state)"
-    printf '%s\n' "$@" > "$state/command.log"
-  '';
-  releaseAction =
-    name:
-    action name ''
-      state="$(project-context path state)"
-      printf '%s\n' ${lib.escapeShellArg name} >> "$state/release.log"
-    '';
+  # Every action prints the environment it received.
+  action = toString (
+    pkgs.writeShellScript "runtime-fixture-action" ''
+      printf '%s\n' "$DATABASE_URL" "$UPLOADS" "$INSTANCE_ID" "$LITERAL" \
+        "''${WEB_PORT-unset}" "''${TOKEN-unset}" "''${OPTIONAL-unset}" "$@"
+    ''
+  );
   service = runtime.mkServiceRelease {
-    inherit pkgs;
-    descriptor = builtins.fromJSON (builtins.readFile serviceDescriptor);
-    defaultAction = "serve";
-    payloads = [
-      (pkgs.runCommand "runtime-service-payload" { } ''
-        mkdir -p $out/share/runtime-service-fixture
-        echo payload > $out/share/runtime-service-fixture/value
-      '')
+    inherit pkgs descriptor;
+    actions = {
+      web = action;
+      console = action;
+      migrate = action;
+    };
+  };
+  staticFlake = import ../project-flake.nix { inherit lib; } {
+    nixpkgs = null;
+    systems = [ pkgs.stdenv.hostPlatform.system ];
+    pkgsFor = _: pkgs;
+    modules = [
+      {
+        project.name = "static-fixture";
+        project.release.backend = "static";
+      }
     ];
-    actions = {
-      serve = releaseAction "serve";
-      backup = releaseAction "backup";
-    };
-    activation = releaseAction "activation";
+    release =
+      { pkgs, ... }:
+      {
+        root = pkgs.writeTextDir "index.html" "<h1>fixture</h1>";
+      };
   };
-  pairedService = runtime.mkServiceRelease {
+  static.package = staticFlake.packages.${pkgs.stdenv.hostPlatform.system}.projectRelease;
+  development = runtime.developmentContext {
     inherit pkgs;
-    descriptorPath = pairedDescriptor;
-    actions = {
-      serve = releaseAction "paired-release";
-      prepare-release = releaseAction "prepare-release";
-      migrate = releaseAction "migrate";
-      console = commandAction;
-    };
+    descriptor = developmentDescriptor;
   };
-  staticRoot = pkgs.runCommand "runtime-static-root" { } ''
-    mkdir -p $out
-    echo '<h1>fixture</h1>' > $out/index.html
-  '';
-  static = runtime.mkStaticRelease {
-    inherit pkgs;
-    descriptorPath = staticDescriptor;
-    root = staticRoot;
-  };
-  serviceClosure = pkgs.closureInfo {
-    rootPaths = [ service.package ];
-  };
+  hostPolicy = pkgs.writeText "runtime-fixture-policy.json" (
+    builtins.toJSON {
+      inherit descriptor;
+      managedJobs = [ ];
+      bindings = {
+        parameters = { };
+        secrets = [ "token" ];
+        resources = {
+          database = {
+            kind = "postgresql";
+            majorVersion = 17;
+            host = "/run/postgresql";
+            port = 5432;
+            database = "fixture";
+            user = "fixture";
+            url = "postgresql:///fixture";
+          };
+          uploads = {
+            kind = "directory";
+            path = "/var/lib/fixture/uploads";
+            persistent = true;
+          };
+          token = {
+            kind = "secret";
+            credential = "token";
+          };
+        };
+      };
+    }
+  );
+  serviceClosure = pkgs.closureInfo { rootPaths = [ service.package ]; };
 in
 {
   project-runtime =
-    assert pairedNormalized.development.workloads.database.lifecycle == "on-demand";
-    assert pairedNormalized.development.workloads.web.lifecycle == "background";
-    assert
-      !(builtins.tryEval (
-        builtins.deepSeq (descriptor.normalize {
-          descriptor = invalidBackgroundTaskDescriptor;
-        }) true
-      )).success;
-    assert
-      !(builtins.tryEval (
-        builtins.deepSeq (descriptor.normalize {
-          descriptor = cycleDescriptor;
-        }) true
-      )).success;
-    assert
-      !(builtins.tryEval (
-        builtins.deepSeq (descriptor.normalize {
-          descriptor = incompleteDescriptor;
-        }) true
-      )).success;
-    assert
-      !(builtins.tryEval (
-        builtins.deepSeq (descriptor.normalize {
-          descriptor = tcpPathsDescriptor;
-        }) true
-      )).success;
-    pkgs.runCommand "project-runtime-interface-check"
+    pkgs.runCommand "project-runtime-check"
       {
         nativeBuildInputs = [
-          pkgs.check-jsonschema
-          pkgs.coreutils
-          pkgs.gnugrep
+          pkgs.jq
+          pkgs.diffutils
         ];
       }
       ''
         set -euo pipefail
+        root="$TMPDIR/runtime"
+        mkdir -p "$root/state" "$root/runtime" "$root/secrets" "$root/checkout" "$root/cache"
+        printf 'secret\n' > "$root/secrets/token"
+        export PROJECT_SECRETS_DIR="$root/secrets"
 
-            check-jsonschema --schemafile ${../../schemas/project-descriptor/v1.json} \
-              ${developmentDescriptor} ${serviceDescriptor} ${staticDescriptor}
-            check-jsonschema --schemafile ${../../schemas/project-descriptor/v2.json} \
-              ${pairedV2Descriptor} ${./fixtures/v2-cycle.json}
-            check-jsonschema --schemafile ${../../schemas/project-descriptor/v3.json} \
-              ${pairedDescriptor}
-            invalid_background_task="$TMPDIR/invalid-background-task.json"
-            ${pkgs.jq}/bin/jq '.development.workloads.web.kind = "task"' \
-              ${pairedDescriptor} > "$invalid_background_task"
-            if check-jsonschema --schemafile ${../../schemas/project-descriptor/v3.json} \
-              "$invalid_background_task"; then
-              echo "background task unexpectedly passed the v3 descriptor schema" >&2
-              exit 1
-            fi
-            if check-jsonschema --schemafile ${../../schemas/project-descriptor/v2.json} \
-              ${./fixtures/v2-missing-release.json}; then
-              echo "incomplete v2 descriptor unexpectedly passed its schema" >&2
-              exit 1
-            fi
-            if check-jsonschema --schemafile ${../../schemas/project-descriptor/v2.json} \
-              ${./fixtures/v2-tcp-paths.json}; then
-              echo "TCP health paths unexpectedly passed the v2 descriptor schema" >&2
-              exit 1
-            fi
+        status() {
+          local expected="$1"
+          shift
+          set +e
+          "$@" >/dev/null 2>&1
+          local actual="$?"
+          set -e
+          test "$actual" = "$expected"
+        }
 
-            root="$TMPDIR/runtime-check"
-            checkout="$root/checkout"
-            state="$root/state"
-            cache="$root/cache"
-            runtime_dir="$root/runtime"
-            secrets="$root/secrets"
-            mkdir -p "$checkout" "$state" "$cache" "$runtime_dir" "$secrets"
-            printf 'secret\n' > "$secrets/token"
+        release="$root/release.json"
+        jq -n --arg root "$root" --slurpfile policy ${hostPolicy} '{
+          schemaVersion: 3, project: "runtime-fixture", realization: "release",
+          instanceId: "fixture:release", revision: "0123456789abcdef0123456789abcdef01234567",
+          paths: {state: ($root + "/state"), runtime: ($root + "/runtime")},
+          endpoints: {
+            web: {protocol: "http", url: "https://fixture.example", listen: {host: "127.0.0.1", port: 8080}},
+            "cache-redis": {protocol: "tcp", listen: {host: "127.0.0.1", port: 6379}}
+          },
+          parameters: {}, secrets: {token: "token"},
+          bindings: $policy[0].bindings.resources
+        }' > "$release"
+        export PROJECT_RUNTIME_FILE="$release"
+        context=${service.package}/bin/project-context
 
-            assert_status() {
-              local expected="$1"
-              shift
-              set +e
-              "$@" >/dev/null 2>&1
-              local actual="$?"
-              set -e
-              test "$actual" = "$expected"
-            }
+        # Actions receive common, service and command environments, and unset absent optionals.
+        OPTIONAL=inherited ${lib.getExe service.package} > web.out
+        diff web.out - <<'EOF'
+        postgresql:///fixture
+        /var/lib/fixture/uploads
+        fixture:release
+        it's literal
+        8080
+        unset
+        unset
+        EOF
+        ${lib.getExe service.package} console argument > console.out
+        test "$(sed -n 6p console.out)" = secret
+        test "$(sed -n 8p console.out)" = argument
 
-            paired_release_manifest="$root/paired-release.json"
-            ${pkgs.jq}/bin/jq -n \
-              --arg state "$state" --arg runtime "$runtime_dir" \
-              '{schemaVersion: 2, project: "runtime-paired-fixture", realization: "release",
-                revision: "0123456789abcdef0123456789abcdef01234567",
-                paths: {state: $state, runtime: $runtime},
-                endpoints: {
-                  serve: {protocol: "http", url: "https://paired.example",
-                    listen: {host: "127.0.0.1", port: 33103}},
-                  "database-postgres": {protocol: "tcp",
-                    listen: {host: "127.0.0.1", port: 33104}}
-                },
-                parameters: {flavour: "release"}, secrets: {}}' > "$paired_release_manifest"
-            check-jsonschema --schemafile ${../../schemas/project-runtime/v2.json} "$paired_release_manifest"
-            test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
-              ${pairedService.package}/bin/project-context endpoint serve url)" = https://paired.example
-            test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
-              ${pairedService.package}/bin/project-context endpoint serve host-names --json)" = '[]'
-            test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
-              ${pairedService.package}/bin/project-context parameter flavour)" = release
-            test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
-              ${pairedService.package}/bin/project-context revision)" = 0123456789abcdef0123456789abcdef01234567
-            PROJECT_RUNTIME_FILE="$paired_release_manifest" \
-              ${pairedService.package}/bin/project-context snapshot \
-              | ${pkgs.jq}/bin/jq -e '
-                .schemaVersion == 1
-                and .project == "runtime-paired-fixture"
-                and .realization == "release"
-                and .revision == "0123456789abcdef0123456789abcdef01234567"
-                and .parameters.flavour == "release"
-                and .endpoints.serve.url == "https://paired.example"
-                and .endpoints["database-postgres"].listen.port == 33104
-                and .secretFiles == {}
-              ' >/dev/null
-            test "$(PROJECT_RUNTIME_FILE="$paired_release_manifest" \
-              ${pairedService.package}/bin/project-context auxiliary database postgres listen-port)" = 33104
-            assert_status 66 env PROJECT_RUNTIME_FILE="$paired_release_manifest" \
-              ${pairedService.package}/bin/project-context auxiliary database missing listen-port
-            assert_status 1 env PROJECT_RUNTIME_FILE="$paired_release_manifest" \
-              ${pairedService.package}/bin/project-context secret-file token
-            assert_status 66 env PROJECT_RUNTIME_FILE="$paired_release_manifest" \
-              ${pairedService.package}/bin/project-context secret-file token --required
-            invalid_release_project="$root/invalid-release-project.json"
-            ${pkgs.jq}/bin/jq '.project = "wrong-project"' "$paired_release_manifest" \
-              > "$invalid_release_project"
-            assert_status 65 env PROJECT_RUNTIME_FILE="$invalid_release_project" \
-              ${pairedService.package}/bin/project-context endpoint serve url
-            invalid_release_protocol="$root/invalid-release-protocol.json"
-            ${pkgs.jq}/bin/jq '.endpoints["database-postgres"].protocol = "http" 
-              | .endpoints["database-postgres"].url = "http://127.0.0.1:33104"' \
-              "$paired_release_manifest" > "$invalid_release_protocol"
-            assert_status 65 env PROJECT_RUNTIME_FILE="$invalid_release_protocol" \
-              ${pairedService.package}/bin/project-context endpoint serve url
-            rm -f "$state/release.log"
-            PROJECT_RUNTIME_FILE="$paired_release_manifest" \
-              ${pairedService.package}/bin/project-release-runtime
-            test "$(cat "$state/release.log")" = paired-release
-            cmp ${pairedDescriptor} ${pairedService.package}/share/project/descriptor.json
+        test "$($context endpoint web url)" = https://fixture.example
+        test "$($context auxiliary cache redis listen-port)" = 6379
+        test "$($context parameter flavour)" = plain
+        test "$($context binding token value)" = secret
+        test "$($context secret-file token --required)" = "$root/secrets/token"
+        test "$($context revision)" = 0123456789abcdef0123456789abcdef01234567
+        $context snapshot | jq -e '.instanceId == "fixture:release" and .bindings.uploads.persistent' >/dev/null
+        eval "$($context environment console)"
+        test "$TOKEN" = secret && test "$LITERAL" = "it's literal"
+        status 1 $context secret-file optional
+        status 64 $context endpoint
+        status 66 $context auxiliary cache missing listen-port
 
-            rm -f "$state/command.log"
-            PROJECT_RUNTIME_FILE="$paired_release_manifest" \
-              ${pairedService.package}/bin/project-release-runtime console release-argument
-            test "$(cat "$state/command.log")" = release-argument
+        jq '.project = "other"' "$release" > wrong.json
+        PROJECT_RUNTIME_FILE=wrong.json status 65 $context path state
+        jq '.bindings.uploads.persistent = false' "$release" > transient.json
+        PROJECT_RUNTIME_FILE=transient.json status 65 $context path state
+        jq 'del(.endpoints["cache-redis"])' "$release" > missing.json
+        PROJECT_RUNTIME_FILE=missing.json status 65 $context path state
 
-            release_manifest="$root/release.json"
-            ${pkgs.jq}/bin/jq -n \
-              --arg state "$state" --arg runtime "$runtime_dir" \
-              '{schemaVersion: 1, project: "runtime-service-fixture", realization: "release",
-                paths: {state: $state, runtime: $runtime},
-                endpoints: {default: {url: "https://fixture.example", listen: {host: "127.0.0.1", port: 32103}}},
-                parameters: {}, secrets: {}}' > "$release_manifest"
-            check-jsonschema --schemafile ${../../schemas/project-runtime/v1.json} "$release_manifest"
-            rm -f "$state/release.log"
-            PROJECT_RUNTIME_FILE="$release_manifest" ${service.package}/bin/project-release-runtime
-            PROJECT_RUNTIME_FILE="$release_manifest" ${service.package}/bin/project-release-runtime backup
-            PROJECT_RUNTIME_FILE="$release_manifest" ${service.package}/bin/activate-release
-            test "$(tr '\n' ' ' < "$state/release.log")" = 'serve backup activation '
-            test -f ${service.package}/share/runtime-service-fixture/value
-            diff <(${pkgs.jq}/bin/jq --sort-keys . ${serviceDescriptor}) <(${pkgs.jq}/bin/jq --sort-keys . ${service.package}/share/project/descriptor.json)
+        # Development context requires checkout and cache paths.
+        jq --arg root "$root" '.realization = "development" | del(.revision)
+          | .paths += {checkout: ($root + "/checkout"), cache: ($root + "/cache")}
+          | .endpoints = {web: .endpoints.web} | .bindings.database.dataDirectory = ($root + "/postgres")' \
+          "$release" > development.json
+        PROJECT_RUNTIME_FILE=development.json ${development}/bin/project-context path checkout
+        jq 'del(.paths.cache)' development.json > no-cache.json
+        PROJECT_RUNTIME_FILE=no-cache.json status 65 ${development}/bin/project-context path state
 
-            test -f ${static.package}/index.html
-            cmp ${staticDescriptor} ${static.package}/share/project/descriptor.json
+        # The host accepts the candidate it was compiled for and rejects topology changes.
+        planner=${lib.getExe (runtime.package pkgs)}
+        $planner plan-release --host ${hostPolicy} --candidate ${service.package}/share/project/descriptor.json \
+          | jq -e '.compatible and .releasePlan.preDeployOrder == ["migrate"]' >/dev/null
+        jq '.release.action = "serve"' ${service.package}/share/project/descriptor.json > moved.json
+        $planner plan-release --host ${hostPolicy} --candidate moved.json \
+          | jq -e '.compatible | not' >/dev/null
 
-            test -x ${service.package}/bin/project-release-runtime
-            test ! -e ${service.package}/libexec/project-runtime/runtime.py
-            grep -Fq -- '-project-release-runtime-1/bin/project-release-runtime' \
-              ${service.package}/bin/project-release-runtime
-            if grep -Eq '/[^/]*python3[^/]*/?$' ${serviceClosure}/store-paths; then
-              echo "service Release closure still contains Python" >&2
-              exit 1
-            fi
-            touch $out
+        test -f ${static.package}/index.html
+        test -f ${static.package}/share/project/descriptor.json
+        if grep -Eq 'python3' ${serviceClosure}/store-paths; then
+          echo "service Release closure contains Python" >&2
+          exit 1
+        fi
+        touch $out
       '';
 }

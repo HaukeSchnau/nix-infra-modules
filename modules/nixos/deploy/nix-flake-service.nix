@@ -13,7 +13,11 @@ let
     "__appDeploymentsInternal"
   ];
   hasSops = options ? sops;
-  projectDescriptor = import ../../../lib/project-descriptor.nix { inherit lib; };
+  # Plans release compatibility on the host with the same runtime that serves
+  # Project actions.
+  projectPlanner = lib.getExe (
+    (import ../../../lib/project-runtime.nix { inherit lib; }).package pkgs
+  );
   cfg = lib.recursiveUpdate {
     enable = true;
     public = false;
@@ -73,14 +77,8 @@ let
   name = cfg.name;
   isService = cfg.backend == "service";
   isProject = cfg.project != null;
-  descriptor =
-    if isProject then
-      projectDescriptor.normalize {
-        descriptor = cfg.project.descriptor;
-        expectedProject = name;
-      }
-    else
-      null;
+  # Normalized by lib.projectDescriptor.releaseApp.
+  descriptor = if isProject then cfg.project.descriptor else null;
   projectRelease = if isProject then descriptor.release else null;
   projectSecrets = if isProject then cfg.project.secrets else { };
   projectActivationExecutable = if isProject then projectRelease.activationExecutable else null;
@@ -89,13 +87,6 @@ let
   projectAuxiliaryPorts = if isProject then cfg.project.auxiliaryPorts else { };
   projectJobs = if isProject then cfg.project.jobs else { };
   projectMemory = if isProject then cfg.project.resources.memory else { };
-  projectRuntimeSchemaVersion =
-    if isProject && descriptor.schemaVersion >= 4 then
-      3
-    else if isProject && descriptor.schemaVersion >= 2 then
-      2
-    else
-      1;
   unitName = "app-deployment-${name}";
   updateUnitName = "${unitName}-update";
   activationUnitName = "${unitName}-activate";
@@ -133,22 +124,15 @@ let
               port = projectAuxiliaryPorts.${auxiliaryName}.${portName};
             };
           in
-          if projectRuntimeSchemaVersion >= 2 && port.protocol != "tcp" then
+          if port.protocol != "tcp" then
             throw "app-deployment/${name}: Project Runtime cannot expose UDP auxiliary Endpoint ${endpointName}"
           else
             {
               name = endpointName;
-              value =
-                if projectRuntimeSchemaVersion == 1 then
-                  {
-                    url = "${port.protocol}://${listen.host}:${toString listen.port}";
-                    inherit listen;
-                  }
-                else
-                  {
-                    protocol = "tcp";
-                    inherit listen;
-                  };
+              value = {
+                protocol = "tcp";
+                inherit listen;
+              };
             }
         ) auxiliary.ports
       ) projectAuxiliaries
@@ -161,8 +145,6 @@ let
       host = cfg.host;
       port = cfg.port;
     };
-  }
-  // lib.optionalAttrs (projectRuntimeSchemaVersion >= 2) {
     protocol = "http";
     hostNames = lib.optional (cfg.domain != null) cfg.domain;
     visibility =
@@ -173,32 +155,26 @@ let
       else
         "tailnet";
   };
-  primaryRuntimeEndpointName =
-    if projectRuntimeSchemaVersion >= 2 then projectRelease.action else "default";
   projectRuntimeBaseManifest = pkgs.writeText "project-release-runtime-base-${name}.json" (
-    builtins.toJSON (
-      {
-        schemaVersion = projectRuntimeSchemaVersion;
-        project = name;
-        realization = "release";
-        paths = {
-          state = runtimeDir;
-          runtime = runtimeDir;
-        };
-        endpoints = {
-          ${primaryRuntimeEndpointName} = defaultRuntimeEndpoint;
-        }
-        // auxiliaryRuntimeEndpoints;
+    builtins.toJSON ({
+      schemaVersion = 3;
+      project = name;
+      realization = "release";
+      paths = {
+        state = runtimeDir;
+        runtime = runtimeDir;
+      };
+      endpoints = {
+        ${projectRelease.action} = defaultRuntimeEndpoint;
       }
-      // lib.optionalAttrs (projectRuntimeSchemaVersion >= 3) {
-        instanceId =
-          if cfg.project.instanceId != null then
-            cfg.project.instanceId
-          else
-            throw "app-deployments.${name}: Project v4 requires a stable instanceId";
-        bindings = { };
-      }
-    )
+      // auxiliaryRuntimeEndpoints;
+      instanceId =
+        if cfg.project.instanceId != null then
+          cfg.project.instanceId
+        else
+          throw "app-deployments.${name}: Project v4 requires a stable instanceId";
+      bindings = { };
+    })
     + "\n"
   );
   projectBindingPolicy = pkgs.writeText "project-release-bindings-${name}.json" (
@@ -215,12 +191,6 @@ let
   );
   projectSecretBindings = pkgs.writeText "project-release-secret-bindings-${name}.json" (
     builtins.toJSON projectSecrets + "\n"
-  );
-  # A flake-source path has no derivation string context, so interpolating it into a generated
-  # script does not retain the source as a runtime dependency. Materialize the policy as its own
-  # store object so garbage collection cannot leave deployed updater scripts with a dangling path.
-  projectCompatibilityJq = pkgs.writeText "project-release-compatibility.jq" (
-    builtins.readFile ./project-release-compatibility.jq
   );
   deployedProjectRuntimeManifest = "${stateDir}/project-runtime.json";
   deployedProjectReleasePlan = "${stateDir}/release-plan.json";
@@ -546,10 +516,9 @@ let
         local revision="''${4:-}"
         local result="$state_dir/compatibility.json.next"
 
-        if ! jq -n \
-          --slurpfile host ${lib.escapeShellArg projectBindingPolicy} \
-          --slurpfile candidate "$descriptor" \
-          -f ${lib.escapeShellArg projectCompatibilityJq} > "$result"; then
+        if ! ${projectPlanner} plan-release \
+          --host ${lib.escapeShellArg projectBindingPolicy} \
+          --candidate "$descriptor" > "$result"; then
           rm -f "$result"
           return 1
         fi
@@ -567,7 +536,7 @@ let
 
         jq -S -s --arg revision "$revision" \
           '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
-            + (if .[0].schemaVersion >= 3 then {bindings: .[1].bindings} else {} end)
+            + {bindings: .[1].bindings}
             + (if $revision == "" then {} else {revision: $revision} end)' \
           ${lib.escapeShellArg projectRuntimeBaseManifest} "$result" > "$runtime"
         jq -S '.releasePlan' "$result" > "$plan"
@@ -973,10 +942,9 @@ let
       exit 0
     fi
 
-    result="$(${pkgs.jq}/bin/jq -n \
-      --slurpfile host ${lib.escapeShellArg projectBindingPolicy} \
-      --slurpfile candidate "$descriptor" \
-      -f ${lib.escapeShellArg projectCompatibilityJq})"
+    result="$(${projectPlanner} plan-release \
+      --host ${lib.escapeShellArg projectBindingPolicy} \
+      --candidate "$descriptor")"
     if ! ${pkgs.jq}/bin/jq -e '.compatible' <<<"$result" >/dev/null; then
       ${pkgs.jq}/bin/jq -r '.reasons[] | "app-deployment/${name}: " + .' <<<"$result" >&2
       exit 1
@@ -988,7 +956,7 @@ let
     ''}
     expected_runtime="$(${pkgs.jq}/bin/jq -S -s --arg revision "$revision" \
       '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
-        + (if .[0].schemaVersion >= 3 then {bindings: .[1].bindings} else {} end)
+        + {bindings: .[1].bindings}
         + (if $revision == "" then {} else {revision: $revision} end)' \
       ${lib.escapeShellArg projectRuntimeBaseManifest} <(printf '%s\n' "$result"))"
     actual_runtime="$(${pkgs.jq}/bin/jq -S . "$runtime")"
@@ -1013,10 +981,9 @@ let
       exit 1
     fi
 
-    result="$(${pkgs.jq}/bin/jq -n \
-      --slurpfile host ${lib.escapeShellArg projectBindingPolicy} \
-      --slurpfile candidate "$descriptor" \
-      -f ${lib.escapeShellArg projectCompatibilityJq})"
+    result="$(${projectPlanner} plan-release \
+      --host ${lib.escapeShellArg projectBindingPolicy} \
+      --candidate "$descriptor")"
     if ! ${pkgs.jq}/bin/jq -e '.compatible' <<<"$result" >/dev/null; then
       ${pkgs.jq}/bin/jq -r '.reasons[] | "app-deployment/${name}: " + .' <<<"$result" >&2
       exit 1
@@ -1028,7 +995,7 @@ let
     ''}
     expected_runtime="$(${pkgs.jq}/bin/jq -S -s --arg revision "$revision" \
       '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
-        + (if .[0].schemaVersion >= 3 then {bindings: .[1].bindings} else {} end)
+        + {bindings: .[1].bindings}
         + (if $revision == "" then {} else {revision: $revision} end)' \
       ${lib.escapeShellArg projectRuntimeBaseManifest} <(printf '%s\n' "$result"))"
     expected_release_plan="$(${pkgs.jq}/bin/jq -S '.releasePlan' <<<"$result")"
@@ -1387,7 +1354,6 @@ let
         vps.appDeployments.webhookApps.${name} = {
           bindingPolicyFile = lib.optionalString isProject "${projectBindingPolicy}";
           compatibilityFile = "${stateDir}/compatibility.json";
-          compatibilityProgram = lib.optionalString isProject "${projectCompatibilityJq}";
           deliveryMode = cfg.delivery.mode;
           requestedReleaseFile = "${stateDir}/requested-release.json";
           updateUnit = "${updateUnitName}.service";

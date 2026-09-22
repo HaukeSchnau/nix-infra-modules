@@ -1,80 +1,112 @@
-# Shared project definitions
+# Project definitions
 
-Author application requirements and release policy in a repository-root
-`project.nix`. Development and release builds import it independently. JSON is
-an evaluated artifact, not a file authors must export and commit.
+A Project repository describes what the application needs in `project.nix`.
+Development adds tools and processes in `devenv.nix`
+([Project devenv](./project-devenv.md)); `flake.nix` builds the immutable
+release ([Project runtime](./project-runtime.md)). Hosts bind secrets,
+parameters, domains and placement.
+
+## project.nix
 
 ```nix
-# project.nix
 {
   project = {
     name = "example";
-    requirements.data = {
-      kind = "directory";
-      path = "data";
-      persistent = true;
+    requirements = {
+      data = { kind = "directory"; path = "data"; };
+      apiKey.kind = "secret";                          # bound by the host
+      session = { kind = "secret"; generate.bytes = 32; }; # generated per development instance
     };
-    release.health.paths = [ "/healthz" ];
+    parameters.publicName = { description = "Title"; default = "Example"; };
+
+    # Shared by every development and release action.
+    environment = {
+      DATA_DIR = { binding = "data"; field = "path"; };
+      PUBLIC_NAME.parameter = "publicName";
+    };
+    development.environment.DEBUG = "1";
+
+    release = {
+      health.paths = [ "/healthz" ];
+      environment.MODE = "production";                   # every release action
+      serviceEnvironment.PORT = { endpoint = "web"; field = "listen.port"; };
+      maintenanceJobs.sync = {
+        schedule.interval = "1h";
+        environment.API_KEY = { binding = "apiKey"; field = "value"; };
+      };
+    };
   };
 }
 ```
 
-The shared module has typed requirements, parameters, environment references,
-and release settings. Normalization also checks references, task cycles and
-other relationships. Secret values and concrete host bindings remain outside
-these definitions.
+Requirement kinds are `directory`, `secret` and `postgresql`. `realizations`
+limits a requirement to `development` or `release`. A PostgreSQL requirement
+takes `majorVersion`, `majorVersions`, or a `package` whose major version is
+used.
 
-## Development
+An environment value is a literal string or one reference:
+`{ binding; field; }` for a requirement, `{ endpoint; field; }` with `url`,
+`protocol`, `hostNames`, `listen.host` or `listen.port`, `{ parameter; }`,
+`{ path; append?; }` for `checkout`, `state`, `cache` or `runtime`, or
+`{ instance = "id"; }`. Secret requirements expose `file` and `value`; read
+secrets from files where the application allows it.
 
-Import the shared file alongside the SDK's devenv annotations:
+Environment attaches to where it is used. `environment` reaches everything,
+`development.environment` every development process and task,
+`release.environment` every release action, `release.serviceEnvironment` only
+the long-running service, and `commands`, `maintenanceJobs` and
+`preDeployTasks` their own action. An entry point needs the secrets its
+environment references; they are added to its `secrets` list automatically.
 
-```nix
-{ inputs, ... }:
-{
-  imports = [
-    (inputs.projectSdk + "/modules/devenv/project.nix")
-    ./project.nix
-  ];
-  project.enable = true;
-  processes.web = {
-    exec = "my-server";
-    project.endpoints.web.port = 3000;
-  };
-}
-```
+Other release settings: `backend` (`service` or `static`), `action` (service
+action name, default `web`), `activationExecutable`, `stateDirectories`,
+`health`, `ingress` (compression, body limits, headers, redirects, cache
+rules), `ociAuxiliaries` (digest-pinned containers), `preDeployTasks` with
+`dependsOn`, `failureMode` and `timeoutSec`, and `commands` for
+`project prod <command>`.
 
-Devenv exports `config.project.contract` and `config.project.contractFile` after
-combining shared requirements with native tasks and processes. Prepared hosts
-consume that generated metadata directly. Refresh the prepared generation after
-configuration changes; normal request wakeups continue using that generation
-without evaluating mutable Nix files.
-
-`project.environment` supplies development environment mappings;
-`project.releaseEnvironment.common` supplies release mappings. Define common
-mappings once in a `let` binding and assign them to both when they are identical.
-Action-specific mappings belong under the respective realization.
-
-## Production
-
-A flake evaluates the shared definition without importing devenv:
+## flake.nix
 
 ```nix
-projectDescriptor = nix-infra-modules.lib.projectDefinition {
-  modules = [ ./project.nix ];
-};
+outputs = { nixpkgs, nix-infra-modules, ... }:
+  let
+    project = nix-infra-modules.lib.projectFlake {
+      inherit nixpkgs;
+      modules = [ ./project.nix ];
+      release = { pkgs, descriptor }:
+        let
+          src = nix-infra-modules.lib.projectSource { root = ./.; exclude = [ "docs" ]; };
+          app = pkgs.callPackage ./nix/app.nix { inherit src; };
+        in
+        { payloads = [ app ]; actions.web = "${app}/bin/serve"; };
+    };
+  in
+  project // { checks = /* merge further checks */ project.checks; };
 ```
 
-Expose this value as `lib.project` for release tooling. It is a schema-v4
-release descriptor with `development = null`. The development descriptor is
-generated separately from the native process definitions; production does not
-need the development toolchain or its lock file to evaluate shared metadata.
+`projectFlake` returns `lib.project`, `packages.<system>.projectRelease` and
+checks that build it. `release` returns the arguments of `mkServiceRelease` or
+`mkStaticRelease`, matching `release.backend`. `projectSource` drops Project,
+devenv and CI files from the build source so editing them does not rebuild the
+application. The shared CI workflow builds `projectRelease` and reads
+`lib.project`.
 
-Pass `descriptor = projectDescriptor` to `lib.projectRuntime.mkServiceRelease`
-or `mkStaticRelease`. The helpers serialize and embed it in
-`share/project/descriptor.json` during the build. They do not read generated
-JSON during Nix evaluation. Existing `descriptorPath` callers remain supported
-while repositories migrate.
+## Normalized descriptor
 
-`projectModules.default` exports the underlying module for other Nix module
-consumers. `lib.projectDefinition` also accepts `specialArgs` when imported
-modules need explicit dependencies.
+`lib.projectDefinition { modules; }` evaluates the module and returns the
+schema-v4 descriptor that hosts consume and release artifacts embed at
+`share/project/descriptor.json`. `lib.projectDescriptor` exposes:
+
+- `normalize { descriptor; expectedProject?; }` applies defaults and checks
+  references, cycles, names and paths. Types are checked by the modules, so
+  descriptors should come from them. Normalizing twice changes nothing.
+- `resolveParameters { descriptor; values; allowUnknown?; }` type-checks host
+  values against parameter definitions.
+- `releaseApp { descriptor; policy; }` projects a normalized release and typed
+  host policy into the `appDeployments` app settings. A bound secret
+  requirement is satisfied by the credential of the same name.
+- `forRealization` and `releaseTaskOrder` for host adapters.
+
+Hosts reject a release whose topology (backend, action, executable, state
+directories, ingress, auxiliaries) differs from the one they were compiled
+for; see [Project runtime](./project-runtime.md#release-planning).

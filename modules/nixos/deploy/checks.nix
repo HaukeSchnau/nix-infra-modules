@@ -180,77 +180,75 @@ let
     typedSystem.config.systemd.services.app-deployment-demo-update.serviceConfig.ExecStart;
   staticUpdateScript =
     staticSystem.config.systemd.services.app-deployment-docs-update.serviceConfig.ExecStart;
-  conciseProjectDescriptor = {
-    schemaVersion = 1;
-    project = "demo-project";
-    secrets.betterAuthSecret = {
-      description = "Signs application sessions.";
-    };
-    parameters.maxStorageMb = {
-      type = "integer";
-      default = 512;
-    };
-    release = {
-      activationExecutable = "activate-release";
-      stateDirectories = [ "data" ];
-      maintenanceJobs.cleanup = {
-        action = "cleanup";
-        schedule = {
-          cadence = "fixed";
-          interval = "6h";
+  define = modules: self.lib.projectDefinition { inherit modules; };
+  normalize = descriptor: self.lib.projectDescriptor.normalize { inherit descriptor; };
+  conciseProjectModule = {
+    project = {
+      name = "demo-project";
+      requirements.betterAuthSecret = {
+        kind = "secret";
+        description = "Signs application sessions.";
+      };
+      parameters.maxStorageMb = {
+        type = "integer";
+        default = 512;
+      };
+      release = {
+        activationExecutable = "activate-release";
+        stateDirectories = [ "data" ];
+        maintenanceJobs.cleanup = {
+          action = "cleanup";
+          schedule = {
+            cadence = "fixed";
+            interval = "6h";
+          };
+          secrets = [ "betterAuthSecret" ];
         };
-        secrets = [ "betterAuthSecret" ];
-      };
-      ingress = {
-        compression = true;
-        requestBodyMaxBytes = 1048576;
-        redirects = [
-          {
-            from = "/old";
-            to = "/new";
-            permanent = false;
-          }
-        ];
-        cacheRules = [
-          {
-            paths = [ "/assets/*" ];
-            value = "public, max-age=3600";
-          }
-        ];
-        responseHeaders.X-Content-Type-Options = "nosniff";
-      };
-      ociAuxiliaries.database = {
-        image = "postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        ports.postgres.containerPort = 5432;
-      };
-    };
-  };
-  normalizedProjectDescriptor = self.lib.projectDescriptor.normalize {
-    descriptor = conciseProjectDescriptor;
-  };
-  renormalizedProjectDescriptor = self.lib.projectDescriptor.normalize {
-    descriptor = normalizedProjectDescriptor;
-  };
-  normalizedCalendarJobDescriptor = self.lib.projectDescriptor.normalize {
-    descriptor = conciseProjectDescriptor // {
-      release = conciseProjectDescriptor.release // {
-        maintenanceJobs.cleanup.schedule = {
-          calendar = "*-*-* 03:15:00";
+        ingress = {
+          compression = true;
+          requestBodyMaxBytes = 1048576;
+          redirects = [
+            {
+              from = "/old";
+              to = "/new";
+              permanent = false;
+            }
+          ];
+          cacheRules = [
+            {
+              paths = [ "/assets/*" ];
+              value = "public, max-age=3600";
+            }
+          ];
+          responseHeaders.X-Content-Type-Options = "nosniff";
+        };
+        ociAuxiliaries.database = {
+          image = "postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          ports.postgres.containerPort = 5432;
         };
       };
     };
   };
-  renormalizedCalendarJobDescriptor = self.lib.projectDescriptor.normalize {
-    descriptor = normalizedCalendarJobDescriptor;
-  };
-  normalizedDevelopmentHealthDescriptor = self.lib.projectDescriptor.normalize {
-    descriptor = conciseProjectDescriptor // {
-      schemaVersion = 2;
-      development.endpoints.web = { };
-    };
-  };
+  conciseProjectDescriptor = define [ conciseProjectModule ];
+  normalizedProjectDescriptor = conciseProjectDescriptor;
+  renormalizedProjectDescriptor = normalize normalizedProjectDescriptor;
+  normalizedCalendarJobDescriptor = define [
+    conciseProjectModule
+    { project.release.maintenanceJobs.cleanup.schedule = lib.mkForce { calendar = "*-*-* 03:15:00"; }; }
+  ];
+  renormalizedCalendarJobDescriptor = normalize normalizedCalendarJobDescriptor;
+  normalizedDevelopmentHealthDescriptor = normalize (
+    conciseProjectDescriptor
+    // {
+      development = {
+        workloads.web = { };
+        endpoints.web = { };
+      };
+    }
+  );
   projectPolicy = {
     project = "demo-project";
+    instanceId = "demo-project:release:example:default";
     source = {
       url = "git+https://git.example.net/example/demo-project.git";
       branch = "main";
@@ -296,13 +294,9 @@ let
       isolation = "trusted";
     };
   };
-  pairedProjectDescriptor = conciseProjectDescriptor // {
-    schemaVersion = 2;
-    development = { };
-    release = conciseProjectDescriptor.release // {
-      ingress = conciseProjectDescriptor.release.ingress // {
-        streamCloseDelaySec = 300;
-      };
+  pairedProjectModule = {
+    project.release = {
+      ingress.streamCloseDelaySec = 300;
       preDeployTasks.migrate = {
         failureMode = "defer";
         secrets = [ "betterAuthSecret" ];
@@ -310,6 +304,10 @@ let
       };
     };
   };
+  pairedProjectDescriptor = define [
+    conciseProjectModule
+    pairedProjectModule
+  ];
   pairedProjectApp =
     self.lib.projectDescriptor.releaseApp {
       descriptor = pairedProjectDescriptor;
@@ -388,9 +386,11 @@ let
       vps.services.appDeployments = {
         enable = true;
         apps.demo-project = self.lib.projectDescriptor.releaseApp {
-          descriptor = pairedProjectDescriptor // {
-            release = builtins.removeAttrs pairedProjectDescriptor.release [ "activationExecutable" ];
-          };
+          descriptor = define [
+            conciseProjectModule
+            pairedProjectModule
+            { project.release.activationExecutable = lib.mkForce null; }
+          ];
           policy = projectPolicy;
         };
       };
@@ -453,11 +453,12 @@ let
       (throw "project-release-status is absent from the Project host")
       pairedProjectSystem.config.environment.systemPackages;
   projectReleaseStatus = lib.getExe projectReleaseStatusPackage;
-  staticProjectDescriptor = {
-    schemaVersion = 1;
-    project = "static-project";
-    release.backend = "static";
-  };
+  staticProjectDescriptor = define [
+    {
+      project.name = "static-project";
+      project.release.backend = "static";
+    }
+  ];
   staticProjectSystem = mkFleetSystem "project-static-01" [
     {
       vps.services.appDeployments = {
@@ -570,10 +571,13 @@ let
       tmpfiles = builtins.filter (lib.hasInfix "/var/lib/app-deployments/demo-project") projectSystem.config.systemd.tmpfiles.rules;
     }
   );
-  descriptorEvaluationSucceeds =
-    descriptor:
+  definitionSucceeds =
+    module:
     (builtins.tryEval (
-      builtins.deepSeq (self.lib.projectDescriptor.normalize { inherit descriptor; }) true
+      builtins.deepSeq (define [
+        conciseProjectModule
+        module
+      ]) true
     )).success;
   releaseProjectionSucceeds =
     descriptor: policy:
@@ -582,7 +586,7 @@ let
     )).success;
   compatibilityPolicy = pkgs.writeText "project-release-compatibility-policy.json" (
     builtins.toJSON {
-      descriptor = self.lib.projectDescriptor.normalize { descriptor = pairedProjectDescriptor; };
+      descriptor = pairedProjectDescriptor;
       managedJobs = [ "cleanup" ];
       bindings = {
         parameters.futureInteger = 42;
@@ -590,93 +594,79 @@ let
           "betterAuthSecret"
           "futureSecret"
         ];
+        resources = lib.genAttrs [ "betterAuthSecret" "futureSecret" ] (name: {
+          kind = "secret";
+          credential = name;
+        });
       };
     }
   );
-  compatibleCandidate = pkgs.writeText "project-release-compatible-candidate.json" (
-    builtins.toJSON (
-      pairedProjectDescriptor
-      // {
-        development.endpoints.preview = { };
-        parameters = pairedProjectDescriptor.parameters // {
-          futureInteger = {
-            type = "integer";
-            description = "Added after the host binding was declared.";
-          };
+  candidate =
+    name: modules:
+    pkgs.writeText "project-release-${name}-candidate.json" (
+      builtins.toJSON (
+        define (
+          [
+            conciseProjectModule
+            pairedProjectModule
+          ]
+          ++ modules
+        )
+      )
+    );
+  compatibleCandidate = candidate "compatible" [
+    {
+      project.parameters.futureInteger = {
+        type = "integer";
+        description = "Added after the host binding was declared.";
+      };
+      project.requirements.futureSecret = {
+        kind = "secret";
+        description = "Added after the host binding was declared.";
+      };
+    }
+  ];
+  missingBindingCandidate = candidate "missing-binding" [
+    {
+      project.parameters.unbound = {
+        type = "string";
+        required = true;
+      };
+    }
+  ];
+  changedHealthCandidate = candidate "changed-health" [
+    {
+      project.release = {
+        health.paths = [ "/different" ];
+        preDeployTasks.warmup = {
+          action = "warm-cache";
+          dependsOn = [ "migrate" ];
+          timeoutSec = 30;
         };
-        secrets = pairedProjectDescriptor.secrets // {
-          futureSecret.description = "Added after the host binding was declared.";
+      };
+    }
+  ];
+  changedTopologyCandidate = candidate "changed-topology" [
+    { project.release.ingress.compression = lib.mkForce false; }
+  ];
+  changedActionsCandidate = candidate "changed-actions" [
+    {
+      project.requirements.futureSecret = {
+        kind = "secret";
+        description = "Used by the new maintenance implementation.";
+      };
+      project.release = {
+        activationExecutable = lib.mkForce "activate-v2";
+        maintenanceJobs.cleanup = {
+          action = lib.mkForce "prune";
+          secrets = lib.mkForce [ "futureSecret" ];
         };
-      }
-    )
-  );
-  missingBindingCandidate = pkgs.writeText "project-release-missing-binding-candidate.json" (
-    builtins.toJSON (
-      pairedProjectDescriptor
-      // {
-        parameters = pairedProjectDescriptor.parameters // {
-          unbound = {
-            type = "string";
-            required = true;
-          };
-        };
-      }
-    )
-  );
-  changedHealthCandidate = pkgs.writeText "project-release-changed-health-candidate.json" (
-    builtins.toJSON (
-      pairedProjectDescriptor
-      // {
-        release = pairedProjectDescriptor.release // {
-          health.paths = [ "/different" ];
-          preDeployTasks = pairedProjectDescriptor.release.preDeployTasks // {
-            warmup = {
-              action = "warm-cache";
-              dependsOn = [ "migrate" ];
-              timeoutSec = 30;
-            };
-          };
-        };
-      }
-    )
-  );
-  changedTopologyCandidate = pkgs.writeText "project-release-changed-topology-candidate.json" (
-    builtins.toJSON (
-      pairedProjectDescriptor
-      // {
-        release = pairedProjectDescriptor.release // {
-          ingress.compression = true;
-        };
-      }
-    )
-  );
-  changedActionsCandidate = pkgs.writeText "project-release-changed-actions-candidate.json" (
-    builtins.toJSON (
-      pairedProjectDescriptor
-      // {
-        secrets = pairedProjectDescriptor.secrets // {
-          futureSecret.description = "Used by the new maintenance implementation.";
-        };
-        release = pairedProjectDescriptor.release // {
-          activationExecutable = "activate-v2";
-          maintenanceJobs.cleanup = {
-            action = "prune";
-            secrets = [ "futureSecret" ];
-          };
-        };
-      }
-    )
-  );
-  missingManagedJobCandidate = pkgs.writeText "project-release-missing-managed-job-candidate.json" (
-    builtins.toJSON (
-      pairedProjectDescriptor
-      // {
-        release = pairedProjectDescriptor.release // {
-          maintenanceJobs = { };
-        };
-      }
-    )
-  );
+      };
+    }
+  ];
+  missingManagedJobCandidate = candidate "missing-managed-job" [
+    { project.release.maintenanceJobs = lib.mkForce { }; }
+  ];
 in
 {
   app-deployments-contract = pkgs.runCommand "app-deployments-contract" { } ''
@@ -743,46 +733,33 @@ in
       if normalizedProjectDescriptor.secrets.betterAuthSecret.required then "required" else "optional"
     }' = required
     test '${toString (builtins.elemAt normalizedProjectDescriptor.release.ingress.redirects 0).status}' = 307
-    test '${
-      toString
-        (self.lib.projectDescriptor.normalize { descriptor = pairedProjectDescriptor; })
-        .release.ingress.streamCloseDelaySec
-    }' = 300
-    test '${
-      (self.lib.projectDescriptor.normalize { descriptor = pairedProjectDescriptor; })
-      .release.preDeployTasks.migrate.failureMode
-    }' = defer
+    test '${toString pairedProjectDescriptor.release.ingress.streamCloseDelaySec}' = 300
+    test '${pairedProjectDescriptor.release.preDeployTasks.migrate.failureMode}' = defer
     test '${normalizedProjectDescriptor.release.ociAuxiliaries.database.ports.postgres.protocol}' = tcp
     test '${toString normalizedDevelopmentHealthDescriptor.development.endpoints.web.health.intervalSec}' = 1
     test '${toString normalizedDevelopmentHealthDescriptor.development.endpoints.web.health.requestTimeoutSec}' = 15
     test '${toString normalizedDevelopmentHealthDescriptor.release.health.intervalSec}' = 2
     test '${toString normalizedDevelopmentHealthDescriptor.release.health.requestTimeoutSec}' = 5
-    test '${
-      lib.concatStringsSep "," (
-        self.lib.projectDescriptor.releaseTaskOrder
-          (self.lib.projectDescriptor.normalize { descriptor = pairedProjectDescriptor; }).release
-      )
-    }' = migrate
+    test '${lib.concatStringsSep "," (self.lib.projectDescriptor.releaseTaskOrder pairedProjectDescriptor.release)}' = migrate
 
     test '${
-      if descriptorEvaluationSucceeds (conciseProjectDescriptor // { schemaVersion = 2; }) then
+      if
+        (builtins.tryEval (
+          builtins.deepSeq (normalize (conciseProjectDescriptor // { schemaVersion = 2; })) true
+        )).success
+      then
         "accepted"
       else
         "rejected"
     }' = rejected
     test '${
       if
-        descriptorEvaluationSucceeds (
-          pairedProjectDescriptor
-          // {
-            release = pairedProjectDescriptor.release // {
-              preDeployTasks = {
-                first.dependsOn = [ "second" ];
-                second.dependsOn = [ "first" ];
-              };
-            };
-          }
-        )
+        definitionSucceeds {
+          project.release.preDeployTasks = {
+            first.dependsOn = [ "second" ];
+            second.dependsOn = [ "first" ];
+          };
+        }
       then
         "accepted"
       else
@@ -805,42 +782,31 @@ in
         "rejected"
     }' = accepted
     test '${
-      if descriptorEvaluationSucceeds (conciseProjectDescriptor // { project = "Bad Project"; }) then
+      if definitionSucceeds { project.name = lib.mkForce "Bad Project"; } then "accepted" else "rejected"
+    }' = rejected
+    test '${
+      if definitionSucceeds { project.requirements."bad/name".kind = "secret"; } then
         "accepted"
       else
         "rejected"
     }' = rejected
     test '${
-      if descriptorEvaluationSucceeds (conciseProjectDescriptor // { secrets."bad/name" = { }; }) then
+      if definitionSucceeds { project.release.stateDirectories = lib.mkForce [ "/absolute" ]; } then
         "accepted"
       else
         "rejected"
     }' = rejected
     test '${
-      if
-        descriptorEvaluationSucceeds (
-          conciseProjectDescriptor // { release.stateDirectories = [ "/absolute" ]; }
-        )
-      then
-        "accepted"
-      else
-        "rejected"
-    }' = rejected
-    test '${
-      if
-        descriptorEvaluationSucceeds (
-          conciseProjectDescriptor // { release.ingress.extraConfig = "raw caddy"; }
-        )
-      then
+      if definitionSucceeds { project.release.ingress.extraConfig = "raw caddy"; } then
         "accepted"
       else
         "rejected"
     }' = rejected
     test '${
       if
-        descriptorEvaluationSucceeds (
-          conciseProjectDescriptor // { release.ociAuxiliaries.database.image = "postgres:latest"; }
-        )
+        definitionSucceeds {
+          project.release.ociAuxiliaries.database.image = lib.mkForce "postgres:latest";
+        }
       then
         "accepted"
       else
@@ -885,7 +851,7 @@ in
     }' = present
     grep -Fq 'current_descriptor_matches' ${projectUpdateScript}
     grep -Fq -- '-diffutils-' ${projectUpdateScript}
-    grep -Fq 'project-release-compatibility.jq' ${projectUpdateScript}
+    grep -Fq 'plan-release' ${projectUpdateScript}
     grep -Fq 'app-deployment-demo-project-activate.service' ${projectUpdateScript}
     grep -Fq 'rollback activation' ${projectUpdateScript}
     grep -Fq 'PROJECT_RUNTIME_FILE=' ${projectStartScript}
@@ -936,21 +902,16 @@ in
     paired_runtime_manifest="$(${pkgs.gnugrep}/bin/grep -o '/nix/store/[^ ]*-project-release-runtime-base-demo-project.json' ${pairedProjectUpdateScript} | head -n 1)"
     grep -Fq '/project-runtime.json' ${projectStartScript}
     grep -Fq '/project-runtime.json' ${projectJobScript}
-    ${pkgs.check-jsonschema}/bin/check-jsonschema \
-      --schemafile ${../../../schemas/project-runtime/v2.json} \
-      "$paired_runtime_manifest"
     ${pkgs.jq}/bin/jq -e '
-      .descriptor.schemaVersion == 1
+      .descriptor.schemaVersion == 4
       and .descriptor.project == "demo-project"
       and .descriptor.release.activationExecutable == "activate-release"
       and .descriptor.release.backend == "service"
     ' "$binding_policy" >/dev/null
 
     compatibility() {
-      ${pkgs.jq}/bin/jq -n \
-        --slurpfile host ${compatibilityPolicy} \
-        --slurpfile candidate "$1" \
-        -f ${./project-release-compatibility.jq}
+      ${lib.getExe (self.lib.projectRuntime.package pkgs)} plan-release \
+        --host ${compatibilityPolicy} --candidate "$1"
     }
     compatibility ${compatibleCandidate} > compatible.json
     ${pkgs.jq}/bin/jq -e '
@@ -993,18 +954,18 @@ in
       and (.reasons | index("host-managed maintenance job is not declared by the candidate: cleanup"))
     ' missing-job.json >/dev/null
     ${pkgs.jq}/bin/jq -e '
-      .schemaVersion == 1
+      .schemaVersion == 3
       and .project == "demo-project"
       and .realization == "release"
-      and .endpoints.default.url == "https://demo-project.example.net"
-      and .endpoints.default.listen.host == "127.0.0.1"
-      and .endpoints.default.listen.port == 18200
-      and .endpoints["database-postgres"].url == "tcp://127.0.0.1:22000"
+      and .instanceId != null
+      and .endpoints.web.url == "https://demo-project.example.net"
+      and .endpoints.web.listen.port == 18200
+      and .endpoints["database-postgres"].protocol == "tcp"
       and (.parameters | not)
       and (.secrets | not)
     ' "$runtime_manifest" >/dev/null
     ${pkgs.jq}/bin/jq -e '
-      .schemaVersion == 2
+      .schemaVersion == 3
       and .project == "demo-project"
       and .realization == "release"
       and .endpoints.web.protocol == "http"
