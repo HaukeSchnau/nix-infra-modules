@@ -60,6 +60,7 @@
         caddyIngress = ./modules/nixos/ingress/caddy.nix;
         edgeIngress = ./modules/nixos/ingress/edge-ingress.nix;
         appDeployments = ./modules/nixos/deploy/app-deployments.nix;
+        projects = ./modules/nixos/projects;
       };
 
       darwinModules = {
@@ -80,6 +81,8 @@
         in
         {
           ci-workspace-runner = import ./lib/ci-workspace-runner.nix { inherit pkgs; };
+          # The `project` controller as a Python package, for host tooling built on its registry.
+          project-controller = pkgs.callPackage ./modules/nixos/projects/controller/package.nix { };
         }
       );
 
@@ -148,6 +151,7 @@
               ./modules/home-manager/workspace-repos/checks.nix
               ./modules/home-manager/colors/checks.nix
               ./modules/project/checks.nix
+              ./modules/nixos/projects/checks.nix
               ./lib/project-runtime/checks.nix
               ./lib/fleet-topology/checks.nix
             ]
