@@ -31,8 +31,12 @@ architecture directory. The Gitea runner pool module sets this automatically
 for multi-instance pools.
 
 The project command runs below a small supervisor. Cancellation is forwarded to
-its complete process group, including when the CI executor kills the runner's
-outer process before shell traps can run.
+the command's session and every descendant, including ones that started their
+own session, and also when the CI executor kills the runner's outer process
+before shell traps can run. Processes still running
+`CI_CANCEL_GRACE_SECONDS` (default 10) after the TERM get SIGKILL. That matters
+for tools that catch TERM and keep working, such as TypeScript 7's native
+`tsc`, which finishes its whole check first.
 
 The repository remains responsible for its QA graph. The runner only provides
 workspace reuse, synchronization, locking, and lifecycle hooks.
