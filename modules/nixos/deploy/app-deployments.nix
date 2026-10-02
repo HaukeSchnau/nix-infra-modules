@@ -965,6 +965,7 @@ let
     import re
     import subprocess
     import tempfile
+    import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     APPS_FILE = os.environ["APP_DEPLOYMENTS_APPS_FILE"]
@@ -976,6 +977,56 @@ let
     def read_token():
       with open(TOKEN_FILE, "r", encoding="utf-8") as handle:
         return handle.read().strip()
+
+    FENCE_LOCK = threading.Lock()
+
+    def read_text(path):
+      try:
+        with open(path, "r", encoding="utf-8") as handle:
+          return handle.read().strip() or None
+      except FileNotFoundError:
+        return None
+
+    def accept_fence(state_dir, fence):
+      """Records the highest fencing token seen; a lower one comes from a stale deploy lease."""
+      path = os.path.join(state_dir, "fence")
+      with FENCE_LOCK:
+        current = int(read_text(path) or "0")
+        if fence < current:
+          return current
+        os.makedirs(state_dir, exist_ok=True)
+        with open(path + ".next", "w", encoding="utf-8") as handle:
+          handle.write(str(fence) + "\n")
+        os.replace(path + ".next", path)
+        return None
+
+    def app_status(app):
+      state_dir = os.path.dirname(app["requestedReleaseFile"])
+      current = os.path.join(state_dir, "current")
+      revision_file = os.path.join(state_dir, "current-revision")
+      pending = None
+      try:
+        with open(app["requestedReleaseFile"], "r", encoding="utf-8") as handle:
+          pending = json.load(handle).get("revision")
+      except (FileNotFoundError, json.JSONDecodeError):
+        pass
+      compatibility = None
+      try:
+        with open(app["compatibilityFile"], "r", encoding="utf-8") as handle:
+          compatibility = json.load(handle)
+      except (FileNotFoundError, json.JSONDecodeError):
+        pass
+      since = None
+      if os.path.exists(revision_file):
+        since = int(os.path.getmtime(revision_file) * 1000)
+      return {
+        "revision": read_text(revision_file),
+        "storePath": os.path.realpath(current) if os.path.islink(current) else None,
+        "previous": read_text(os.path.join(state_dir, "previous-revision")),
+        "pending": pending,
+        "since": since,
+        "healthy": None if compatibility is None else bool(compatibility.get("compatible", True)),
+      }
 
     class Handler(BaseHTTPRequestHandler):
       server_version = "app-deployments-webhook"
@@ -994,6 +1045,17 @@ let
       def do_GET(self):
         if self.path == "/health":
           self.send_json(200, {"ok": True, "apps": sorted(APPS.keys())})
+          return
+        match = re.fullmatch(r"/status/([^/]+)", self.path)
+        if match is not None:
+          if self.headers.get("Authorization", "") != "Bearer " + read_token():
+            self.send_json(403, {"error": "forbidden"})
+            return
+          app = APPS.get(match.group(1))
+          if app is None:
+            self.send_json(404, {"error": "unknown app", "app": match.group(1)})
+            return
+          self.send_json(200, app_status(app))
           return
         self.send_json(404, {"error": "not found"})
 
@@ -1064,6 +1126,16 @@ let
         if store_path and re.fullmatch(r"/nix/store/[0-9a-df-np-sv-z]{32}-[^/]+", store_path) is None:
           self.send_json(400, {"error": "invalid storePath"})
           return
+
+        fence = payload.get("fence")
+        if fence is not None:
+          if not isinstance(fence, int) or isinstance(fence, bool) or fence < 0:
+            self.send_json(400, {"error": "invalid fence"})
+            return
+          newer = accept_fence(os.path.dirname(app["requestedReleaseFile"]), fence)
+          if newer is not None:
+            self.send_json(409, {"error": "stale fence", "fence": newer})
+            return
 
         if app["deliveryMode"] == "cache":
           if not revision or not store_path:
