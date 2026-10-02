@@ -103,6 +103,7 @@ let
     import shutil
     import subprocess
     import sys
+    import time
     import urllib.error
     import urllib.parse
     import urllib.request
@@ -185,12 +186,23 @@ let
                 },
                 method="GET",
             )
-            try:
-                with urllib.request.urlopen(request, timeout=30) as response:
-                    data = response.read()
-            except urllib.error.HTTPError as error:
-                message = error.read().decode("utf-8", errors="replace")
-                raise RuntimeError(f"Gitea API GET {path} failed: HTTP {error.code}: {message}") from error
+            # A host activation that restarts Gitea can start this sync while Gitea is still coming up.
+            for attempt in range(12):
+                try:
+                    with urllib.request.urlopen(request, timeout=30) as response:
+                        data = response.read()
+                    break
+                except urllib.error.HTTPError as error:
+                    message = error.read().decode("utf-8", errors="replace")
+                    if error.code in (502, 503, 504) and attempt < 11:
+                        time.sleep(5)
+                        continue
+                    raise RuntimeError(f"Gitea API GET {path} failed: HTTP {error.code}: {message}") from error
+                except urllib.error.URLError:
+                    if attempt < 11:
+                        time.sleep(5)
+                        continue
+                    raise
 
             if not data:
                 return {}
