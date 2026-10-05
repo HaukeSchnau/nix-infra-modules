@@ -2,10 +2,6 @@
 
 Reusable Nix infrastructure modules for small self-hosted fleets.
 
-The flake also exposes small project-neutral packages. See the
-[CI workspace runner](./docs/ci-workspace-runner.md) for persistent CI workspace
-reuse with repository-owned setup and task definitions.
-
 This repository is the public, reusable half of a private infrastructure setup.
 It demonstrates how to keep fleet contracts, service modules, examples, and
 checks shareable while leaving real host placement, domains, secrets, DNS, and
@@ -54,7 +50,6 @@ nix-infra-modules ../nix-infra-modules` for fast local iteration.
 | `nixosModules.serverBackup` | NixOS | Restic backup policy with file-path secret interface | [server backup](docs/modules/server-backup.md), `server-backup-example` |
 | `nixosModules.gitMirrors` | NixOS | Periodic Gitea-to-GitHub repository mirrors | [git mirrors](docs/modules/git-mirrors.md), `git-mirrors-example` |
 | `nixosModules.githubRunner` | NixOS | GitHub Actions runner leaf module | [runners](docs/modules/runners.md), `github-runner-example` |
-| `nixosModules.giteaActionsRunner` | NixOS | Gitea Actions runner leaf module | [runners](docs/modules/runners.md), `gitea-runner-example` |
 | `nixosModules.caddyIngress` | NixOS | Tailnet-first Caddy virtual hosts and internal ingress | [ingress](docs/modules/ingress.md) |
 | `nixosModules.edgeIngress` | NixOS | Public edge proxy for generated upstream routes and TCP forwards | [ingress](docs/modules/ingress.md), `edge-tcp-range-example` |
 | `nixosModules.appDeployments` | NixOS | Tailnet webhook and shared app deployment plumbing | [app deployments](docs/modules/app-deployments.md) |

@@ -56,7 +56,6 @@
         serverBackup = ./modules/nixos/backup/server-backup.nix;
         gitMirrors = ./modules/nixos/developer/git-mirrors.nix;
         githubRunner = ./modules/nixos/ci/github-runner.nix;
-        giteaActionsRunner = ./modules/nixos/ci/gitea-actions-runner.nix;
         caddyIngress = ./modules/nixos/ingress/caddy.nix;
         edgeIngress = ./modules/nixos/ingress/edge-ingress.nix;
         appDeployments = ./modules/nixos/deploy/app-deployments.nix;
@@ -80,7 +79,6 @@
           pkgs = import nixpkgs { inherit system; };
         in
         {
-          ci-workspace-runner = import ./lib/ci-workspace-runner.nix { inherit pkgs; };
           # The `project` controller as a Python package, for host tooling built on its registry.
           project-controller = pkgs.callPackage ./modules/nixos/projects/controller/package.nix { };
         }
@@ -138,7 +136,6 @@
               system
               ;
           };
-          ciWorkspaceRunner = self.packages.${system}.ci-workspace-runner;
           domainChecks = lib.mergeAttrsList (
             map (path: import path checkArgs) [
               ./modules/nixos/fleet/checks.nix
@@ -172,10 +169,6 @@
               '';
         }
         // domainChecks
-        // import ./lib/ci-workspace-runner/checks.nix {
-          inherit pkgs;
-          runner = ciWorkspaceRunner;
-        }
       );
     };
 }
