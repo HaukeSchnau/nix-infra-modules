@@ -25,6 +25,17 @@ let
     ];
   };
   backup = backupSystem.config.services.restic.backups.core-01;
+  sharedBackup =
+    (backupSystem.extendModules {
+      modules = [
+        {
+          server.backup = {
+            initialize = false;
+            applyRetention = false;
+          };
+        }
+      ];
+    }).config.services.restic.backups.core-01;
 in
 {
   server-backup-example = pkgs.runCommand "server-backup-example" { } ''
@@ -32,6 +43,9 @@ in
     test '${backup.passwordFile}' = '/run/secrets/restic-password'
     test '${backup.environmentFile}' = '/run/secrets/restic-env'
     test '${if builtins.elem "--host core-01" backup.pruneOpts then "yes" else "no"}' = 'yes'
+    test '${lib.boolToString backup.initialize}' = 'true'
+    test '${toString (builtins.length sharedBackup.pruneOpts)}' = '0'
+    test '${lib.boolToString sharedBackup.initialize}' = 'false'
     touch $out
   '';
 }

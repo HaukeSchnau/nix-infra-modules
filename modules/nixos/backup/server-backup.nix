@@ -60,6 +60,28 @@ in
       description = "Restic retention policy options.";
     };
 
+    initialize = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Create the repository before a backup when it doesn't exist. Turn this
+        off for a repository shared with other hosts: the existence check takes
+        a lock, and while another host holds one it falls through to `init`,
+        which fails the backup.
+      '';
+    };
+
+    applyRetention = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Forget this host's snapshots by `pruneOpts` and prune after each
+        backup. Turn this off when a single job applies retention to a
+        repository shared with other hosts, so no backup takes the exclusive
+        prune lock.
+      '';
+    };
+
     timerOnCalendar = lib.mkOption {
       type = lib.types.str;
       default = "daily";
@@ -90,7 +112,7 @@ in
     ];
 
     services.restic.backups.${config.networking.hostName} = {
-      initialize = true;
+      inherit (cfg) initialize;
       repository = cfg.repository;
       passwordFile = cfg.passwordFile;
       environmentFile = cfg.environmentFile;
@@ -99,10 +121,9 @@ in
         "--host"
         config.networking.hostName
       ];
-      pruneOpts = [
-        "--host ${config.networking.hostName}"
-      ]
-      ++ cfg.pruneOpts;
+      pruneOpts = lib.optionals cfg.applyRetention (
+        [ "--host ${config.networking.hostName}" ] ++ cfg.pruneOpts
+      );
       timerConfig = {
         OnCalendar = cfg.timerOnCalendar;
         RandomizedDelaySec = cfg.timerRandomizedDelaySec;
