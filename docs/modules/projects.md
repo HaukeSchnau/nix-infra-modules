@@ -78,4 +78,4 @@ named placement; an explicit `hostName` keeps the generated name as a redirect
 alongside `endpoint.aliases`.
 
 `vps.services.projects.resolvedReleases` and `resolvedDevelopments` summarize
-the placements for other modules, such as a fleet topology.
+the placements for other modules.
