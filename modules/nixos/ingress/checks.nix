@@ -55,4 +55,37 @@ in
       grep -q 'server upstream core-01:32002 init-addr libc' ${haproxyConfig}
       touch $out
     '';
+
+  edge-tcp-forward-firewall =
+    let
+      edge = mkFleetSystem "edge-02" [
+        {
+          vps.services.edgeIngress = {
+            enable = true;
+            upstream = {
+              upstreamHost = "core-01";
+              internalIngressPort = 18081;
+              routes = { };
+              tcpForwards = {
+                public = {
+                  listenPort = 2201;
+                  upstreamPort = 3201;
+                };
+                private = {
+                  listenPort = 2202;
+                  upstreamPort = 3202;
+                  tailscaleOnly = true;
+                };
+              };
+              tcpForwardRanges = { };
+            };
+          };
+        }
+      ];
+      inherit (edge.config.networking) firewall;
+    in
+    assert builtins.elem 2201 firewall.allowedTCPPorts;
+    assert !(builtins.elem 2202 firewall.allowedTCPPorts);
+    assert builtins.elem 2202 firewall.interfaces.tailscale0.allowedTCPPorts;
+    pkgs.runCommand "edge-tcp-forward-firewall" { } "touch $out";
 }

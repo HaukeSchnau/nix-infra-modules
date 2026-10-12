@@ -18,7 +18,11 @@ let
     range: validRange range.listen && validRange range.upstream && equalSizedRange range
   ) (lib.attrValues tcpForwardRanges);
 
-  tcpForwardPorts = map (forward: forward.listenPort) (lib.attrValues tcpForwards);
+  forwardPorts =
+    tailscaleOnly:
+    map (forward: forward.listenPort) (
+      lib.filter (forward: forward.tailscaleOnly == tailscaleOnly) (lib.attrValues tcpForwards)
+    );
   tcpForwardPortRanges = map (range: range.listen) (lib.attrValues tcpForwardRanges);
 
   expandTcpForwardRange =
@@ -155,8 +159,9 @@ in
         ];
 
         networking.firewall = {
-          allowedTCPPorts = lib.mkAfter tcpForwardPorts;
+          allowedTCPPorts = lib.mkAfter (forwardPorts false);
           allowedTCPPortRanges = lib.mkAfter tcpForwardPortRanges;
+          interfaces.tailscale0.allowedTCPPorts = lib.mkAfter (forwardPorts true);
         };
       })
     ]

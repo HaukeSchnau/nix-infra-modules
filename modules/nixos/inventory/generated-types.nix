@@ -39,6 +39,11 @@ let
       upstreamPort = lib.mkOption {
         type = lib.types.port;
       };
+      tailscaleOnly = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Accept connections to the listen port on tailscale0 only.";
+      };
     };
   };
 
