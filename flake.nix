@@ -36,7 +36,6 @@
 
       lib.projectDescriptor = import ./lib/project-descriptor.nix { inherit lib; };
       lib.projectRuntime = import ./lib/project-runtime.nix { inherit lib; };
-      lib.topology = import ./lib/fleet-topology { inherit lib; };
 
       devenvModules.project = ./modules/devenv/project.nix;
 
@@ -150,7 +149,6 @@
               ./modules/project/checks.nix
               ./modules/nixos/projects/checks.nix
               ./lib/project-runtime/checks.nix
-              ./lib/fleet-topology/checks.nix
             ]
           );
         in
