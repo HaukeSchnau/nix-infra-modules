@@ -1,37 +1,25 @@
-# Two VPS Fleet Example
+# Fleet Example
 
-This example is a synthetic fleet shaped like a small self-hosted deployment.
+This example is one synthetic host shaped like a small self-hosted deployment.
 It is intentionally fake: domains, repositories, host names, ports, and secret
 names are placeholders.
 
-## Layout
-
-- `core-01` owns application runtime and internal Caddy ingress.
-- `edge-01` owns public Caddy TLS and TCP forwarding.
-- `edge-01` consumes `core-01.config.vps.generated.edgeIngress` to avoid
-  duplicating public route inventory.
-
-`core-01` declares routes in normal service modules. The generated contract
-turns those routes into a small data shape containing an upstream host,
-internal ingress port, HTTP routes, TCP forwards, and TCP forward ranges.
-`edge-01` receives that data shape and renders public Caddy and HAProxy config.
+`core-01` runs a flake-deployed app and serves its own routes with Caddy. Its
+routes are declared in normal service modules; the generated contract turns
+them into inventory, health units and ingress routes.
 
 ## What It Demonstrates
 
 - generated service inventory and `vps-health-check` command wiring
-- tailnet-only internal routes
-- public edge forwarding
+- tailnet-only and public Caddy routes
 - flake-based app deployment plumbing
-- TCP range expansion for services that need paired listener/upstream ranges
 
 ## Try It
 
 ```sh
 nix flake check
-nix eval .#checks.x86_64-linux.edge-tcp-range-example.drvPath
 nix eval --json .#nixosConfigurations.core-01.config.vps.generated.services
-nix eval --json .#nixosConfigurations.core-01.config.vps.generated.edgeIngress
-nix eval --json .#nixosConfigurations.edge-01.config.services.haproxy.enable
+nix eval --json .#nixosConfigurations.core-01.config.vps.generated.ingressRoutes
 ```
 
 The example systems are container-like NixOS configurations for evaluation and

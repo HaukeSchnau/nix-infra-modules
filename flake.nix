@@ -56,7 +56,6 @@
         gitMirrors = ./modules/nixos/developer/git-mirrors.nix;
         githubRunner = ./modules/nixos/ci/github-runner.nix;
         caddyIngress = ./modules/nixos/ingress/caddy.nix;
-        edgeIngress = ./modules/nixos/ingress/edge-ingress.nix;
         appDeployments = ./modules/nixos/deploy/app-deployments.nix;
         projects = ./modules/nixos/projects;
       };
@@ -139,7 +138,6 @@
             map (path: import path checkArgs) [
               ./modules/nixos/fleet/checks.nix
               ./modules/nixos/deploy/checks.nix
-              ./modules/nixos/ingress/checks.nix
               ./modules/nixos/runtime/checks.nix
               ./modules/nixos/ci/checks.nix
               ./modules/nixos/developer/checks.nix

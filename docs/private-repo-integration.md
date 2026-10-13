@@ -13,16 +13,16 @@ During local module development, keep the lock pinned and override the input at
 the command line:
 
 ```sh
-nix build --override-input nix-infra-modules ../nix-infra-modules .#checks.x86_64-linux.edge-example
+nix build --override-input nix-infra-modules ../nix-infra-modules .#checks.x86_64-linux.core-example
 darwin-rebuild switch --flake . --override-input nix-infra-modules ../nix-infra-modules
 ```
 
 Private repos can wrap those commands in host-aware recipes; for example:
 
 ```sh
-just validate-local-modules-drvs edge-runtime edge-01
-just apply-host-dev edge-01
-just verify-host edge-01
+just build-host core-01 ../nix-infra-modules
+just apply-host core-01 ../nix-infra-modules
+just verify-host core-01
 ```
 
 The private repo should own:

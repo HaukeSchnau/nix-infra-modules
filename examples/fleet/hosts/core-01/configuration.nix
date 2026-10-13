@@ -19,8 +19,6 @@
   vps.services = {
     caddy = {
       enable = true;
-      internalIngress.enable = true;
-      publicVirtualHosts.enable = false;
       virtualHosts."admin.example.net" = {
         backend.port = 3000;
         tailscaleOnly = true;
@@ -31,15 +29,4 @@
   };
 
   vps.appDeployments.webhook.enable = false;
-
-  vps.generated.edgeIngress.tcpForwardRanges.demo = {
-    listen = {
-      from = 22000;
-      to = 22002;
-    };
-    upstream = {
-      from = 32000;
-      to = 32002;
-    };
-  };
 }

@@ -24,18 +24,9 @@ let
       ++ extraModules;
     };
 
-  core = mkHost "core-01" [
-    ./hosts/core-01/configuration.nix
-  ];
 in
 {
-  nixosConfigurations = {
-    core-01 = core;
-    edge-01 = mkHost "edge-01" [
-      {
-        vps.services.edgeIngress.upstream = core.config.vps.generated.edgeIngress;
-      }
-      ./hosts/edge-01/configuration.nix
-    ];
-  };
+  nixosConfigurations.core-01 = mkHost "core-01" [
+    ./hosts/core-01/configuration.nix
+  ];
 }

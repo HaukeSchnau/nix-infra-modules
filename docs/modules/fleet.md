@@ -13,7 +13,7 @@ a truthful standalone leaf.
 
 - `vps.enable`, `vps.baseDomain`, and `vps.caddy.acmeEmail`
 - service-local metadata for inventory rows and health units
-- generated service inventory and edge-ingress contracts
+- generated service inventory and ingress routes
 - `vps-services` and `vps-health-check`
 
 ## Private Owns
@@ -25,22 +25,6 @@ a truthful standalone leaf.
 
 ## Generated Contract
 
-Application hosts publish:
-
-```nix
-config.vps.generated.edgeIngress
-```
-
-Edge hosts consume that value:
-
-```nix
-{
-  vps.services.edgeIngress = {
-    enable = true;
-    upstream = core.config.vps.generated.edgeIngress;
-  };
-}
-```
-
-This keeps the public edge config derived from the app host contract instead of
-copying route lists by hand.
+Each host publishes `config.vps.generated.services`, `healthUnits` and
+`ingressRoutes`, derived from its own service config, for its inventory,
+health checks and monitoring.

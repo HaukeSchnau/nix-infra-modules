@@ -6,7 +6,6 @@
 let
   vps = config.vps;
   caddyVirtualHostList = lib.attrValues vps.services.caddy.virtualHosts;
-  caddyInternalIngress = vps.services.caddy.internalIngress;
   generatedTypes = import ../inventory/generated-types.nix { inherit lib; };
   generatedInventory = import ../inventory/generated-inventory.nix { inherit lib; };
 
@@ -48,27 +47,11 @@ in
       type = lib.types.attrsOf generatedTypes.ingressRouteType;
       description = "Resolved Caddy ingress routes keyed by served hostname.";
     };
-
-    edgeIngress = lib.mkOption {
-      default = generatedTypes.mkDefaultEdgeIngress {
-        upstreamHost = config.networking.hostName;
-        internalIngressPort = caddyInternalIngress.port;
-      };
-      type = generatedTypes.edgeIngressType;
-      description = "Resolved edge-ingress contract for routing this host through an edge ingress host.";
-    };
   };
 
   config = lib.mkIf vps.enable {
     vps.generated.services = generatedServices;
     vps.generated.healthUnits = generatedInventory.healthUnitsForServices generatedServices;
     vps.generated.ingressRoutes = generatedIngressRoutes;
-    vps.generated.edgeIngress = {
-      upstreamHost = config.networking.hostName;
-      internalIngressPort = caddyInternalIngress.port;
-      routes = generatedIngressRoutes;
-      tcpForwards = { };
-      tcpForwardRanges = { };
-    };
   };
 }
