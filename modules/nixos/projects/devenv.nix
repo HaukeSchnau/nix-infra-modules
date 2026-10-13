@@ -13,6 +13,7 @@
   projectRuntime,
   project,
   managerSource,
+  readDevenvYaml,
   hostname ? null,
   username ? null,
 }:
@@ -28,16 +29,7 @@ let
     devenvPackages.devenv.version;
   root = "/tmp/project-devenv";
 
-  yaml = lib.importJSON (
-    pkgs.runCommand "project-devenv-yaml.json" { preferLocalBuild = true; } ''
-      ${lib.getExe pkgs.yj} -yj < ${
-        builtins.path {
-          path = project.outPath + "/devenv.yaml";
-          name = "project-devenv.yaml";
-        }
-      } > "$out"
-    ''
-  );
+  yaml = readDevenvYaml (builtins.readFile (project.outPath + "/devenv.yaml"));
   lockPath = project.outPath + "/devenv.lock";
   lock = lib.importJSON lockPath;
   rootInputs = lock.nodes.${lock.root}.inputs;
