@@ -9,7 +9,7 @@ The other exports are leaf modules grouped by responsibility:
 - `developer/`: developer service leaves such as Git mirrors
 - `deploy/`: app deployment and flake-service helpers
 - `fleet/`: shared metadata, generated contracts, and tooling
-- `ingress/`: Caddy app ingress and edge ingress
+- `ingress/`: Caddy ingress
 - `runtime/`: Podman runtime and host capabilities
 
 Leaf modules can be imported directly when a private repo wants a smaller

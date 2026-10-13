@@ -7,7 +7,7 @@
   ...
 }:
 let
-  example = import ../../../examples/two-vps-fleet {
+  example = import ../../../examples/fleet {
     inherit nixpkgs system;
     modules = self.nixosModules;
     nixosLib = self.lib.nixos;
@@ -15,7 +15,6 @@ let
 in
 {
   core-example = example.nixosConfigurations.core-01.config.system.build.toplevel;
-  edge-example = example.nixosConfigurations.edge-01.config.system.build.toplevel;
 
   fleet-generated-services-example =
     let
@@ -32,18 +31,4 @@ in
       touch $out
     '';
 
-  edge-contract-example =
-    let
-      contract = example.nixosConfigurations.core-01.config.vps.generated.edgeIngress;
-      routeNames = lib.attrNames contract.routes;
-    in
-    pkgs.runCommand "edge-contract-example" { } ''
-      test '${contract.upstreamHost}' = 'core-01'
-      test '${toString contract.internalIngressPort}' = '8080'
-      test '${if builtins.elem "admin.example.net" routeNames then "yes" else "no"}' = 'yes'
-      test '${if builtins.elem "demo.example.net" routeNames then "yes" else "no"}' = 'yes'
-      test '${toString contract.tcpForwardRanges.demo.listen.from}' = '22000'
-      test '${toString contract.tcpForwardRanges.demo.upstream.to}' = '32002'
-      touch $out
-    '';
 }

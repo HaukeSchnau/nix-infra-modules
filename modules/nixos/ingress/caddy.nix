@@ -69,17 +69,6 @@ in
       description = "Host interfaces to bind generated HTTPS virtual hosts to.";
     };
 
-    publicVirtualHosts.enable = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = ''
-        Whether to emit configured virtual hosts as public Caddy site blocks.
-
-        Disable this on app hosts whose routes are served only through the
-        tailnet internal ingress and terminated by a separate public edge host.
-      '';
-    };
-
     tailscaleSourceRanges = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
@@ -189,22 +178,6 @@ in
       default = [ ];
       description = "Extra Caddyfile fragments imported at top level.";
     };
-
-    internalIngress = {
-      enable = lib.mkEnableOption "tailnet-only internal Caddy ingress";
-
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8080;
-        description = "Plain HTTP port exposed for trusted upstream ingress proxies on the tailnet.";
-      };
-
-      sourceRanges = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = cfg.tailscaleSourceRanges;
-        description = "Source ranges allowed to access the internal ingress port.";
-      };
-    };
   };
 
   config = lib.mkIf (vps.enable && cfg.enable) {
@@ -236,7 +209,7 @@ in
         hostName = route.hostName;
         inherit (cfg) listenAddresses;
         extraConfig = mkRouteConfig route.hostName route;
-      }) (lib.optionalAttrs cfg.publicVirtualHosts.enable cfg.virtualHosts);
+      }) cfg.virtualHosts;
 
       extraConfig = lib.concatStringsSep "\n\n" (
         (lib.mapAttrsToList (_: site: ''
@@ -248,42 +221,8 @@ in
       );
     };
 
-    networking.firewall.interfaces.tailscale0.allowedTCPPorts = lib.mkIf cfg.internalIngress.enable [
-      cfg.internalIngress.port
-    ];
-
     systemd.tmpfiles.rules = [
       "d ${toString cfg.dataDir} 0750 caddy caddy -"
     ];
-
-    vps.services.caddy.rawSites = lib.mkIf cfg.internalIngress.enable {
-      "internal-ingress" = {
-        siteLabel = ":${toString cfg.internalIngress.port}";
-        extraConfig =
-          let
-            sourceRanges = lib.concatStringsSep " " cfg.internalIngress.sourceRanges;
-          in
-          lib.concatStringsSep "\n\n" (
-            lib.mapAttrsToList (
-              name: route:
-              let
-                matcherName = sanitizeMatcherName name;
-              in
-              ''
-                @${matcherName}_host host ${route.hostName}
-                @${matcherName}_allowed remote_ip ${sourceRanges}
-
-                handle @${matcherName}_host {
-                  handle @${matcherName}_allowed {
-                    ${mkHandlerConfig route}
-                  }
-
-                  respond 403
-                }
-              ''
-            ) cfg.virtualHosts
-          );
-      };
-    };
   };
 }

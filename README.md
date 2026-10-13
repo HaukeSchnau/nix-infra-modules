@@ -43,15 +43,14 @@ nix-infra-modules ../nix-infra-modules` for fast local iteration.
 | `devenvModules.project` | devenv | Native process and task annotations and contract export | [Project devenv](docs/modules/project-devenv.md), `project-definition` |
 | `lib.projectRuntime` | Nix | Release artifacts, runtime context and release planning | [Project runtime](docs/modules/project-runtime.md), `project-runtime` |
 | `nixosModules.projects` | NixOS | Development instances and releases of Project repositories on a host | [Projects](docs/modules/projects.md), `projects-module`, `project-controller` |
-| `nixosModules.fleet` | NixOS | Complete small-fleet interface and metadata contract | [fleet](docs/modules/fleet.md), `core-example`, `edge-example` |
-| `nixosModules.generatedContract` | NixOS | Generated services, health units, ingress routes, and edge contracts | [fleet](docs/modules/fleet.md), `fleet-generated-services-example`, `edge-contract-example` |
+| `nixosModules.fleet` | NixOS | Complete small-fleet interface and metadata contract | [fleet](docs/modules/fleet.md), `core-example` |
+| `nixosModules.generatedContract` | NixOS | Generated services, health units and ingress routes | [fleet](docs/modules/fleet.md), `fleet-generated-services-example` |
 | `nixosModules.fleetTooling` | NixOS | `vps-services` and `vps-health-check` commands | [fleet](docs/modules/fleet.md) |
 | `nixosModules.podmanRuntime` | NixOS | Shared root Podman runtime, proxy network, and host capabilities | [podman runtime](docs/modules/podman-runtime.md), `podman-runtime-example` |
 | `nixosModules.serverBackup` | NixOS | Restic backup policy with file-path secret interface | [server backup](docs/modules/server-backup.md), `server-backup-example` |
 | `nixosModules.gitMirrors` | NixOS | Periodic Gitea-to-GitHub repository mirrors | [git mirrors](docs/modules/git-mirrors.md), `git-mirrors-example` |
 | `nixosModules.githubRunner` | NixOS | GitHub Actions runner leaf module | [runners](docs/modules/runners.md), `github-runner-example` |
-| `nixosModules.caddyIngress` | NixOS | Tailnet-first Caddy virtual hosts and internal ingress | [ingress](docs/modules/ingress.md) |
-| `nixosModules.edgeIngress` | NixOS | Public edge proxy for generated upstream routes and TCP forwards | [ingress](docs/modules/ingress.md), `edge-tcp-range-example` |
+| `nixosModules.caddyIngress` | NixOS | Tailnet-first Caddy virtual hosts | [ingress](docs/modules/ingress.md) |
 | `nixosModules.appDeployments` | NixOS | Tailnet webhook and shared app deployment plumbing | [app deployments](docs/modules/app-deployments.md) |
 | `darwinModules.wireguardProfiles` | nix-darwin | WireGuard profile activation helpers | [workstation](docs/modules/workstation.md) |
 | `darwinModules.developerFonts` | nix-darwin | Developer font defaults | [workstation](docs/modules/workstation.md) |
@@ -71,10 +70,8 @@ Available helpers:
 
 ## Example
 
-`examples/two-vps-fleet` demonstrates a synthetic two-host layout:
-
-- `core-01`: owns application runtime and internal ingress
-- `edge-01`: owns public TLS and forwards routes to `core-01`
+`examples/fleet` demonstrates one synthetic host, `core-01`, that runs an app
+and serves its own routes.
 
 All domains, addresses, repos, and secret names are fake example values.
 
