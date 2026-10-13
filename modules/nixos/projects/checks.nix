@@ -112,4 +112,53 @@ in
       ' ${host.config.environment.etc."projects/catalog-demo.json".source} >/dev/null
       touch "$out"
     '';
+  projects-devenv-yaml =
+    let
+      read = import ./devenv-yaml.nix { inherit lib; };
+      rejects = text: !(builtins.tryEval (builtins.deepSeq (read text) null)).success;
+    in
+    assert
+      read ''
+        # yaml-language-server: $schema=https://devenv.sh/devenv.schema.json
+        inputs:
+          projectSdk:
+            url: github:owner/sdk/0123abc
+            flake: false
+
+          # Indentation only has to be consistent within one block.
+          nixpkgs:
+              url: github:NixOS/nixpkgs/4567def?dir=pkgs#x # pinned
+        nixpkgs:
+          allow_unfree: true
+          android_sdk:
+            accept_license: false
+      '' == {
+        inputs = {
+          projectSdk = {
+            url = "github:owner/sdk/0123abc";
+            flake = false;
+          };
+          nixpkgs.url = "github:NixOS/nixpkgs/4567def?dir=pkgs#x";
+        };
+        nixpkgs = {
+          allow_unfree = true;
+          android_sdk.accept_license = false;
+        };
+      };
+    assert read "# nothing yet\n" == { };
+    assert lib.all rejects [
+      "---\nallow_unfree: true\n"
+      "imports:\n  - ./backend\n"
+      "imports: [ ./backend ]\n"
+      "inputs:\n  nixpkgs:\n    url: \"github:NixOS/nixpkgs\"\n"
+      "require_version: 2\n"
+      "allow_unfree: yes\n"
+      "profile: a: b\n"
+      "nixpkgs:\n\tallow_unfree: true\n"
+      "inputs:\n"
+      "nixpkgs: x\n  allow_unfree: true\n"
+      "inputs:\n    a:\n      url: github:o/a\n  b:\n    url: github:o/b\n"
+      "profile: a\nprofile: b\n"
+    ];
+    pkgs.runCommand "projects-devenv-yaml-check" { } ''touch "$out"'';
 }

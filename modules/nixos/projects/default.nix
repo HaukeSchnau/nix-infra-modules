@@ -322,6 +322,7 @@ let
         import ./devenv.nix {
           inherit pkgs managerSource;
           inherit projectRuntime;
+          readDevenvYaml = import ./devenv-yaml.nix { inherit lib; };
           inherit (serviceCfg) devenv;
           project = projectInput name;
           hostname = config.networking.hostName;
@@ -646,6 +647,7 @@ let
         inherit pkgs username;
         project.outPath = source;
         managerSource = ${managerSource};
+        readDevenvYaml = import ${./devenv-yaml.nix} { inherit (pkgs) lib; };
         projectRuntime = import ${../../../lib}/project-runtime.nix { inherit (pkgs) lib; };
         hostname = "${config.networking.hostName}";
         # Keep the host's exact devenv binaries; rebuilding them from the

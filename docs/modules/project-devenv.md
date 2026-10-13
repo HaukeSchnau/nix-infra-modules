@@ -33,6 +33,11 @@ and export the normalized contract a managed host runs.
 
 Pin the SDK in `devenv.yaml` to a full commit SHA with `flake: false`.
 
+Managed hosts read `devenv.yaml` in Nix, which has no YAML parser, so the file
+may only use nested `key:` blocks, unquoted strings that start with a letter,
+`true`, `false` and comments. Lists, quotes, numbers and anchors fail the
+bundle with the offending line.
+
 - `processes.<name>.project.endpoints.<name>` publishes a listener. `port` is
   the default for plain `devenv up`; managed hosts assign their own. The
   endpoint serving the release action (`web` by default) inherits `paths` and
