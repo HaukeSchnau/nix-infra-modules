@@ -190,6 +190,15 @@ def placement_dir(app: dict) -> Path:
     return Path(app["placement"]["stateDir"]) / "placement"
 
 
+def policy_file(app: dict) -> str:
+    """The binding policy that applies to the release: its placement's, or the compiled one."""
+    if app.get("placement") is not None:
+        placed = placement_dir(app) / "policy.json"
+        if placed.is_file():
+            return str(placed)
+    return app["bindingPolicyFile"]
+
+
 def bindings(project: str, app: dict, stored: dict) -> dict:
     """The policy, secret bindings and runtime base the placement gives the release."""
     registration = app["placement"]

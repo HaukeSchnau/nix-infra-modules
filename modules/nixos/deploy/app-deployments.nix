@@ -1209,7 +1209,7 @@ let
               [
                 "${projectPlanner}",
                 "plan-release",
-                "--host", app["bindingPolicyFile"],
+                "--host", placements.policy_file(app),
                 "--candidate", candidate.name,
               ],
               check=False,

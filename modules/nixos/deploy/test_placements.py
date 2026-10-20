@@ -110,6 +110,13 @@ class BindingTests(unittest.TestCase):
         self.assertEqual(bound["runtime"]["endpoints"]["web"]["visibility"], "public")
         self.assertEqual(bound["runtime"]["endpoints"]["web"]["listen"], {"port": 18200})
 
+    def test_the_placement_policy_applies_once_it_exists(self):
+        self.app["bindingPolicyFile"] = "/nix/store/compiled-policy.json"
+        self.assertEqual(placements.policy_file(self.app), "/nix/store/compiled-policy.json")
+        stored = placements.check("shop", GRANT, {"secrets": {"apiKey": "projects/shop/api-key"}})
+        placements.write_bound(self.app, stored, placements.bindings("shop", self.app, stored))
+        self.assertEqual(placements.policy_file(self.app), str(self.dir / "placement" / "policy.json"))
+
     def test_routes_list_placed_releases_with_their_site(self):
         (self.dir / "placement").mkdir()
         (self.dir / "placement" / "placement.json").write_text(json.dumps(
