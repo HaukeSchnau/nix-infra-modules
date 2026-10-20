@@ -147,6 +147,41 @@ let
         default = false;
         description = "Expose the promoted revision through `project-context revision`.";
       };
+      grant = mkOption {
+        default = null;
+        description = ''
+          Limits within which the repository places this release at runtime (app-deployments'
+          /placements API): its hostname and visibility, secret bindings, parameters and memory.
+          The placement's values replace the ones here. With a grant and no endpoint.hostName, the
+          release has no hostname until its placement gives it one.
+        '';
+        type = types.nullOr (
+          types.submodule {
+            options = {
+              hostNames = mkOption {
+                type = types.listOf types.str;
+                default = [ ];
+                description = "Hostnames the placement may claim; `*.example.org` allows every name below example.org.";
+              };
+              public = mkOption {
+                type = types.bool;
+                default = false;
+                description = "Whether the placement may make the release public.";
+              };
+              secretPrefix = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "SOPS key prefix of the secrets the placement binds; `projects/<project>/` when null.";
+              };
+              memoryMax = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "Ceiling for the placement's memory limits; null lets it set none.";
+              };
+            };
+          }
+        );
+      };
       providers = mkOption {
         type = types.attrsOf (types.enum [ "host-postgresql" ]);
         default = { };
@@ -453,8 +488,21 @@ let
           inherit (credential) netrcHost username;
           giteaTokenSecretName = credential.tokenSecretName;
         };
-        domain = releaseHostName name project;
+        domain =
+          if policy.grant != null && policy.endpoint.hostName == null then
+            null
+          else
+            releaseHostName name project;
         public = policy.endpoint.visibility == "public";
+        grant =
+          if policy.grant == null then
+            null
+          else
+            policy.grant
+            // {
+              secretPrefix =
+                if policy.grant.secretPrefix == null then "projects/${name}/" else policy.grant.secretPrefix;
+            };
         secrets = secretPaths name "release" policy.secrets;
         inherit (policy)
           approvedOci

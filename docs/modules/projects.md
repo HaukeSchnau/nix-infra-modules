@@ -77,5 +77,10 @@ secret requirements use the credential of the same name. Releases default to
 named placement; an explicit `hostName` keeps the generated name as a redirect
 alongside `endpoint.aliases`.
 
+`release.grant` lets the repository place the release itself, within limits:
+hostnames, public or not, a SOPS key prefix (`projects/<project>/` by default) and a
+memory ceiling. See [Placements](./app-deployments.md#placements). With a grant and
+no `endpoint.hostName`, the release has no hostname until its placement gives one.
+
 `vps.services.projects.resolvedReleases` and `resolvedDevelopments` summarize
 the placements for other modules.

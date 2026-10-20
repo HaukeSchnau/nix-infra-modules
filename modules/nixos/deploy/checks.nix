@@ -669,6 +669,13 @@ let
   ];
 in
 {
+  app-deployments-placements = pkgs.runCommand "app-deployments-placements" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+    cp ${./placements.py} placements.py
+    cp ${./test_placements.py} test_placements.py
+    python3 -m unittest -v test_placements
+    touch $out
+  '';
+
   app-deployments-contract = pkgs.runCommand "app-deployments-contract" { } ''
     ${pkgs.bash}/bin/bash -n ${serviceUpdateScript}
     ${pkgs.bash}/bin/bash -n ${staticUpdateScript}

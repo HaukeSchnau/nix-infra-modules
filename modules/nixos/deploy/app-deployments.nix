@@ -265,6 +265,41 @@ let
                   description = "Add the immutable Git revision to Runtime Context v2.";
                 };
 
+                grant = lib.mkOption {
+                  default = null;
+                  description = ''
+                    Limits within which the repository places this release at runtime, through
+                    the webhook's /placements API. A placement replaces the host's hostname,
+                    visibility, secret bindings, parameters, memory limits and job intervals;
+                    without one the configuration's values apply.
+                  '';
+                  type = lib.types.nullOr (
+                    lib.types.submodule {
+                      options = {
+                        hostNames = lib.mkOption {
+                          type = lib.types.listOf lib.types.str;
+                          default = [ ];
+                          description = "Hostnames a placement may claim; `*.example.org` allows every name below example.org.";
+                        };
+                        public = lib.mkOption {
+                          type = lib.types.bool;
+                          default = false;
+                          description = "Whether a placement may make the release public.";
+                        };
+                        secretPrefix = lib.mkOption {
+                          type = lib.types.str;
+                          description = "SOPS key prefix every secret a placement binds starts with, such as `projects/shop/`.";
+                        };
+                        memoryMax = lib.mkOption {
+                          type = lib.types.nullOr lib.types.str;
+                          default = null;
+                          description = "Ceiling for a placement's memory limits; null lets it set none.";
+                        };
+                      };
+                    }
+                  );
+                };
+
                 resources.memory = {
                   high = lib.mkOption {
                     type = lib.types.nullOr lib.types.str;
@@ -938,6 +973,7 @@ let
     systemd.tmpfiles.rules = lib.mkMerge (appRuntimeValues [ "systemd" "tmpfiles" "rules" ] [ ]);
     systemd.services = lib.mkMerge (appRuntimeValues [ "systemd" "services" ] { });
     systemd.timers = lib.mkMerge (appRuntimeValues [ "systemd" "timers" ] { });
+    environment.etc = lib.mkMerge (appRuntimeValues [ "environment" "etc" ] { });
     virtualisation.oci-containers.containers = lib.mkMerge (
       appRuntimeValues [ "virtualisation" "oci-containers" "containers" ] { }
     );
@@ -955,6 +991,22 @@ let
     sops.secrets = lib.mkMerge (appRuntimeValues [ "sops" "secrets" ] { });
   };
 
+  placementsModule = pkgs.writeTextDir "placements.py" (builtins.readFile ./placements.py);
+  placedApps = lib.filter (app: app.placement != null) (lib.attrValues cfg.webhookApps);
+  placementEnvironment = {
+    APP_DEPLOYMENTS_APPS_FILE = webhookAppsJson;
+    APP_DEPLOYMENTS_PLANNER = projectPlanner;
+    APP_DEPLOYMENTS_SOPS = lib.getExe pkgs.sops;
+    APP_DEPLOYMENTS_PLACEMENT_ROUTES = cfg.placementRoutesFile;
+    PYTHONPATH = "${placementsModule}";
+  }
+  // lib.optionalAttrs hasSops {
+    APP_DEPLOYMENTS_SOPS_FILE = "${config.sops.defaultSopsFile}";
+    APP_DEPLOYMENTS_SOPS_KEY_FILE = config.sops.age.keyFile;
+  }
+  // lib.optionalAttrs (hasSops && cfg.webhook.placementKeySecretName != null) {
+    APP_DEPLOYMENTS_PLACEMENT_KEY_FILE = config.sops.secrets.${cfg.webhook.placementKeySecretName}.path;
+  };
   webhookAppsJson = pkgs.writeText "app-deployments-webhook-apps.json" (
     builtins.toJSON cfg.webhookApps
   );
@@ -968,6 +1020,8 @@ let
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+    import placements
+
     APPS_FILE = os.environ["APP_DEPLOYMENTS_APPS_FILE"]
     TOKEN_FILE = os.environ["APP_DEPLOYMENTS_TOKEN_FILE"]
 
@@ -976,6 +1030,13 @@ let
 
     def read_token():
       with open(TOKEN_FILE, "r", encoding="utf-8") as handle:
+        return handle.read().strip()
+
+    def placement_key():
+      path = os.environ.get("APP_DEPLOYMENTS_PLACEMENT_KEY_FILE")
+      if not path:
+        return None
+      with open(path, "rb") as handle:
         return handle.read().strip()
 
     FENCE_LOCK = threading.Lock()
@@ -1042,7 +1103,53 @@ let
         self.end_headers()
         self.wfile.write(body)
 
+      def placement_request(self, method):
+        """Serves /placements/<project>[/plan]; True when the path was one of them."""
+        match = re.fullmatch(r"/placements/([^/]+)(/plan)?", self.path)
+        if match is None:
+          return False
+        project, planning = match[1], match[2] is not None
+        allowed = {"GET": not planning, "PUT": not planning, "DELETE": not planning, "POST": planning}
+        if not allowed.get(method):
+          self.send_json(405, {"error": "method not allowed"})
+          return True
+        if not placements.authorized(self.headers.get("Authorization", ""), project, placement_key(), read_token()):
+          self.send_json(403, {"error": "forbidden"})
+          return True
+        app = APPS.get(project)
+        if app is None:
+          self.send_json(404, {"error": "unknown app", "app": project})
+          return True
+        if method == "GET":
+          stored = placements.get(app)
+          self.send_json(200, stored) if stored is not None else self.send_json(404, {"error": "no placement"})
+          return True
+        if method == "DELETE":
+          self.send_json(200 if placements.delete(project, app, APPS) else 404, {"project": project})
+          return True
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        try:
+          body = json.loads(self.rfile.read(length).decode("utf-8") or "null")
+        except json.JSONDecodeError:
+          self.send_json(400, {"error": "invalid json"})
+          return True
+        try:
+          self.send_json(200, placements.put(project, app, APPS, body, dry_run=planning))
+        except placements.Refused as refused:
+          self.send_json(422, {"error": "placement refused", "reasons": refused.reasons})
+        return True
+
+      def do_PUT(self):
+        if not self.placement_request("PUT"):
+          self.send_json(404, {"error": "not found"})
+
+      def do_DELETE(self):
+        if not self.placement_request("DELETE"):
+          self.send_json(404, {"error": "not found"})
+
       def do_GET(self):
+        if self.placement_request("GET"):
+          return
         if self.path == "/health":
           self.send_json(200, {"ok": True, "apps": sorted(APPS.keys())})
           return
@@ -1060,6 +1167,8 @@ let
         self.send_json(404, {"error": "not found"})
 
       def do_POST(self):
+        if self.placement_request("POST"):
+          return
         expected = "Bearer " + read_token()
         if self.headers.get("Authorization", "") != expected:
           self.send_json(403, {"error": "forbidden"})
@@ -1249,6 +1358,26 @@ in
         default = null;
         description = "SOPS secret containing the bearer token accepted by the deployment webhook.";
       };
+
+      placementKeySecretName = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          SOPS secret with the key of placement tokens: a project's token is HMAC-SHA256(key,
+          project), so whoever holds it can change that project's placement only. CI derives
+          tokens from the same key. Without it, placements need the webhook's token.
+        '';
+      };
+    };
+
+    placementRoutesFile = lib.mkOption {
+      type = lib.types.str;
+      readOnly = true;
+      default = "/var/lib/app-deployments/placements/routes.json";
+      description = ''
+        Routes of placed releases, `{name, hostName, visibility, upstreamPort, site}`, for the host's
+        runtime ingress to serve. `site` is the release's compiled Caddy site to import.
+      '';
     };
 
     webhookApps = lib.mkOption {
@@ -1268,6 +1397,11 @@ in
             requestedReleaseFile = lib.mkOption { type = lib.types.str; };
             updateUnit = lib.mkOption { type = lib.types.str; };
             requestedRevisionFile = lib.mkOption { type = lib.types.str; };
+            placement = lib.mkOption {
+              type = lib.types.nullOr (lib.types.attrsOf lib.types.anything);
+              default = null;
+              description = "What placements.py needs to place a granted release.";
+            };
           };
         }
       );
@@ -1401,8 +1535,7 @@ in
           after = [ "network-online.target" ];
           wants = [ "network-online.target" ];
           wantedBy = [ "multi-user.target" ];
-          environment = {
-            APP_DEPLOYMENTS_APPS_FILE = webhookAppsJson;
+          environment = placementEnvironment // {
             APP_DEPLOYMENTS_TOKEN_FILE =
               if hasSops then
                 config.sops.secrets.${cfg.webhook.tokenSecretName}.path
@@ -1417,6 +1550,19 @@ in
             RestartSec = "5s";
           };
         };
+
+        # /run is empty after a boot: placed releases need their credentials and drop-ins first.
+        systemd.services.app-deployments-placements = lib.mkIf (placedApps != [ ]) {
+          description = "Credentials and drop-ins of placed releases";
+          wantedBy = [ "multi-user.target" ];
+          before = lib.concatMap (app: app.placement.credentialUnits) placedApps;
+          environment = placementEnvironment;
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = "${pkgs.python3}/bin/python3 ${placementsModule}/placements.py restore";
+          };
+        };
       })
     ]
     ++ lib.optionals hasSops [
@@ -1426,6 +1572,20 @@ in
           mode = "0400";
         };
       })
+      (lib.mkIf
+        (
+          config.vps.enable
+          && config.vps.services.appDeployments.enable
+          && cfg.webhook.enable
+          && cfg.webhook.placementKeySecretName != null
+        )
+        {
+          sops.secrets.${cfg.webhook.placementKeySecretName} = {
+            owner = "root";
+            mode = "0400";
+          };
+        }
+      )
     ]
   );
 }

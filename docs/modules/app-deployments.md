@@ -259,6 +259,49 @@ the previous output for rollback.
 The module does not require private Git credentials unless
 `source.giteaTokenSecretName` is set by the consuming private repo.
 
+## Placements
+
+A Project release with `project.grant` can be placed by its repository at runtime, with no
+NixOS switch. A placement sets the release's hostname and visibility, which SOPS keys its
+secrets read, parameter values and memory limits, and the webhook refuses one that leaves the
+grant: a hostname it doesn't list (`*.example.org` allows every name below example.org), public
+visibility it doesn't allow, a key outside `secretPrefix`, memory above `memoryMax`. The
+release's user, port, units, site and topology still come from the host's configuration.
+
+```console
+PUT    /placements/<project>        apply a placement, the JSON body
+POST   /placements/<project>/plan   check one without applying it
+GET    /placements/<project>        the placement that applies
+DELETE /placements/<project>        back to the configuration's values
+```
+
+A refusal answers 422 with every reason. The webhook accepts its own token and, with
+`webhook.placementKeySecretName`, a project's token `HMAC-SHA256(key, project)`, which works for
+that project's placement only. The `@schnau/fleet` Alchemy provider (`packages/fleet`) is the
+client: a repository's stack declares its `Fleet.Placement`, and CI holds the project's token.
+
+```json
+{
+  "endpoint": { "hostName": "shop.example.net", "visibility": "public" },
+  "secrets": { "apiKey": "projects/shop/api-key" },
+  "parameters": { "title": "Shop" },
+  "memory": { "max": "1G" }
+}
+```
+
+Applying a placement writes, under `/var/lib/app-deployments/<project>/placement`, the policy,
+secret bindings and runtime base the update script then prefers over the compiled ones, and the
+hostname health probes send. It decrypts the bound keys with the host's age key into
+`/run/app-deployments/<project>/credentials` and loads them through drop-ins in
+`/run/systemd/system`, which also set the memory limits. Its route goes to
+`placementRoutesFile` for the host's runtime ingress, importing the release's compiled site
+from `/etc/app-deployments/sites`. Then it asks the update unit to activate the current release
+again. `app-deployments-placements.service` writes credentials and drop-ins again after a boot,
+before the releases start. Parameters merge over the configuration's; secrets add to them.
+
+A placement's values replace the configuration's, so a project moves without downtime: grant
+first, placement second, then remove its old values from the configuration.
+
 ## Ownership Boundary
 
 Public modules own the deployment state layout, generated service wrapper,

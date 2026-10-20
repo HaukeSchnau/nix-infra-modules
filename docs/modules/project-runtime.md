@@ -77,6 +77,8 @@ the application uses it.
 ## Ownership
 
 The repository owns the descriptor and its executables. Hosts own listeners,
-URLs, host names, visibility, absolute paths, secret values, schedules,
-resources and placement. The runtime owns only the manifest, its validation,
+absolute paths, secret values, schedules and resources. Host names, visibility,
+which secrets read which keys, parameter values and memory limits are the host's
+too, unless it grants them to the repository's placement (see
+[Placements](./app-deployments.md#placements)). The runtime owns only the manifest, its validation,
 context queries and dispatch; it never infers application variables.

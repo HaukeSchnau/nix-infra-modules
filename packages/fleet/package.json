@@ -1,0 +1,31 @@
+{
+  "name": "@schnau/fleet",
+  "version": "0.1.0",
+  "description": "Alchemy provider for placing releases on a nix-infra-modules host within its grant",
+  "license": "MIT",
+  "type": "module",
+  "repository": "https://github.com/HaukeSchnau/nix-infra-modules/tree/main/packages/fleet",
+  "packageManager": "pnpm@11.27.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "alchemy": ">=2.0.0-beta.83",
+    "effect": "^4.0.5"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "4.0.5",
+    "@types/node": "^24.0.0",
+    "alchemy": "2.0.0-beta.83",
+    "effect": "4.0.5",
+    "typescript": "^7.0.2"
+  }
+}

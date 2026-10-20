@@ -194,6 +194,37 @@ let
   );
   deployedProjectRuntimeManifest = "${stateDir}/project-runtime.json";
   deployedProjectReleasePlan = "${stateDir}/release-plan.json";
+  # A placement (the webhook's placements.py) replaces the host's bindings at runtime. Scripts
+  # that bind a descriptor read its copies of the policy, secret bindings and runtime base once
+  # it has written them, and the compiled ones before.
+  placementDir = "${stateDir}/placement";
+  granted = isProject && isService && cfg.project.grant != null;
+  placementRegistration = {
+    inherit (cfg.project) grant;
+    inherit (cfg) port;
+    inherit stateDir;
+    action = projectRelease.action;
+    policy = "${projectBindingPolicy}";
+    secretBindings = "${projectSecretBindings}";
+    runtimeBase = "${projectRuntimeBaseManifest}";
+    site = "/etc/app-deployments/sites/${name}.caddy";
+    # Units that load the release's credentials, and the timers of its jobs.
+    credentialUnits = [
+      "${unitName}.service"
+    ]
+    ++ lib.optional runsProjectActivation "${activationUnitName}.service"
+    ++ map (job: "${unitName}-job-${job}.service") (builtins.attrNames projectJobs);
+  };
+  usePlacement = ''
+    binding_policy=${lib.escapeShellArg projectBindingPolicy}
+    secret_bindings=${lib.escapeShellArg projectSecretBindings}
+    runtime_base=${lib.escapeShellArg projectRuntimeBaseManifest}
+    if [ -f ${lib.escapeShellArg placementDir}/policy.json ]; then
+      binding_policy=${lib.escapeShellArg placementDir}/policy.json
+      secret_bindings=${lib.escapeShellArg placementDir}/secrets.json
+      runtime_base=${lib.escapeShellArg placementDir}/runtime-base.json
+    fi
+  '';
 
   shellPath = lib.makeBinPath [
     pkgs.bash
@@ -226,6 +257,23 @@ let
     "X-Forwarded-Proto" = "https";
   };
   effectiveHealthHeaders = inferredHealthHeaders // cfg.health.headers;
+  customHealthArgs = lib.concatLists (
+    lib.mapAttrsToList (header: value: [
+      "-H"
+      "${header}: ${value}"
+    ]) cfg.health.headers
+  );
+  # Sets health_args: the compiled headers, or those of the placement's hostname.
+  healthArgs = ''
+    health_args=(${lib.escapeShellArgs healthCurlArgs})
+    ${lib.optionalString (isProject && cfg.health.hostHeader == null) ''
+      if [ -s ${lib.escapeShellArg placementDir}/host ]; then
+        placement_host="$(cat ${lib.escapeShellArg placementDir}/host)"
+        health_args=(-H "Host: $placement_host" -H "X-Forwarded-Host: $placement_host" \
+          -H "X-Forwarded-Port: 443" -H "X-Forwarded-Proto: https" ${lib.escapeShellArgs customHealthArgs})
+      fi
+    ''}
+  '';
   healthCurlArgs =
     lib.optionals (effectiveHealthHostHeader != null) [
       "-H"
@@ -281,6 +329,7 @@ let
   serviceHealthScript =
     if isProject then
       ''
+        ${healthArgs}
         check_service_health() {
           local plan="$1"
           local deadline startup_timeout interval request_timeout now path
@@ -295,7 +344,7 @@ let
           while true; do
             for path in "''${paths[@]}"; do
               if ! ${pkgs.curl}/bin/curl -fsS --max-time "$request_timeout" \
-                ${lib.escapeShellArgs healthCurlArgs} \
+                "''${health_args[@]}" \
                 "http://${cfg.health.host}:${toString cfg.port}$path" >/dev/null; then
                 now=$SECONDS
                 if [ "$now" -ge "$deadline" ]; then
@@ -312,6 +361,7 @@ let
       ''
     else
       ''
+        ${healthArgs}
         check_service_health() {
           local deadline now path
           deadline=$((SECONDS + ${toString cfg.health.startupTimeoutSec}))
@@ -319,7 +369,7 @@ let
           while true; do
             for path in ${lib.escapeShellArgs cfg.health.paths}; do
               if ! ${pkgs.curl}/bin/curl -fsS --max-time ${toString cfg.health.requestTimeoutSec} \
-                ${lib.escapeShellArgs healthCurlArgs} \
+                "''${health_args[@]}" \
                 "http://${cfg.health.host}:${toString cfg.port}$path" >/dev/null; then
                 now=$SECONDS
                 if [ "$now" -ge "$deadline" ]; then
@@ -509,6 +559,7 @@ let
     }
 
     ${lib.optionalString isProject ''
+      ${usePlacement}
       bind_descriptor() {
         local descriptor="$1"
         local runtime="$2"
@@ -517,14 +568,14 @@ let
         local result="$state_dir/compatibility.json.next"
 
         if ! ${projectPlanner} plan-release \
-          --host ${lib.escapeShellArg projectBindingPolicy} \
+          --host "$binding_policy" \
           --candidate "$descriptor" > "$result"; then
           rm -f "$result"
           return 1
         fi
 
         jq -S . "$descriptor" > "$state_dir/artifact-descriptor.json.next"
-        jq -S '.descriptor' ${lib.escapeShellArg projectBindingPolicy} \
+        jq -S '.descriptor' "$binding_policy" \
           > "$state_dir/expected-descriptor.json.next"
         if ! jq -e '.compatible' "$result" >/dev/null; then
           jq -r '.reasons[] | "app-deployment/${name}: " + .' "$result" >&2
@@ -538,7 +589,7 @@ let
           '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
             + {bindings: .[1].bindings}
             + (if $revision == "" then {} else {revision: $revision} end)' \
-          ${lib.escapeShellArg projectRuntimeBaseManifest} "$result" > "$runtime"
+          "$runtime_base" "$result" > "$runtime"
         jq -S '.releasePlan' "$result" > "$plan"
         mv -f "$result" "$state_dir/compatibility.json"
         mv -f "$state_dir/expected-descriptor.json.next" "$state_dir/expected-descriptor.json"
@@ -713,7 +764,7 @@ let
               credential_args+=("--property=LoadCredential=$secret:$path")
             done < <(
               jq -er --arg task "$task" \
-                --slurpfile bindings ${lib.escapeShellArg projectSecretBindings} \
+                --slurpfile bindings "$secret_bindings" \
                 '.preDeployTasks[$task].secrets[] as $secret | select($bindings[0] | has($secret)) | [$secret, $bindings[0][$secret]] | @tsv' \
                 "$candidate_release_plan"
             )
@@ -942,8 +993,9 @@ let
       exit 0
     fi
 
+    ${usePlacement}
     result="$(${projectPlanner} plan-release \
-      --host ${lib.escapeShellArg projectBindingPolicy} \
+      --host "$binding_policy" \
       --candidate "$descriptor")"
     if ! ${pkgs.jq}/bin/jq -e '.compatible' <<<"$result" >/dev/null; then
       ${pkgs.jq}/bin/jq -r '.reasons[] | "app-deployment/${name}: " + .' <<<"$result" >&2
@@ -958,7 +1010,7 @@ let
       '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
         + {bindings: .[1].bindings}
         + (if $revision == "" then {} else {revision: $revision} end)' \
-      ${lib.escapeShellArg projectRuntimeBaseManifest} <(printf '%s\n' "$result"))"
+      "$runtime_base" <(printf '%s\n' "$result"))"
     actual_runtime="$(${pkgs.jq}/bin/jq -S . "$runtime")"
     if [ "$expected_runtime" != "$actual_runtime" ]; then
       echo "app-deployment/${name}: cannot bootstrap a Release plan for a stale Runtime Context" >&2
@@ -981,8 +1033,9 @@ let
       exit 1
     fi
 
+    ${usePlacement}
     result="$(${projectPlanner} plan-release \
-      --host ${lib.escapeShellArg projectBindingPolicy} \
+      --host "$binding_policy" \
       --candidate "$descriptor")"
     if ! ${pkgs.jq}/bin/jq -e '.compatible' <<<"$result" >/dev/null; then
       ${pkgs.jq}/bin/jq -r '.reasons[] | "app-deployment/${name}: " + .' <<<"$result" >&2
@@ -997,7 +1050,7 @@ let
       '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
         + {bindings: .[1].bindings}
         + (if $revision == "" then {} else {revision: $revision} end)' \
-      ${lib.escapeShellArg projectRuntimeBaseManifest} <(printf '%s\n' "$result"))"
+      "$runtime_base" <(printf '%s\n' "$result"))"
     expected_release_plan="$(${pkgs.jq}/bin/jq -S '.releasePlan' <<<"$result")"
     actual_runtime="$(${pkgs.jq}/bin/jq -S . ${lib.escapeShellArg deployedProjectRuntimeManifest})"
     actual_release_plan="$(${pkgs.jq}/bin/jq -S . ${lib.escapeShellArg deployedProjectReleasePlan})"
@@ -1141,6 +1194,7 @@ let
     set -euo pipefail
 
     release_plan=${lib.escapeShellArg deployedProjectReleasePlan}
+    ${healthArgs}
 
     check_once() {
       local request_timeout path
@@ -1149,7 +1203,7 @@ let
       mapfile -t paths < <(${pkgs.jq}/bin/jq -er '.health.paths[]' "$release_plan")
       for path in "''${paths[@]}"; do
         ${pkgs.curl}/bin/curl -fsS --max-time "$request_timeout" \
-          ${lib.escapeShellArgs healthCurlArgs} \
+          "''${health_args[@]}" \
           "http://${cfg.health.host}:${toString cfg.port}$path" >/dev/null || return 1
       done
     }
@@ -1358,6 +1412,12 @@ let
           requestedReleaseFile = "${stateDir}/requested-release.json";
           updateUnit = "${updateUnitName}.service";
           requestedRevisionFile = "${stateDir}/requested-revision";
+          placement = if granted then placementRegistration else null;
+        };
+
+        # Placed routes import the site from here, since only the hostname is the placement's.
+        environment.etc = lib.optionalAttrs granted {
+          "app-deployments/sites/${name}.caddy".text = projectServiceCaddyConfig;
         };
 
         vps.services.appDeployments.metadata.health.units = lib.optional isService "${unitName}.service";

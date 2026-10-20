@@ -741,6 +741,7 @@ let
             parameterBindings = policy.parameters or { };
             healthRecovery = policy.healthRecovery or { };
             exposeRevision = policy.exposeRevision or false;
+            grant = policy.grant or null;
             parameters = resolveParameters {
               allowUnknown = true;
               inherit descriptor;
