@@ -59,6 +59,28 @@ class CheckTests(unittest.TestCase):
             "memory max 'lots' is not a size such as 512M or 1G",
         ])
 
+    def test_a_job_schedule_is_checked_against_the_jobs_and_systemd(self):
+        jobs = {"backup": {}, "sync": {}}
+        stored = placements.check("shop", GRANT, {"jobs": {"backup": {"calendar": "*-*-* 04:00", "randomizedDelaySec": "30min"}}}, jobs)
+        self.assertEqual(stored["jobs"], {"backup": {"calendar": "*-*-* 04:00", "randomizedDelaySec": "30min"}})
+        try:
+            placements.check("shop", GRANT, {"jobs": {
+                "backup": {"calendar": "when it suits"},
+                "sync": {"interval": "10min", "calendar": "daily"},
+                "report": {"interval": "1h"},
+            }}, jobs)
+        except placements.Refused as refused:
+            self.assertEqual(refused.reasons, [
+                "job backup: 'when it suits' is not a systemd calendar such as *-*-* 04:00",
+                "shop has no scheduled job report on this host",
+                "job sync takes a calendar or an interval, and randomizedDelaySec",
+            ])
+        else:
+            self.fail("refused nothing")
+
+    def test_a_schedule_cannot_smuggle_settings_into_the_timer(self):
+        self.assertFalse(placements.valid_schedule("timespan", "10min\nExecStart=/bin/sh"))
+
 
 class TokenTests(unittest.TestCase):
     def test_a_project_token_opens_only_its_own_placement(self):
@@ -195,6 +217,33 @@ class RestoreTests(unittest.TestCase):
         self.assertFalse((self.dir / "placement").exists())
         self.assertEqual(json.loads(placements.ROUTES_FILE.read_text()), [])
         self.assertIn(["systemctl", "start", "--no-block", "app-deployment-shop-update.service"], commands)
+
+
+class ScheduleTests(unittest.TestCase):
+    def setUp(self):
+        placements.UNITS = Path(tempfile.mkdtemp())
+        self.app = {"placement": {"jobs": {
+            "backup": {"timer": "app-deployment-shop-job-backup.timer", "onBootSec": "5min", "cadence": "fixed"},
+            "sync": {"timer": "app-deployment-shop-job-sync.timer", "onBootSec": "1min", "cadence": "spaced"},
+        }}}
+
+    def dropin(self, job):
+        return placements.UNITS / f"app-deployment-shop-job-{job}.timer.d" / "50-placement.conf"
+
+    def test_an_interval_replaces_the_timer_as_the_host_compiles_one(self):
+        changed = placements.schedule(self.app, {"jobs": {"backup": {"interval": "10min", "randomizedDelaySec": "30s"}}})
+        self.assertEqual(changed, ["app-deployment-shop-job-backup.timer"])
+        self.assertEqual(self.dropin("backup").read_text().splitlines(), [
+            "[Timer]", "OnCalendar=", "OnActiveSec=", "OnUnitActiveSec=", "OnUnitInactiveSec=",
+            "OnActiveSec=5min", "OnUnitActiveSec=10min", "OnUnitInactiveSec=10min", "RandomizedDelaySec=30s",
+        ])
+        self.assertFalse(self.dropin("sync").exists())
+
+    def test_dropping_a_schedule_gives_the_timer_its_compiled_one_back(self):
+        placements.schedule(self.app, {"jobs": {"sync": {"calendar": "hourly"}}})
+        self.assertEqual(placements.schedule(self.app, {"jobs": {"sync": {"calendar": "hourly"}}}), [])
+        self.assertEqual(placements.schedule(self.app, {"jobs": {}}), ["app-deployment-shop-job-sync.timer"])
+        self.assertFalse(self.dropin("sync").exists())
 
 
 if __name__ == "__main__":

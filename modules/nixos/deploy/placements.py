@@ -1,13 +1,13 @@
 """Placements: a repository's choices for its release on this host, within the grant infra sets.
 
 A placement holds the release's hostname and visibility, which SOPS keys its secrets read,
-parameter values and memory limits. The release's user, port, units and site stay in NixOS; a
-placement replaces only the bindings the host's configuration gives them:
+parameter values, memory limits and the schedules of its jobs. The release's user, port, units and
+site stay in NixOS; a placement replaces only the bindings the host's configuration gives them:
 
 - `<state>/placement/` holds its copies of the binding policy, secret bindings and runtime base,
   which the update script prefers, and the hostname health probes send.
 - Its secrets are decrypted into /run/app-deployments/<project>/credentials and loaded through
-  drop-ins in /run/systemd/system, which also carry its memory limits.
+  drop-ins in /run/systemd/system, which also carry its memory limits and its jobs' schedules.
 - Its route goes to a file agent-service-routes serves and imports the release's compiled site.
 
 `restore` runs before releases start, at boot and after every switch that changes a release's
@@ -35,12 +35,15 @@ SOPS_KEY_FILE = os.environ.get("APP_DEPLOYMENTS_SOPS_KEY_FILE", "")
 ROUTES_FILE = Path(os.environ.get("APP_DEPLOYMENTS_PLACEMENT_ROUTES", "/var/lib/app-deployments/placements/routes.json"))
 CREDENTIALS = Path(os.environ.get("APP_DEPLOYMENTS_PLACEMENT_CREDENTIALS", "/run/app-deployments"))
 UNITS = Path(os.environ.get("APP_DEPLOYMENTS_PLACEMENT_UNITS", "/run/systemd/system"))
+SYSTEMD_ANALYZE = os.environ.get("APP_DEPLOYMENTS_SYSTEMD_ANALYZE", "systemd-analyze")
 
 LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 KEY_SEGMENT = re.compile(r"^[A-Za-z0-9_.-]+$")
 SIZE = re.compile(r"^(\d+(?:\.\d+)?)([KMGT])$")
-FIELDS = {"endpoint", "secrets", "parameters", "memory"}
+# One line of a calendar or time span, with nothing systemd would read as another setting.
+SCHEDULE = re.compile(r"^[A-Za-z0-9 *,./:~_-]{1,100}$")
+FIELDS = {"endpoint", "secrets", "parameters", "memory", "jobs"}
 MEMORY = ("high", "max", "swapMax")
 
 
@@ -98,8 +101,16 @@ def size(text: str) -> int | None:
     return int(float(match[1]) * 1024 ** ("KMGT".index(match[2]) + 1))
 
 
-def check(project: str, grant: dict, placement: object) -> dict:
-    """The placement as stored, or Refused with every way it breaks the grant."""
+def valid_schedule(kind: str, value: object) -> bool:
+    """Whether systemd reads value as a `calendar` or a `timespan`."""
+    if not isinstance(value, str) or not SCHEDULE.fullmatch(value):
+        return False
+    return subprocess.run([SYSTEMD_ANALYZE, kind, value], check=False, capture_output=True).returncode == 0
+
+
+def check(project: str, grant: dict, placement: object, jobs=()) -> dict:
+    """The placement as stored, or Refused with every way it breaks the grant. `jobs` names the
+    release's scheduled jobs on this host, the ones a placement may give another schedule."""
     if not isinstance(placement, dict):
         raise Refused(["a placement is a JSON object"])
     reasons = [f"unknown field {field}" for field in sorted(set(placement) - FIELDS)]
@@ -152,9 +163,28 @@ def check(project: str, grant: dict, placement: object) -> dict:
         elif bytes_ > ceiling:
             reasons.append(f"memory {field} {value} is above {project}'s ceiling of {grant['memoryMax']}")
 
+    schedules = placement.get("jobs", {})
+    if not isinstance(schedules, dict):
+        reasons.append("jobs maps a job's name to its schedule")
+        schedules = {}
+    for name, schedule in sorted(schedules.items()):
+        if name not in jobs:
+            reasons.append(f"{project} has no scheduled job {name} on this host")
+        elif not isinstance(schedule, dict) or set(schedule) - {"calendar", "interval", "randomizedDelaySec"} or (
+            ("calendar" in schedule) == ("interval" in schedule)
+        ):
+            reasons.append(f"job {name} takes a calendar or an interval, and randomizedDelaySec")
+        else:
+            if "calendar" in schedule and not valid_schedule("calendar", schedule["calendar"]):
+                reasons.append(f"job {name}: {schedule['calendar']!r} is not a systemd calendar such as *-*-* 04:00")
+            if "interval" in schedule and not valid_schedule("timespan", schedule["interval"]):
+                reasons.append(f"job {name}: {schedule['interval']!r} is not a time span such as 30min")
+            if "randomizedDelaySec" in schedule and not valid_schedule("timespan", schedule["randomizedDelaySec"]):
+                reasons.append(f"job {name}: {schedule['randomizedDelaySec']!r} is not a time span such as 30s")
+
     if reasons:
         raise Refused(reasons)
-    stored = {"secrets": dict(secrets), "parameters": dict(parameters), "memory": dict(memory)}
+    stored = {"secrets": dict(secrets), "parameters": dict(parameters), "memory": dict(memory), "jobs": dict(schedules)}
     if endpoint is not None:
         stored["endpoint"] = endpoint
     return stored
@@ -312,10 +342,45 @@ def materialize(project: str, app: dict, stored: dict, secrets: dict, values: di
     return changed
 
 
-def unmaterialize(project: str, app: dict) -> None:
+def timer_conf(job: dict, schedule: dict) -> str:
+    """A drop-in that replaces a job timer's schedule, the way the host compiles one (nix-flake-service.nix)."""
+    lines = ["[Timer]", "OnCalendar=", "OnActiveSec=", "OnUnitActiveSec=", "OnUnitInactiveSec="]
+    if "calendar" in schedule:
+        lines.append(f"OnCalendar={schedule['calendar']}")
+    else:
+        lines.append(f"OnActiveSec={job['onBootSec']}")
+        if job["cadence"] == "fixed":
+            lines.append(f"OnUnitActiveSec={schedule['interval']}")
+        lines.append(f"OnUnitInactiveSec={schedule['interval']}")
+    if "randomizedDelaySec" in schedule:
+        lines.append(f"RandomizedDelaySec={schedule['randomizedDelaySec']}")
+    return "\n".join(lines) + "\n"
+
+
+def schedule(app: dict, stored: dict | None) -> list[str]:
+    """Drop-ins that give the release's job timers the placement's schedules; the timers that changed."""
+    changed = []
+    schedules = {} if stored is None else stored.get("jobs", {})
+    for name, job in sorted(app["placement"].get("jobs", {}).items()):
+        dropin = UNITS / f"{job['timer']}.d" / "50-placement.conf"
+        text = timer_conf(job, schedules[name]) if name in schedules else None
+        current = dropin.read_text(encoding="utf-8") if dropin.is_file() else None
+        if current == text:
+            continue
+        changed.append(job["timer"])
+        if text is None:
+            dropin.unlink()
+        else:
+            write_atomic(dropin, text)
+    return changed
+
+
+def unmaterialize(project: str, app: dict) -> list[str]:
+    """Removes the placement's credentials and drop-ins; the job timers whose schedule changed back."""
     shutil.rmtree(credentials_dir(project), ignore_errors=True)
     for unit in app["placement"]["credentialUnits"]:
         (UNITS / f"{unit}.d" / "50-placement.conf").unlink(missing_ok=True)
+    return schedule(app, None)
 
 
 def placed(apps: dict) -> dict:
@@ -364,21 +429,24 @@ def redeploy(app: dict) -> None:
     subprocess.run(["systemctl", "start", "--no-block", app["updateUnit"]], check=False)
 
 
-def apply(app: dict, rebound: bool, rewritten: bool) -> None:
+def apply(app: dict, rebound: bool, rewritten: bool, timers=()) -> None:
     """Brings the running release in line: an activation when its bindings changed, since only that
     rewrites its runtime manifest; a restart when only its credentials or drop-ins did, since an
-    activation with unchanged bindings finds the release already active."""
+    activation with unchanged bindings finds the release already active. Rescheduled timers restart,
+    so they compute their next run from the new schedule."""
     if rebound:
         redeploy(app)
     elif rewritten:
         subprocess.run(["systemctl", "try-restart", "--no-block", app["placement"]["credentialUnits"][0]], check=False)
+    if timers:
+        subprocess.run(["systemctl", "try-restart", "--no-block", *timers], check=False)
 
 
 def put(project: str, app: dict, apps: dict, placement: object, dry_run: bool) -> dict:
     registration = app.get("placement")
     if registration is None:
         raise Refused([f"{project} has no grant on this host"])
-    stored = check(project, registration["grant"], placement)
+    stored = check(project, registration["grant"], placement, registration.get("jobs", {}))
     bound = bindings(project, app, stored)
     plan(bound["policy"])
     values = {name: decrypt(key) for name, key in stored["secrets"].items()}
@@ -388,9 +456,10 @@ def put(project: str, app: dict, apps: dict, placement: object, dry_run: bool) -
     with locked():
         rebound = write_bound(app, stored, bound)
         rewritten = materialize(project, app, stored, bound["secrets"], values)
+        timers = schedule(app, stored)
         write_routes(apps)
         subprocess.run(["systemctl", "daemon-reload"], check=True)
-        apply(app, rebound, rewritten)
+        apply(app, rebound, rewritten, timers)
     return summary
 
 
@@ -399,10 +468,10 @@ def delete(project: str, app: dict, apps: dict) -> bool:
         return False
     with locked():
         shutil.rmtree(placement_dir(app))
-        unmaterialize(project, app)
+        timers = unmaterialize(project, app)
         write_routes(apps)
         subprocess.run(["systemctl", "daemon-reload"], check=True)
-        redeploy(app)
+        apply(app, True, False, timers)
     return True
 
 
@@ -421,26 +490,26 @@ def restore(apps: dict) -> int:
         for project, stored in sorted(placed(apps).items()):
             app = apps[project]
             try:
-                stored = check(project, app["placement"]["grant"], stored)
+                stored = check(project, app["placement"]["grant"], stored, app["placement"].get("jobs", {}))
                 bound = bindings(project, app, stored)
                 values = {name: decrypt(key) for name, key in stored["secrets"].items()}
             except Refused as refused:
                 failures += 1
                 print(f"placements: {project}: deleted, since {refused}", flush=True)
                 shutil.rmtree(placement_dir(app))
-                unmaterialize(project, app)
-                changes.append((app, True, False))
+                changes.append((app, True, False, unmaterialize(project, app)))
                 continue
             except (OSError, ValueError) as error:
                 failures += 1
                 print(f"placements: {project}: {error}", flush=True)
                 continue
             rebound = write_bound(app, stored, bound)
-            changes.append((app, rebound, materialize(project, app, stored, bound["secrets"], values)))
+            rewritten = materialize(project, app, stored, bound["secrets"], values)
+            changes.append((app, rebound, rewritten, schedule(app, stored)))
         write_routes(apps)
         subprocess.run(["systemctl", "daemon-reload"], check=False)
-    for app, rebound, rewritten in changes:
-        apply(app, rebound, rewritten)
+    for app, rebound, rewritten, timers in changes:
+        apply(app, rebound, rewritten, timers)
     return failures
 
 

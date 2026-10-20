@@ -11,6 +11,11 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } fr
 import { readFile } from "node:fs/promises"
 import type { Providers } from "./Providers.ts"
 
+/** When a job runs: a systemd calendar such as `*-*-* 04:00`, or an interval such as `30min`. */
+export type JobSchedule =
+  | { readonly calendar: string; readonly randomizedDelaySec?: string }
+  | { readonly interval: string; readonly randomizedDelaySec?: string }
+
 export interface PlacementProps {
   /** The project, as the host's configuration names it. */
   readonly project: string
@@ -24,6 +29,8 @@ export interface PlacementProps {
   readonly parameters?: Readonly<Record<string, unknown>>
   /** systemd memory limits of the release's service, up to the grant's ceiling. */
   readonly memory?: { readonly high?: string; readonly max?: string; readonly swapMax?: string }
+  /** New schedules for jobs the host already runs, by name; the others keep the host's. */
+  readonly jobs?: Readonly<Record<string, JobSchedule>>
 }
 
 export interface PlacementAttributes {
@@ -84,6 +91,7 @@ const body = (props: PlacementProps) => ({
   secrets: props.secrets ?? {},
   parameters: props.parameters ?? {},
   memory: props.memory ?? {},
+  ...(props.jobs === undefined ? {} : { jobs: props.jobs }),
 })
 
 const call = (method: "GET" | "PUT" | "POST" | "DELETE", props: Pick<PlacementProps, "host" | "project">, path: string, payload?: unknown) =>

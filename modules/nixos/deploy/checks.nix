@@ -670,7 +670,11 @@ let
 in
 {
   app-deployments-placements =
-    pkgs.runCommand "app-deployments-placements" { nativeBuildInputs = [ pkgs.python3 ]; }
+    pkgs.runCommand "app-deployments-placements"
+      {
+        nativeBuildInputs = [ pkgs.python3 ];
+        APP_DEPLOYMENTS_SYSTEMD_ANALYZE = "${pkgs.systemd}/bin/systemd-analyze";
+      }
       ''
         cp ${./placements.py} placements.py
         cp ${./test_placements.py} test_placements.py

@@ -208,12 +208,18 @@ let
     secretBindings = "${projectSecretBindings}";
     runtimeBase = "${projectRuntimeBaseManifest}";
     site = "/etc/app-deployments/sites/${name}.caddy";
-    # Units that load the release's credentials, and the timers of its jobs.
+    # Units that load the release's credentials.
     credentialUnits = [
       "${unitName}.service"
     ]
     ++ lib.optional runsProjectActivation "${activationUnitName}.service"
     ++ map (job: "${unitName}-job-${job}.service") (builtins.attrNames projectJobs);
+    # The job timers a placement may reschedule, with what an interval needs from the host.
+    jobs = lib.mapAttrs (jobName: policy: {
+      timer = "${unitName}-job-${jobName}.timer";
+      inherit (policy) onBootSec;
+      cadence = if policy.cadence == null then "spaced" else policy.cadence;
+    }) projectJobs;
   };
   usePlacement = ''
     binding_policy=${lib.escapeShellArg projectBindingPolicy}

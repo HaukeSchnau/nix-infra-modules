@@ -997,6 +997,7 @@ let
     APP_DEPLOYMENTS_APPS_FILE = webhookAppsJson;
     APP_DEPLOYMENTS_PLANNER = projectPlanner;
     APP_DEPLOYMENTS_SOPS = lib.getExe pkgs.sops;
+    APP_DEPLOYMENTS_SYSTEMD_ANALYZE = "${config.systemd.package}/bin/systemd-analyze";
     APP_DEPLOYMENTS_PLACEMENT_ROUTES = cfg.placementRoutesFile;
     PYTHONPATH = "${placementsModule}";
   }

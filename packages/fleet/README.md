@@ -13,6 +13,7 @@ const placement = yield* Fleet.Placement("Release", {
   host: "srv-2",
   endpoint: { hostName: "shop.example.net", visibility: "public" },
   secrets: { apiKey: "projects/shop/api-key" },
+  jobs: { backup: { calendar: "*-*-* 04:00" } },
 })
 ```
 

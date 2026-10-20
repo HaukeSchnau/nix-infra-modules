@@ -263,10 +263,11 @@ The module does not require private Git credentials unless
 
 A Project release with `project.grant` can be placed by its repository at runtime, with no
 NixOS switch. A placement sets the release's hostname and visibility, which SOPS keys its
-secrets read, parameter values and memory limits, and the webhook refuses one that leaves the
-grant: a hostname it doesn't list (`*.example.org` allows every name below example.org), public
-visibility it doesn't allow, a key outside `secretPrefix`, memory above `memoryMax`. The
-release's user, port, units, site and topology still come from the host's configuration.
+secrets read, parameter values, memory limits and the schedules of its jobs, and the webhook
+refuses one that leaves the grant: a hostname it doesn't list (`*.example.org` allows every name
+below example.org), public visibility it doesn't allow, a key outside `secretPrefix`, memory
+above `memoryMax`, a job the host doesn't schedule. The release's user, port, units, site,
+topology and the set of its jobs still come from the host's configuration.
 
 ```console
 PUT    /placements/<project>        apply a placement, the JSON body
@@ -290,15 +291,20 @@ client: a repository's stack declares its `Fleet.Placement`, and CI holds the pr
   "endpoint": { "hostName": "shop.example.net", "visibility": "public" },
   "secrets": { "apiKey": "projects/shop/api-key" },
   "parameters": { "title": "Shop" },
-  "memory": { "max": "1G" }
+  "memory": { "max": "1G" },
+  "jobs": { "backup": { "calendar": "*-*-* 04:00", "randomizedDelaySec": "30min" } }
 }
 ```
+
+A job's schedule is a systemd `calendar` or an `interval`, with an optional `randomizedDelaySec`;
+`systemd-analyze` checks both. An interval keeps the host's `onBootSec` and cadence.
 
 Applying a placement writes, under `/var/lib/app-deployments/<project>/placement`, the policy,
 secret bindings and runtime base the update script then prefers over the compiled ones, and the
 hostname health probes send. It decrypts the bound keys with the host's age key into
 `/run/app-deployments/<project>/credentials` and loads them through drop-ins in
-`/run/systemd/system`, which also set the memory limits. Its route goes to
+`/run/systemd/system`, which also set the memory limits and replace the schedules of its job
+timers; a rescheduled timer restarts. Its route goes to
 `placementRoutesFile` for the host's runtime ingress, importing the release's compiled site
 from `/etc/app-deployments/sites`. Then it asks the update unit to activate the current release
 again. Parameters merge over the configuration's; secrets add to them.
