@@ -310,7 +310,9 @@ no longer allows, so the release falls back to its compiled bindings, and fails 
 shows. It writes the credentials and drop-ins a boot emptied from `/run`.
 
 A placement's values replace the configuration's, so a project moves without downtime: grant
-first, placement second, then remove its old values from the configuration.
+first, placement second, then remove its old values from the configuration. Removing them
+changes no topology. A lock bump that does, such as a new ingress header, stops the release at
+the switch: `<app>-release-plan` refuses the active revision until a matching one is promoted.
 
 ## Ownership Boundary
 
