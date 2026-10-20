@@ -10,10 +10,14 @@ placement replaces only the bindings the host's configuration gives them:
   drop-ins in /run/systemd/system, which also carry its memory limits.
 - Its route goes to a file agent-service-routes serves and imports the release's compiled site.
 
-/run is empty after a boot, so `restore` writes credentials and drop-ins again before releases
-start. The webhook (app-deployments.nix) serves the HTTP side.
+`restore` runs before releases start, at boot and after every switch that changes a release's
+registration: it binds each placement again over the host's current compiled bindings, deletes one
+the grant no longer allows, and writes the credentials and drop-ins a boot emptied from /run. The
+webhook (app-deployments.nix) serves the HTTP side.
 """
 
+import contextlib
+import fcntl
 import hashlib
 import hmac
 import json
@@ -22,7 +26,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import threading
 from pathlib import Path
 
 PLANNER = os.environ.get("APP_DEPLOYMENTS_PLANNER", "project-runtime")
@@ -40,7 +43,15 @@ SIZE = re.compile(r"^(\d+(?:\.\d+)?)([KMGT])$")
 FIELDS = {"endpoint", "secrets", "parameters", "memory"}
 MEMORY = ("high", "max", "swapMax")
 
-LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def locked():
+    """Serializes the webhook's changes and `restore`, which run in different processes."""
+    ROUTES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(ROUTES_FILE.parent / ".lock", "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
 
 
 class Refused(Exception):
@@ -185,6 +196,17 @@ def bindings(project: str, app: dict, stored: dict) -> dict:
     policy = read_json(registration["policy"])
     policy["bindings"]["parameters"] = {**policy["bindings"]["parameters"], **stored["parameters"]}
     policy["bindings"]["secrets"] = sorted(set(policy["bindings"]["secrets"]) | set(stored["secrets"]))
+    # As in project-descriptor.nix: a bound secret requirement is met by the credential of its name.
+    requirements = policy["descriptor"].get("requirements", {})
+    policy["bindings"]["resources"] = {
+        **{
+            name: {"kind": "secret", "credential": name}
+            for name in stored["secrets"]
+            if requirements.get(name, {}).get("kind") == "secret"
+            and "release" in requirements[name].get("realizations", [])
+        },
+        **policy["bindings"]["resources"],
+    }
     secrets = {
         **read_json(registration["secretBindings"]),
         **{name: str(credentials_dir(project) / name) for name in stored["secrets"]},
@@ -198,6 +220,31 @@ def bindings(project: str, app: dict, stored: dict) -> dict:
             "visibility": endpoint["visibility"],
         })
     return {"policy": policy, "secrets": secrets, "runtime": runtime}
+
+
+def write_bound(app: dict, stored: dict, bound: dict) -> bool:
+    """Writes the files the update script prefers; whether any of them changed."""
+    directory = placement_dir(app)
+    endpoint = stored.get("endpoint")
+    files = {
+        "policy.json": dumps(bound["policy"]),
+        "secrets.json": dumps(bound["secrets"]),
+        "runtime-base.json": dumps(bound["runtime"]),
+        "host": None if endpoint is None else endpoint["hostName"] + "\n",
+        "placement.json": dumps(stored),
+    }
+    changed = False
+    for name, text in files.items():
+        path = directory / name
+        current = path.read_text(encoding="utf-8") if path.is_file() else None
+        if current == text:
+            continue
+        changed = True
+        if text is None:
+            path.unlink()
+        else:
+            write_atomic(path, text)
+    return changed
 
 
 def current_descriptor(app: dict) -> Path | None:
@@ -314,17 +361,8 @@ def put(project: str, app: dict, apps: dict, placement: object, dry_run: bool) -
     summary = {"project": project, "placement": stored, "release": outcome is not None}
     if dry_run:
         return summary
-    with LOCK:
-        directory = placement_dir(app)
-        write_atomic(directory / "policy.json", dumps(bound["policy"]))
-        write_atomic(directory / "secrets.json", dumps(bound["secrets"]))
-        write_atomic(directory / "runtime-base.json", dumps(bound["runtime"]))
-        endpoint = stored.get("endpoint")
-        if endpoint is None:
-            (directory / "host").unlink(missing_ok=True)
-        else:
-            write_atomic(directory / "host", endpoint["hostName"] + "\n")
-        write_atomic(directory / "placement.json", dumps(stored))
+    with locked():
+        write_bound(app, stored, bound)
         materialize(project, app, stored, bound["secrets"], values)
         write_routes(apps)
         subprocess.run(["systemctl", "daemon-reload"], check=True)
@@ -335,7 +373,7 @@ def put(project: str, app: dict, apps: dict, placement: object, dry_run: bool) -
 def delete(project: str, app: dict, apps: dict) -> bool:
     if app.get("placement") is None or not (placement_dir(app) / "placement.json").exists():
         return False
-    with LOCK:
+    with locked():
         shutil.rmtree(placement_dir(app))
         unmaterialize(project, app)
         write_routes(apps)
@@ -352,21 +390,35 @@ def get(app: dict) -> dict | None:
 
 
 def restore(apps: dict) -> int:
-    """Writes every placement's credentials and drop-ins again, after a boot emptied /run."""
+    """Binds every placement again and writes /run; the number of placements that failed."""
     failures = 0
-    for project, stored in sorted(placed(apps).items()):
-        app = apps[project]
-        try:
-            secrets = read_json(placement_dir(app) / "secrets.json")
-            values = {name: decrypt(key) for name, key in stored["secrets"].items()}
-            materialize(project, app, stored, secrets, values)
-        except (Refused, OSError, ValueError) as error:
-            failures += 1
-            print(f"placements: {project}: {error}", flush=True)
-    write_routes(apps)
-    subprocess.run(["systemctl", "daemon-reload"], check=False)
+    changed = []
+    with locked():
+        for project, stored in sorted(placed(apps).items()):
+            app = apps[project]
+            try:
+                stored = check(project, app["placement"]["grant"], stored)
+                bound = bindings(project, app, stored)
+                values = {name: decrypt(key) for name, key in stored["secrets"].items()}
+            except Refused as refused:
+                failures += 1
+                print(f"placements: {project}: deleted, since {refused}", flush=True)
+                shutil.rmtree(placement_dir(app))
+                unmaterialize(project, app)
+                changed.append(app)
+                continue
+            except (OSError, ValueError) as error:
+                failures += 1
+                print(f"placements: {project}: {error}", flush=True)
+                continue
+            if write_bound(app, stored, bound):
+                changed.append(app)
+            materialize(project, app, stored, bound["secrets"], values)
+        write_routes(apps)
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
+    for app in changed:
+        redeploy(app)
     return failures
-
 
 if __name__ == "__main__":
     import sys

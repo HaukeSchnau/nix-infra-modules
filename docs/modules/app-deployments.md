@@ -296,8 +296,13 @@ hostname health probes send. It decrypts the bound keys with the host's age key 
 `/run/systemd/system`, which also set the memory limits. Its route goes to
 `placementRoutesFile` for the host's runtime ingress, importing the release's compiled site
 from `/etc/app-deployments/sites`. Then it asks the update unit to activate the current release
-again. `app-deployments-placements.service` writes credentials and drop-ins again after a boot,
-before the releases start. Parameters merge over the configuration's; secrets add to them.
+again. Parameters merge over the configuration's; secrets add to them.
+
+`app-deployments-placements.service` runs before the releases start, at boot and after every
+switch that changes a release's registration. It binds each placement again over the current
+compiled bindings and redeploys a release whose bindings changed. It deletes a placement the grant
+no longer allows, so the release falls back to its compiled bindings, and fails so the deletion
+shows. It writes the credentials and drop-ins a boot emptied from `/run`.
 
 A placement's values replace the configuration's, so a project moves without downtime: grant
 first, placement second, then remove its old values from the configuration.

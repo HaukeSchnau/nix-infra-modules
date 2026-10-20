@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import placements
 
@@ -73,7 +74,11 @@ class BindingTests(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
         files = {
-            "policy.json": {"descriptor": {}, "managedJobs": [], "bindings": {"parameters": {"otlp": "http://o", "title": "Old"}, "secrets": ["session"], "resources": {}}},
+            "policy.json": {
+                "descriptor": {"requirements": {"apiKey": {"kind": "secret", "realizations": ["release"]}}},
+                "managedJobs": [],
+                "bindings": {"parameters": {"otlp": "http://o", "title": "Old"}, "secrets": ["session"], "resources": {}},
+            },
             "secrets.json": {"session": "/run/secrets/session"},
             "runtime.json": {"endpoints": {"web": {"url": "https://old.example.org", "hostNames": ["old.example.org"], "visibility": "tailnet", "listen": {"port": 18200}}}},
         }
@@ -98,6 +103,7 @@ class BindingTests(unittest.TestCase):
         bound = placements.bindings("shop", self.app, stored)
         self.assertEqual(bound["policy"]["bindings"]["parameters"], {"otlp": "http://o", "title": "Shop"})
         self.assertEqual(bound["policy"]["bindings"]["secrets"], ["apiKey", "session"])
+        self.assertEqual(bound["policy"]["bindings"]["resources"], {"apiKey": {"kind": "secret", "credential": "apiKey"}})
         self.assertEqual(bound["secrets"]["session"], "/run/secrets/session")
         self.assertTrue(bound["secrets"]["apiKey"].endswith("/shop/credentials/apiKey"))
         self.assertEqual(bound["runtime"]["endpoints"]["web"]["url"], "https://shop.example.org")
@@ -115,6 +121,63 @@ class BindingTests(unittest.TestCase):
             "name": "shop", "hostName": "shop.example.org", "visibility": "public", "upstreamPort": 18200,
             "site": "/etc/app-deployments/sites/shop.caddy",
         }])
+
+
+class RestoreTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        placements.ROUTES_FILE = self.dir / "routes.json"
+        placements.CREDENTIALS = self.dir / "run"
+        placements.UNITS = self.dir / "units"
+        self.policy = {"descriptor": {}, "managedJobs": [], "bindings": {"parameters": {"otlp": "http://old"}, "secrets": [], "resources": {}}}
+        files = {
+            "policy.json": self.policy,
+            "secrets.json": {},
+            "runtime.json": {"endpoints": {"web": {"listen": {"port": 18200}}}},
+        }
+        for name, value in files.items():
+            (self.dir / name).write_text(json.dumps(value))
+        (self.dir / "current-revision").write_text("abc\n")
+        (self.dir / "current").symlink_to(self.dir)
+        self.app = {
+            "requestedReleaseFile": str(self.dir / "requested-release.json"),
+            "updateUnit": "app-deployment-shop-update.service",
+            "placement": {
+                "grant": GRANT, "port": 18200, "stateDir": str(self.dir), "action": "web",
+                "policy": str(self.dir / "policy.json"), "secretBindings": str(self.dir / "secrets.json"),
+                "runtimeBase": str(self.dir / "runtime.json"), "site": "/etc/app-deployments/sites/shop.caddy",
+                "credentialUnits": ["app-deployment-shop.service"],
+            },
+        }
+        stored = placements.check("shop", GRANT, {"endpoint": {"hostName": "shop.example.org", "visibility": "public"}, "parameters": {"title": "Shop"}})
+        placements.write_bound(self.app, stored, placements.bindings("shop", self.app, stored))
+
+    def restore(self):
+        with mock.patch.object(placements.subprocess, "run") as run:
+            failures = placements.restore({"shop": self.app})
+        return failures, [call.args[0] for call in run.call_args_list]
+
+    def test_a_switch_that_changes_the_host_bindings_rebinds_and_redeploys(self):
+        self.policy["bindings"]["parameters"]["otlp"] = "http://new"
+        (self.dir / "policy.json").write_text(json.dumps(self.policy))
+        failures, commands = self.restore()
+        bound = json.loads((self.dir / "placement" / "policy.json").read_text())
+        self.assertEqual((failures, bound["bindings"]["parameters"]), (0, {"otlp": "http://new", "title": "Shop"}))
+        self.assertIn(["systemctl", "start", "--no-block", "app-deployment-shop-update.service"], commands)
+
+    def test_a_boot_rewrites_run_without_redeploying(self):
+        failures, commands = self.restore()
+        self.assertEqual(failures, 0)
+        self.assertTrue((self.dir / "units" / "app-deployment-shop.service.d" / "50-placement.conf").is_file())
+        self.assertNotIn("start", [word for command in commands for word in command])
+
+    def test_a_placement_the_grant_no_longer_allows_is_deleted(self):
+        self.app["placement"]["grant"] = {**GRANT, "hostNames": ["other.example.org"]}
+        failures, commands = self.restore()
+        self.assertEqual(failures, 1)
+        self.assertFalse((self.dir / "placement").exists())
+        self.assertEqual(json.loads(placements.ROUTES_FILE.read_text()), [])
+        self.assertIn(["systemctl", "start", "--no-block", "app-deployment-shop-update.service"], commands)
 
 
 if __name__ == "__main__":

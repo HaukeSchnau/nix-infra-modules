@@ -625,6 +625,8 @@ let
   resolveParameters =
     {
       allowUnknown ? false,
+      # A granted release's placement may give the values its host doesn't.
+      allowMissing ? false,
       descriptor,
       values ? { },
     }:
@@ -640,7 +642,7 @@ let
           ] values.${name}
         else if definition ? default then
           definition.default
-        else if definition.required then
+        else if definition.required && !allowMissing then
           fail "parameters.${name}" "a value is required"
         else
           null
@@ -678,6 +680,7 @@ let
         builtins.attrNames releaseSecrets
       );
       approvedOci = policy.approvedOci or [ ];
+      granted = (policy.grant or null) != null;
       unapprovedOci = lib.subtractLists approvedOci (builtins.attrNames release.ociAuxiliaries);
       jobPolicies = policy.jobs or { };
       activeJobs =
@@ -724,8 +727,10 @@ let
     in
     checked "release policy"
       [
+        # A granted release's placement may bind the rest; placements.py and the update script
+        # plan the complete bindings.
         (check (
-          missingSecrets == [ ]
+          missingSecrets == [ ] || granted
         ) "missing required Secret bindings: ${lib.concatStringsSep ", " missingSecrets}")
         (check (
           unapprovedOci == [ ]
@@ -744,6 +749,7 @@ let
             grant = policy.grant or null;
             parameters = resolveParameters {
               allowUnknown = true;
+              allowMissing = granted;
               inherit descriptor;
               values = policy.parameters or { };
             };
