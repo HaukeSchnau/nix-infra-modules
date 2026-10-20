@@ -354,13 +354,13 @@ def redeploy(app: dict) -> None:
     revision = state / "current-revision"
     if not current.is_symlink() or not revision.is_file():
         return
-    request = {
-        "schemaVersion": 1,
-        "revision": revision.read_text(encoding="utf-8").strip(),
-        "storePath": os.readlink(current),
-        "source": "placement",
-    }
-    write_atomic(Path(app["requestedReleaseFile"]), dumps(request))
+    active = revision.read_text(encoding="utf-8").strip()
+    # The request the update script reads in the app's delivery mode, as the webhook writes it.
+    if app["deliveryMode"] == "cache":
+        request = {"schemaVersion": 1, "revision": active, "storePath": os.readlink(current), "source": "placement"}
+        write_atomic(Path(app["requestedReleaseFile"]), dumps(request))
+    else:
+        write_atomic(Path(app["requestedRevisionFile"]), active + "\n")
     subprocess.run(["systemctl", "start", "--no-block", app["updateUnit"]], check=False)
 
 

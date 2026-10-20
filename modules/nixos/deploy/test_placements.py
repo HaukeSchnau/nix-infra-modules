@@ -147,7 +147,9 @@ class RestoreTests(unittest.TestCase):
         (self.dir / "current-revision").write_text("abc\n")
         (self.dir / "current").symlink_to(self.dir)
         self.app = {
+            "deliveryMode": "source",
             "requestedReleaseFile": str(self.dir / "requested-release.json"),
+            "requestedRevisionFile": str(self.dir / "requested-revision"),
             "updateUnit": "app-deployment-shop-update.service",
             "placement": {
                 "grant": GRANT, "port": 18200, "stateDir": str(self.dir), "action": "web",
@@ -171,6 +173,9 @@ class RestoreTests(unittest.TestCase):
         bound = json.loads((self.dir / "placement" / "policy.json").read_text())
         self.assertEqual((failures, bound["bindings"]["parameters"]), (0, {"otlp": "http://new", "title": "Shop"}))
         self.assertIn(["systemctl", "start", "--no-block", "app-deployment-shop-update.service"], commands)
+        # A source-delivered release reads its request from the revision file; a release file would outlive it.
+        self.assertEqual((self.dir / "requested-revision").read_text(), "abc\n")
+        self.assertFalse((self.dir / "requested-release.json").exists())
 
     def test_a_boot_rewrites_run_without_redeploying(self):
         failures, commands = self.restore()
