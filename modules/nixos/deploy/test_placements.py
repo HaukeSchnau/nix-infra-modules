@@ -178,6 +178,11 @@ class RestoreTests(unittest.TestCase):
         self.assertTrue((self.dir / "units" / "app-deployment-shop.service.d" / "50-placement.conf").is_file())
         self.assertNotIn("start", [word for command in commands for word in command])
 
+    def test_an_unchanged_placement_neither_redeploys_nor_restarts(self):
+        self.restore()
+        _, commands = self.restore()
+        self.assertEqual(commands, [["systemctl", "daemon-reload"]])
+
     def test_a_placement_the_grant_no_longer_allows_is_deleted(self):
         self.app["placement"]["grant"] = {**GRANT, "hostNames": ["other.example.org"]}
         failures, commands = self.restore()

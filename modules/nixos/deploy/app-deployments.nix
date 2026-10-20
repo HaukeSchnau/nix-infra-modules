@@ -1018,6 +1018,7 @@ let
     import subprocess
     import tempfile
     import threading
+    import time
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     import placements
@@ -1245,6 +1246,14 @@ let
           if newer is not None:
             self.send_json(409, {"error": "stale fence", "fence": newer})
             return
+
+        # systemctl start joins an update that is already running, such as a placement's
+        # redeploy, and would answer with its result. Wait for it, then start this one.
+        while subprocess.run(
+          ["systemctl", "show", "--property=ActiveState", "--value", app["updateUnit"]],
+          check=False, capture_output=True, text=True,
+        ).stdout.strip() in ("activating", "deactivating"):
+          time.sleep(1)
 
         if app["deliveryMode"] == "cache":
           if not revision or not store_path:

@@ -287,21 +287,29 @@ def decrypt(key: str) -> str:
     return result.stdout
 
 
-def materialize(project: str, app: dict, stored: dict, secrets: dict, values: dict) -> None:
-    """Credentials in /run and the drop-ins that load them and set the memory limits."""
+def materialize(project: str, app: dict, stored: dict, secrets: dict, values: dict) -> bool:
+    """Credentials in /run and the drop-ins that load them and set the memory limits; whether they changed."""
     directory = credentials_dir(project)
-    if directory.exists():
-        shutil.rmtree(directory)
-    directory.mkdir(parents=True, mode=0o700)
-    for name, value in values.items():
-        write_atomic(directory / name, value, 0o400)
+    current = {path.name: path.read_text(encoding="utf-8") for path in directory.iterdir()} if directory.is_dir() else None
+    changed = current != values
+    if changed:
+        if directory.exists():
+            shutil.rmtree(directory)
+        directory.mkdir(parents=True, mode=0o700)
+        for name, value in values.items():
+            write_atomic(directory / name, value, 0o400)
     registration = app["placement"]
     service = registration["credentialUnits"][0]
     for unit in registration["credentialUnits"]:
         lines = ["[Service]", "LoadCredential="] + [f"LoadCredential={name}:{path}" for name, path in sorted(secrets.items())]
         if unit == service:
             lines += [f"Memory{field[0].upper()}{field[1:]}={value}" for field, value in sorted(stored["memory"].items())]
-        write_atomic(UNITS / f"{unit}.d" / "50-placement.conf", "\n".join(lines) + "\n")
+        dropin = UNITS / f"{unit}.d" / "50-placement.conf"
+        text = "\n".join(lines) + "\n"
+        if not dropin.is_file() or dropin.read_text(encoding="utf-8") != text:
+            write_atomic(dropin, text)
+            changed = True
+    return changed
 
 
 def unmaterialize(project: str, app: dict) -> None:
@@ -356,6 +364,16 @@ def redeploy(app: dict) -> None:
     subprocess.run(["systemctl", "start", "--no-block", app["updateUnit"]], check=False)
 
 
+def apply(app: dict, rebound: bool, rewritten: bool) -> None:
+    """Brings the running release in line: an activation when its bindings changed, since only that
+    rewrites its runtime manifest; a restart when only its credentials or drop-ins did, since an
+    activation with unchanged bindings finds the release already active."""
+    if rebound:
+        redeploy(app)
+    elif rewritten:
+        subprocess.run(["systemctl", "try-restart", "--no-block", app["placement"]["credentialUnits"][0]], check=False)
+
+
 def put(project: str, app: dict, apps: dict, placement: object, dry_run: bool) -> dict:
     registration = app.get("placement")
     if registration is None:
@@ -368,11 +386,11 @@ def put(project: str, app: dict, apps: dict, placement: object, dry_run: bool) -
     if dry_run:
         return summary
     with locked():
-        write_bound(app, stored, bound)
-        materialize(project, app, stored, bound["secrets"], values)
+        rebound = write_bound(app, stored, bound)
+        rewritten = materialize(project, app, stored, bound["secrets"], values)
         write_routes(apps)
         subprocess.run(["systemctl", "daemon-reload"], check=True)
-        redeploy(app)
+        apply(app, rebound, rewritten)
     return summary
 
 
@@ -398,7 +416,7 @@ def get(app: dict) -> dict | None:
 def restore(apps: dict) -> int:
     """Binds every placement again and writes /run; the number of placements that failed."""
     failures = 0
-    changed = []
+    changes = []
     with locked():
         for project, stored in sorted(placed(apps).items()):
             app = apps[project]
@@ -411,20 +429,20 @@ def restore(apps: dict) -> int:
                 print(f"placements: {project}: deleted, since {refused}", flush=True)
                 shutil.rmtree(placement_dir(app))
                 unmaterialize(project, app)
-                changed.append(app)
+                changes.append((app, True, False))
                 continue
             except (OSError, ValueError) as error:
                 failures += 1
                 print(f"placements: {project}: {error}", flush=True)
                 continue
-            if write_bound(app, stored, bound):
-                changed.append(app)
-            materialize(project, app, stored, bound["secrets"], values)
+            rebound = write_bound(app, stored, bound)
+            changes.append((app, rebound, materialize(project, app, stored, bound["secrets"], values)))
         write_routes(apps)
         subprocess.run(["systemctl", "daemon-reload"], check=False)
-    for app in changed:
-        redeploy(app)
+    for app, rebound, rewritten in changes:
+        apply(app, rebound, rewritten)
     return failures
+
 
 if __name__ == "__main__":
     import sys
