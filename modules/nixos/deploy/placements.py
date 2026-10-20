@@ -247,29 +247,26 @@ def write_bound(app: dict, stored: dict, bound: dict) -> bool:
     return changed
 
 
-def current_descriptor(app: dict) -> Path | None:
-    descriptor = Path(app["placement"]["stateDir"]) / "current" / "share" / "project" / "descriptor.json"
-    return descriptor if descriptor.is_file() else None
+def plan(policy: dict) -> None:
+    """plan-release of the release the host accepts, its policy's descriptor, with the placed bindings.
 
-
-def plan(app: dict, policy: dict) -> dict | None:
-    """plan-release of the active release against the placement's policy, or None before a release."""
-    descriptor = current_descriptor(app)
-    if descriptor is None:
-        return None
-    with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8") as handle:
-        json.dump(policy, handle)
-        handle.flush()
+    Not the active release: after a lock bump changes the topology, only the revision Calder is about
+    to promote matches the host, and that promotion waits for this placement.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        host = Path(directory) / "policy.json"
+        candidate = Path(directory) / "candidate.json"
+        host.write_text(json.dumps(policy), encoding="utf-8")
+        candidate.write_text(json.dumps(policy["descriptor"]), encoding="utf-8")
         result = subprocess.run(
-            [PLANNER, "plan-release", "--host", handle.name, "--candidate", str(descriptor)],
+            [PLANNER, "plan-release", "--host", str(host), "--candidate", str(candidate)],
             check=False, capture_output=True, text=True,
         )
     if result.returncode != 0:
         raise Refused([f"plan-release failed: {result.stderr.strip() or result.returncode}"])
     outcome = json.loads(result.stdout)
     if not outcome.get("compatible"):
-        raise Refused([f"the active release: {reason}" for reason in outcome.get("reasons", [])])
-    return outcome
+        raise Refused([f"the release: {reason}" for reason in outcome.get("reasons", [])])
 
 
 def decrypt(key: str) -> str:
@@ -356,9 +353,9 @@ def put(project: str, app: dict, apps: dict, placement: object, dry_run: bool) -
         raise Refused([f"{project} has no grant on this host"])
     stored = check(project, registration["grant"], placement)
     bound = bindings(project, app, stored)
-    outcome = plan(app, bound["policy"])
+    plan(bound["policy"])
     values = {name: decrypt(key) for name, key in stored["secrets"].items()}
-    summary = {"project": project, "placement": stored, "release": outcome is not None}
+    summary = {"project": project, "placement": stored}
     if dry_run:
         return summary
     with locked():

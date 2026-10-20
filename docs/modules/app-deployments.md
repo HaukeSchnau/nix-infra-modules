@@ -275,6 +275,11 @@ GET    /placements/<project>        the placement that applies
 DELETE /placements/<project>        back to the configuration's values
 ```
 
+Both PUT and the dry run also plan the release the host accepts, its compiled descriptor, with
+the placement's bindings, so a placement that leaves a required secret or parameter unbound is
+refused too. They don't plan the active release: after a lock bump changes its topology, only
+the revision about to be promoted matches the host.
+
 A refusal answers 422 with every reason. The webhook accepts its own token and, with
 `webhook.placementKeySecretName`, a project's token `HMAC-SHA256(key, project)`, which works for
 that project's placement only. The `@schnau/fleet` Alchemy provider (`packages/fleet`) is the
