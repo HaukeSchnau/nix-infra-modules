@@ -993,13 +993,23 @@ let
       exit 0
     fi
 
+    # A switch can move the host's contract or bindings ahead of the active release. It keeps
+    # running on the plan it was activated with until an activation catches up.
+    keep_active() {
+      echo "app-deployment/${name}: $1" >&2
+      if [ -f "$plan" ]; then
+        echo "app-deployment/${name}: keeps the active release on its last plan until a compatible one is activated" >&2
+        exit 0
+      fi
+      exit 1
+    }
+
     ${usePlacement}
     result="$(${projectPlanner} plan-release \
       --host "$binding_policy" \
       --candidate "$descriptor")"
     if ! ${pkgs.jq}/bin/jq -e '.compatible' <<<"$result" >/dev/null; then
-      ${pkgs.jq}/bin/jq -r '.reasons[] | "app-deployment/${name}: " + .' <<<"$result" >&2
-      exit 1
+      keep_active "$(${pkgs.jq}/bin/jq -r '.reasons | join("; ")' <<<"$result")"
     fi
 
     revision=""
@@ -1013,52 +1023,69 @@ let
       "$runtime_base" <(printf '%s\n' "$result"))"
     actual_runtime="$(${pkgs.jq}/bin/jq -S . "$runtime")"
     if [ "$expected_runtime" != "$actual_runtime" ]; then
-      echo "app-deployment/${name}: cannot bootstrap a Release plan for a stale Runtime Context" >&2
-      exit 1
+      keep_active "the Runtime Context is stale"
     fi
 
     ${pkgs.jq}/bin/jq -S '.releasePlan' <<<"$result" > "$plan.next"
     chmod 0644 "$plan.next"
     mv -f "$plan.next" "$plan"
   '';
-  projectArtifactConditionScript = pkgs.writeShellScript "app-deployment-${name}-artifact-condition" ''
-    set -euo pipefail
+  # Whether the deployed artifact may run. The service keeps running its active release while the
+  # host's contract or bindings are ahead of it (see the release plan); jobs and health recovery
+  # wait for a compatible one.
+  mkArtifactCondition =
+    scriptName: keepActive:
+    pkgs.writeShellScript "app-deployment-${name}-${scriptName}" ''
+      set -euo pipefail
 
-    current=${lib.escapeShellArg stateDir}/current
-    executable="$current/bin/${cfg.executable}"
-    descriptor="$current/share/project/descriptor.json"
+      mismatch() {
+        echo "app-deployment/${name}: $1" >&2
+        ${
+          if keepActive then
+            ''
+              echo "app-deployment/${name}: runs the active release until a compatible one is activated" >&2
+              exit 0
+            ''
+          else
+            "exit 1"
+        }
+      }
 
-    if [ ! -x "$executable" ] || [ ! -f "$descriptor" ]${lib.optionalString isProject " || [ ! -f ${lib.escapeShellArg deployedProjectRuntimeManifest} ] || [ ! -f ${lib.escapeShellArg deployedProjectReleasePlan} ]"}; then
-      echo "app-deployment/${name}: no descriptor-compatible Project artifact is deployed" >&2
-      exit 1
-    fi
+      current=${lib.escapeShellArg stateDir}/current
+      executable="$current/bin/${cfg.executable}"
+      descriptor="$current/share/project/descriptor.json"
 
-    ${usePlacement}
-    result="$(${projectPlanner} plan-release \
-      --host "$binding_policy" \
-      --candidate "$descriptor")"
-    if ! ${pkgs.jq}/bin/jq -e '.compatible' <<<"$result" >/dev/null; then
-      ${pkgs.jq}/bin/jq -r '.reasons[] | "app-deployment/${name}: " + .' <<<"$result" >&2
-      exit 1
-    fi
+      if [ ! -x "$executable" ] || [ ! -f "$descriptor" ]${lib.optionalString isProject " || [ ! -f ${lib.escapeShellArg deployedProjectRuntimeManifest} ] || [ ! -f ${lib.escapeShellArg deployedProjectReleasePlan} ]"}; then
+        echo "app-deployment/${name}: no descriptor-compatible Project artifact is deployed" >&2
+        exit 1
+      fi
 
-    revision=""
-    ${lib.optionalString cfg.project.exposeRevision ''
-      revision="$(cat ${lib.escapeShellArg stateDir}/current-revision)"
-    ''}
-    expected_runtime="$(${pkgs.jq}/bin/jq -S -s --arg revision "$revision" \
-      '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
-        + {bindings: .[1].bindings}
-        + (if $revision == "" then {} else {revision: $revision} end)' \
-      "$runtime_base" <(printf '%s\n' "$result"))"
-    expected_release_plan="$(${pkgs.jq}/bin/jq -S '.releasePlan' <<<"$result")"
-    actual_runtime="$(${pkgs.jq}/bin/jq -S . ${lib.escapeShellArg deployedProjectRuntimeManifest})"
-    actual_release_plan="$(${pkgs.jq}/bin/jq -S . ${lib.escapeShellArg deployedProjectReleasePlan})"
-    if [ "$expected_runtime" != "$actual_runtime" ] || [ "$expected_release_plan" != "$actual_release_plan" ]; then
-      echo "app-deployment/${name}: deployed Runtime Context or Release plan is stale" >&2
-      exit 1
-    fi
-  '';
+      ${usePlacement}
+      result="$(${projectPlanner} plan-release \
+        --host "$binding_policy" \
+        --candidate "$descriptor")"
+      if ! ${pkgs.jq}/bin/jq -e '.compatible' <<<"$result" >/dev/null; then
+        mismatch "$(${pkgs.jq}/bin/jq -r '.reasons | join("; ")' <<<"$result")"
+      fi
+
+      revision=""
+      ${lib.optionalString cfg.project.exposeRevision ''
+        revision="$(cat ${lib.escapeShellArg stateDir}/current-revision)"
+      ''}
+      expected_runtime="$(${pkgs.jq}/bin/jq -S -s --arg revision "$revision" \
+        '.[0] + {parameters: .[1].parameters, secrets: .[1].secrets}
+          + {bindings: .[1].bindings}
+          + (if $revision == "" then {} else {revision: $revision} end)' \
+        "$runtime_base" <(printf '%s\n' "$result"))"
+      expected_release_plan="$(${pkgs.jq}/bin/jq -S '.releasePlan' <<<"$result")"
+      actual_runtime="$(${pkgs.jq}/bin/jq -S . ${lib.escapeShellArg deployedProjectRuntimeManifest})"
+      actual_release_plan="$(${pkgs.jq}/bin/jq -S . ${lib.escapeShellArg deployedProjectReleasePlan})"
+      if [ "$expected_runtime" != "$actual_runtime" ] || [ "$expected_release_plan" != "$actual_release_plan" ]; then
+        mismatch "deployed Runtime Context or Release plan is stale"
+      fi
+    '';
+  projectArtifactConditionScript = mkArtifactCondition "artifact-condition" false;
+  projectServiceConditionScript = mkArtifactCondition "service-condition" true;
   activationScript = pkgs.writeShellScript "app-deployment-${name}-activate" ''
     set -euo pipefail
 
@@ -1309,7 +1336,7 @@ let
               WorkingDirectory = workingDirectory;
             }
             // lib.optionalAttrs isProject {
-              ExecCondition = projectArtifactConditionScript;
+              ExecCondition = projectServiceConditionScript;
             }
             // lib.optionalAttrs isProject projectServicePolicy
             // lib.optionalAttrs (isProject && projectSecrets != { }) {

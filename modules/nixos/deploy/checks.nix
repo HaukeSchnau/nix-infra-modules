@@ -1004,7 +1004,7 @@ in
       and .service.MemoryHigh == "768M"
       and .service.MemoryMax == "1G"
       and .service.MemorySwapMax == "0"
-      and (.service.condition | endswith("-app-deployment-demo-project-artifact-condition"))
+      and (.service.condition | endswith("-app-deployment-demo-project-service-condition"))
       and (.service.LoadCredential | index("betterAuthSecret:/run/secrets/demo-better-auth"))
       and (.service.after | index("podman-project-demo-project-database.service"))
       and (.service.after | index("app-deployment-demo-project-release-plan.service"))

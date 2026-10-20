@@ -310,9 +310,13 @@ no longer allows, so the release falls back to its compiled bindings, and fails 
 shows. It writes the credentials and drop-ins a boot emptied from `/run`.
 
 A placement's values replace the configuration's, so a project moves without downtime: grant
-first, placement second, then remove its old values from the configuration. Removing them
-changes no topology. A lock bump that does, such as a new ingress header, stops the release at
-the switch: `<app>-release-plan` refuses the active revision until a matching one is promoted.
+first, placement second, then remove its old values from the configuration.
+
+A switch can move the host's contract or bindings ahead of the active release, such as a lock
+bump that adds an ingress header. The release then keeps running on the plan and Runtime Context
+it was activated with, and says so in the journal, until an activation catches up; its jobs and
+health recovery wait for that. Calder's promotion of the matching revision waits for the switch
+instead of failing. A release that was never activated still needs a compatible one.
 
 ## Ownership Boundary
 
