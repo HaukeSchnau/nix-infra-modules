@@ -59,4 +59,19 @@ in
         ! grep -q '"User-Agent": cfg\\["userAgent"\\]' ${script}
         touch $out
       '';
+
+  git-mirrors-sync =
+    pkgs.runCommand "git-mirrors-sync"
+      {
+        nativeBuildInputs = [
+          pkgs.git
+          pkgs.python3
+        ];
+      }
+      ''
+        cp ${./git_mirrors_sync.py} git_mirrors_sync.py
+        cp ${./test_git_mirrors_sync.py} test_git_mirrors_sync.py
+        python3 -m unittest -v test_git_mirrors_sync
+        touch $out
+      '';
 }
