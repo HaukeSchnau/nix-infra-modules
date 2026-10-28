@@ -106,7 +106,7 @@ in
   workspace-repos-python =
     pkgs.runCommand "workspace-repos-python" { nativeBuildInputs = [ pkgs.python3 ]; }
       ''
-        python3 -m py_compile ${workspaceReposScript}
+        python3 -X pycache_prefix="$TMPDIR" -m py_compile ${workspaceReposScript}
         touch $out
       '';
 
