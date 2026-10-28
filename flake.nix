@@ -58,6 +58,7 @@
         caddyIngress = ./modules/nixos/ingress/caddy.nix;
         appDeployments = ./modules/nixos/deploy/app-deployments.nix;
         projects = ./modules/nixos/projects;
+        services = ./modules/nixos/services;
       };
 
       darwinModules = {
@@ -146,6 +147,7 @@
               ./modules/home-manager/colors/checks.nix
               ./modules/project/checks.nix
               ./modules/nixos/projects/checks.nix
+              ./modules/nixos/services/checks.nix
               ./lib/project-runtime/checks.nix
             ]
           );
