@@ -17,6 +17,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "tsc -p tsconfig.json"
   },
   "peerDependencies": {

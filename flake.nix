@@ -116,6 +116,9 @@
               just
               nixfmt
               ripgrep
+              # packages/fleet
+              nodejs_24
+              pnpm_11
             ];
           };
         }
