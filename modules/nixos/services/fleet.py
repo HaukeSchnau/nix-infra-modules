@@ -4,7 +4,8 @@ Usage:
   fleet status [<service>] [--json]     every service, or one with its recent deploys
   fleet logs <service> [journalctl options...]
   fleet console <service> [arguments...]  the service's console command, as the service's user
-  fleet stop <service>                  stop it and remove its route until its next deploy
+  fleet stop <service>                  stop it and remove its route until its stack deploys it again,
+                                        which every stack run does, even with an unchanged spec
   fleet delete <service>                delete it; its database stays unless its specs said dropOnDelete
 """
 
@@ -152,7 +153,7 @@ def stop(arguments: list[str]) -> int:
     if status != 200:
         print(f"fleet: {answer.get('error', status)}", file=sys.stderr)
         return 1
-    print(f"{arguments[0]} stopped until its next deploy")
+    print(f"{arguments[0]} stopped until its stack deploys it again; every stack run does, even with an unchanged spec")
     return 0
 
 

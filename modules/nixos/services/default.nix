@@ -364,6 +364,8 @@ in
             ExecStart = "${pkgs.python3}/bin/python3 ${source}/controller.py serve";
             Restart = "always";
             RestartSec = "5s";
+            # Its state, credentials and operator socket are root's alone.
+            UMask = "0077";
           };
         };
 

@@ -140,6 +140,7 @@ class Host(unittest.TestCase):
             "grants": {"shop": dict(GRANT)},
         })
         self.calls = []
+        self.cutovers = []
         self.state = ("active", "running")
         for name, stub in {
             "systemctl": lambda *args, check=True: self.calls.append(args),
@@ -159,7 +160,8 @@ class Host(unittest.TestCase):
             _, record, plain = thread.call_args.kwargs["args"]
             stubs = {
                 "realize": lambda *_: None, "ensure_database": lambda *_: None, "secret_values": lambda *_: {},
-                "prepare": lambda *_: None, "cutover": lambda *_: None, "invocation": lambda _: "",
+                "prepare": lambda *_: None, "invocation": lambda _: "",
+                "cutover": lambda name, record: self.cutovers.append(record["generation"]),
                 "healthy": lambda *_: None if healthy else "unhealthy",
             }
             with mock.patch.multiple(fleet, **stubs):
@@ -250,7 +252,7 @@ class Host(unittest.TestCase):
         dropped = []
         prod = {"stack": "Shop", "stage": "prod", "fqn": "Server"}
         preview = {"stack": "Shop", "stage": "pr-12", "fqn": "Server"}
-        with mock.patch.object(fleet, "drop_database", dropped.append):
+        with mock.patch.object(fleet, "drop_database", dropped.append), mock.patch.object(fleet, "database_exists", lambda _: True):
             # A preview whose first deploy never went healthy still drops the database it created.
             self.assertEqual(self.put("shop-pr-12", spec(database={"dropOnDelete": True}), owner=preview, healthy=False), "failed")
             self.controller.delete("shop-pr-12", None, preview)
@@ -278,7 +280,7 @@ class Host(unittest.TestCase):
             self.state = ("inactive", "dead")
             self.controller.restore()
         self.assertIsNone(fleet.stopped("shop"))
-        self.assertIn(("restart", "fleet-service@shop.service"), self.calls)
+        self.assertIn(("restart", "--no-block", "fleet-service@shop.service"), self.calls)
         self.assertEqual(len(json.loads(Path(fleet.CONFIG["routesFile"]).read_text())), 1)
 
     def test_an_operator_stop_holds_until_the_next_deploy(self):
@@ -293,6 +295,59 @@ class Host(unittest.TestCase):
         self.assertEqual(json.loads(Path(fleet.CONFIG["routesFile"]).read_text()), [])
         self.assertEqual(self.put("shop", spec(endpoint={"hostName": "a.shop.example.net"})), "active")
         self.assertIsNone(fleet.stopped("shop"))
+
+    def test_restore_stops_a_stopped_service_that_runs_again(self):
+        self.assertEqual(self.put("shop", spec()), "active")
+        self.controller.stop("shop")
+        self.calls.clear()
+        # A restart that raced the operator's stop left the process running.
+        with mock.patch.object(fleet, "secret_values", lambda *_: {}):
+            self.controller.restore()
+        self.assertIn(("stop", "fleet-service@shop.service"), self.calls)
+
+    def test_a_stop_after_restore_decided_to_restart_wins(self):
+        self.assertEqual(self.put("shop", spec()), "active")
+        self.state = ("failed", "failed")
+        self.calls.clear()
+        real = fleet.write_routes
+
+        def stop_meanwhile():
+            # restore's last step before it restarts what it found down; the operator's stop lands now.
+            real()
+            fleet.write_atomic(fleet.service_dir("shop") / "stopped", fleet.dumps({"by": "operator", "reason": "an operator stopped it"}))
+
+        with mock.patch.object(fleet, "write_routes", stop_meanwhile), mock.patch.object(fleet, "secret_values", lambda *_: {}):
+            self.controller.restore()
+        self.assertFalse([call for call in self.calls if call[0] in ("start", "restart")], self.calls)
+
+    def test_a_failed_deploy_leaves_a_stopped_service_stopped(self):
+        self.assertEqual(self.put("shop", spec()), "active")
+        self.controller.stop("shop")
+        self.cutovers.clear()
+        self.calls.clear()
+        self.assertEqual(self.put("shop", spec(release={"revision": "def5678", "paths": {"bundle": BUNDLE, "node": NODE}}), healthy=False), "rolled-back")
+        self.assertEqual(self.cutovers, [2], "the rollback must not start the previous generation")
+        self.assertEqual(self.calls[-2:], [("stop", "fleet-service@shop.service"), ("daemon-reload",)])
+        self.assertIn("generation 1,", fleet.dropin_path("shop").read_text())
+        self.assertEqual(fleet.stopped("shop")["by"], "operator")
+
+    def test_a_kept_database_stays_its_owners(self):
+        fleet.CONFIG["postgresql"] = {"major": 18, "free": 200, "connectionLimit": 40, "maxConnections": 210}
+        prod = {"stack": "Shop", "stage": "prod", "fqn": "Server"}
+        preview = {"stack": "Shop", "stage": "pr-12", "fqn": "Server"}
+        dropped = []
+        with mock.patch.object(fleet, "drop_database", dropped.append), mock.patch.object(fleet, "database_exists", lambda _: True):
+            self.assertEqual(self.put("shop", spec(database={}), owner=prod), "active")
+            self.assertFalse(self.controller.delete("shop", None, prod)["databaseDropped"])
+            with self.assertRaises(Refused) as refused:
+                self.put("shop", spec(database={"dropOnDelete": True}), owner=preview)
+            self.assertEqual(refused.exception.reasons, ["shop's database stays from Server in stack Shop, stage prod's deleted service; a stack takes it over only by adopting it"])
+            # Adopting takes the database over, but it predates the service, so it stays.
+            self.assertEqual(self.put("shop", spec(database={"dropOnDelete": True}), owner=preview, adopt=True), "active")
+            self.assertFalse(self.controller.delete("shop", None, preview)["databaseDropped"])
+            # Its owner gets it back without adopting.
+            self.assertEqual(self.put("shop", spec(database={}), owner=preview), "active")
+        self.assertEqual(dropped, [])
 
     def test_a_rollback_that_fails_too_is_broken_not_rolled_back(self):
         self.assertEqual(self.put("shop", spec()), "active")

@@ -132,7 +132,9 @@ expand and contract.
 A DELETE writes a tombstone first, then stops the service and removes its drop-in, route and
 state. The service's database and role stay, unless every spec the host ever accepted for the
 service set `database.dropOnDelete`, as a preview's does. A spec without it, even one later
-replaced or adopted by another stack, keeps the database for good. Then the controller dumps the database into
+replaced or adopted by another stack, keeps the database for good. A kept database stays its
+owner's: `GET` on the name answers 404 with that owner, and another stack reuses the name only by
+adopting it. A service that takes over a kept database never drops it. Then the controller dumps the database into
 `<backup.directory>/deleted/fleet-<name>-<time>.dump` and drops it only after the dump succeeded.
 Those dumps stay for `backup.deletedRetentionDays`. A deletion a restart interrupted finishes at
 the next start.
@@ -162,16 +164,20 @@ fleet status                    every service: revision, generation, state, URL,
 fleet status <service>          one service, with its owner, grant violations and recent deploys
 fleet logs <service> [-f ...]   journalctl for the service
 fleet console <service> [args]  the spec's console command, as the service's user
-fleet stop <service>            stop it and remove its route until its next deploy
+fleet stop <service>            stop it and remove its route until its stack deploys it again
 fleet delete <service>          delete it, with the same rule for its database as a DELETE
 ```
 
 - State lives in `/var/lib/fleet/services/<name>/`: the active generation's spec with sealed
   secret values, the service's port, its owner and its recent deploys. Fences live in
-  `/var/lib/fleet/fences/`. Secret values are sealed with the host's age key (`ageKeyFile`).
+  `/var/lib/fleet/fences/`, and the owners of kept databases in `/var/lib/fleet/kept/`. Secret
+  values are sealed with the host's age key (`ageKeyFile`). The controller runs with umask 0077,
+  so its state, credentials and operator socket are root's alone.
 - At start, and every five minutes, the controller writes again what a boot empties from `/run`
   (credentials and drop-ins) and starts services that aren't running, except those `fleet stop`
-  stopped. A `systemctl stop` alone doesn't hold.
+  stopped; it stops those again if they run. A `systemctl stop` alone doesn't hold. A stopped
+  service starts at its stack's next run, which deploys it even with an unchanged spec; a deploy
+  that fails puts the previous generation back without starting it.
 - When a switch shrinks a grant's capacity below what runs (service count, memory, a hostname
   another service claims, connections), the service keeps running, `fleet status` shows the
   violations, and its next PUT is refused until it fits again. When a switch revokes a

@@ -41,8 +41,8 @@ service.address.ipv4 // the host's public address, for a DNS record
   new revision fails its health check, the host keeps or restores the old revision, and the
   deploy fails with `DeployFailed` and the reason.
 - The host records the stack, stage and logical ID that put a service. `read` returns a service
-  someone else put as `Unowned`, so Alchemy takes it over only with `--adopt`, and the host
-  refuses a deploy or deletion from another owner.
+  someone else put, or a database such a service left, as `Unowned`, so Alchemy takes it over
+  only with `--adopt`, and the host refuses a deploy or deletion from another owner.
 - `delete` stops the service and removes its route. Its database stays unless every spec the
   host accepted for the service set `database.dropOnDelete`, as for previews; the host then dumps
   it before dropping it. `database.connections` (40 by default) is what its role may hold.

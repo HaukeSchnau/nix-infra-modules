@@ -144,6 +144,8 @@ const Status = Schema.Struct({
   address: Schema.Struct({ ipv4: Schema.NullOr(Schema.String), ipv6: Schema.NullOr(Schema.String) }),
   deploys: Schema.Array(Deploy),
 })
+/** A 404 for a name whose database a deleted service left, with that service's owner. */
+const Missing = Schema.Struct({ kept: Schema.optional(Schema.Struct({ owner: Schema.NullOr(Owner) })) })
 const Accepted = Schema.Struct({ generation: Schema.Number })
 const Plan = Schema.Struct({ changes: Schema.Array(Schema.String) })
 
@@ -188,11 +190,15 @@ const sendWaiting = (props: Pick<ServiceProps, "name">, request: ReturnType<type
     (error) => error._tag === "Busy",
   )
 
-const status = (props: Pick<ServiceProps, "host" | "name">, window: Duration.Input = deadline) =>
+/** What the host knows of the name: the service that runs, or the owner of a database a deleted one left. */
+const lookUp = (props: Pick<ServiceProps, "host" | "name">, window: Duration.Input = deadline) =>
   Effect.gen(function*() {
     const response = yield* sendWaiting(props, send("GET", yield* url(props)), window)
-    return response.status === 404 ? undefined : yield* HttpClientResponse.schemaBodyJson(Status)(response)
+    if (response.status !== 404) return { running: yield* HttpClientResponse.schemaBodyJson(Status)(response) }
+    return { kept: (yield* HttpClientResponse.schemaBodyJson(Missing)(response)).kept }
   })
+
+const status = (props: Pick<ServiceProps, "host" | "name">) => Effect.map(lookUp(props), (found) => found.running)
 
 const attributes = (props: Pick<ServiceProps, "host" | "name">, running: typeof Status.Type): ServiceAttributes => ({
   host: props.host,
@@ -272,10 +278,16 @@ export const ServiceProvider = () =>
         }),
         read: Effect.fn(function*({ fqn, olds }) {
           if (olds === undefined) return undefined
-          const running = yield* status(olds, lookup)
-          if (running === undefined) return undefined
-          // A service another stack, stage or logical ID put is not this resource's to change.
-          return sameOwner(running.owner, ownerOf(fqn)) ? attributes(olds, running) : Unowned(attributes(olds, running))
+          const found = yield* lookUp(olds, lookup)
+          // A service another stack, stage or logical ID put is not this resource's to change, and
+          // neither is the database such a service left behind when it was deleted.
+          if (found.running !== undefined) {
+            const attrs = attributes(olds, found.running)
+            return sameOwner(found.running.owner, ownerOf(fqn)) ? attrs : Unowned(attrs)
+          }
+          if (found.kept === undefined) return undefined
+          const attrs = { host: olds.host, name: olds.name, revision: "", url: undefined, address: { ipv4: undefined, ipv6: undefined } }
+          return sameOwner(found.kept.owner, ownerOf(fqn)) ? attrs : Unowned(attrs)
         }),
         reconcile: Effect.fn(function*({ fqn, news, olds, output }) {
           // An output without olds means Alchemy adopts what `read` found: the host then lets this

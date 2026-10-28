@@ -360,6 +360,11 @@ pkgs.testers.runNixOSTest {
         assert status == 200 and answer["deleted"] is True, answer
         assert sql("SELECT count(*) FROM pg_database WHERE datname = 'fleet-shop-pr-2'") == "1"
         machine.fail("ls /var/backup/fleet/deleted/fleet-shop-pr-2-*")
+        # The kept database stays its owner's: another stack takes the name only by adopting it.
+        status, answer = call("GET", "shop-pr-2", {})
+        assert status == 404 and answer["kept"] == {"owner": PREVIEW}, answer
+        result = put("shop-pr-2", spec("${bundles.second}", endpoint=None, memory={"max": "256M"}, database={"dropOnDelete": True}))
+        assert result["status"] == 422 and "a stack takes it over only by adopting it" in result["body"]["reasons"][0], result
 
     with subtest("a stale fence is refused"):
         assert put("shop-beta", spec("${bundles.second}"), fence=20)["status"] == 200
@@ -393,13 +398,20 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds("curl -sf http://127.0.0.1:18300/ready")
         assert [route["name"] for route in json.loads(machine.succeed("cat /var/lib/fleet/routes.json"))] == ["shop-beta"]
 
-    with subtest("an operator stops a service until its next deploy, and deletes one"):
+    with subtest("an operator stops a service until its stack deploys it, and deletes one; only root may"):
+        machine.succeed("curl -sf --unix-socket /run/fleet/controller.sock http://localhost/services/shop-beta")
+        status, output = machine.execute("runuser -u nobody -- curl -sS --unix-socket /run/fleet/controller.sock http://localhost/services/shop-beta 2>&1")
+        assert status == 7, output
+        assert machine.succeed("stat -c '%a %U' /run/fleet /run/fleet/controller.sock").split("\n")[:2] == ["700 root", "600 root"]
         print(machine.succeed("fleet stop shop-beta"))
         machine.fail("systemctl is-active fleet-service@shop-beta.service")
         restart_controller()
         machine.fail("systemctl is-active fleet-service@shop-beta.service")
         assert json.loads(machine.succeed("cat /var/lib/fleet/routes.json")) == []
         assert "stopped" in machine.succeed("fleet status")
+        # A deploy that fails rolls back to the previous generation without starting it.
+        assert put("shop-beta", spec("${bundles.unhealthy}"))["outcome"] == "rolled-back"
+        machine.fail("systemctl is-active fleet-service@shop-beta.service")
         assert put("shop-beta", spec("${bundles.second}"))["outcome"] == "active"
         assert info()["revision"] == "2222222"
         preview = spec("${bundles.second}", endpoint=None, memory={"max": "256M"}, database={"dropOnDelete": True})

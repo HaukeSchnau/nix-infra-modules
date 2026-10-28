@@ -356,7 +356,8 @@ def journal(invocation_id: str, lines: int = 15) -> str:
 
 # State: /var/lib/fleet/services/<name>/ holds generations/<g>.json, active, port, owner.json,
 # deploys.json, drop-database, violations, stopped and, while a deletion runs, the tombstone
-# `deleting`. Fences live in /var/lib/fleet/fences/<name>, so they outlive a deletion.
+# `deleting`. Fences live in /var/lib/fleet/fences/<name>, so they outlive a deletion, and so does
+# /var/lib/fleet/kept/<name>.json, the owner of a database a deleted service left.
 
 
 def state() -> Path:
@@ -440,6 +441,17 @@ def stopped(name: str) -> dict | None:
     """Why the service doesn't run: `{by, reason}`, stopped by an operator until its next deploy,
     or by its grant until the grant allows it again."""
     return read_json(service_dir(name) / "stopped")
+
+
+def kept_path(name: str) -> Path:
+    return state() / "kept" / f"{name}.json"
+
+
+def kept_owner(name: str):
+    """Who owned the database a deleted service of this name left: an owner, None for an operator,
+    or `False` when no database was left."""
+    kept = read_json(kept_path(name))
+    return False if kept is None else kept["owner"]
 
 
 def drops_database(name: str) -> bool:
@@ -638,6 +650,10 @@ def ensure_database(name: str, record: dict) -> None:
     )
 
 
+def database_exists(name: str) -> bool:
+    return bool(psql(f"SELECT 1 FROM pg_database WHERE datname = '{user(name)}'").strip())
+
+
 def drop_database(name: str) -> None:
     """Dumps the service's database into the backup directory's `deleted/`, then drops it and its
     role. A failed dump keeps both."""
@@ -830,9 +846,16 @@ class Controller:
             if name in self.busy or tombstone(name).exists():
                 raise Busy(f"{name} is deploying or being deleted")
             normalized = self.check(name, body)
-            current = owner_of(name)
+            current, kept = owner_of(name), kept_owner(name)
             if owner is not None and current is not None and owner != current and adopt is not True:
                 raise Refused([f"{name} belongs to {owned_by(current)}; a stack takes it over only by adopting it"])
+            if kept is not False and (kept is None or owner != kept) and adopt is not True:
+                left = "an operator's" if kept is None else owned_by(kept) + "'s"
+                raise Refused([f"{name}'s database stays from {left} deleted service; a stack takes it over only by adopting it"])
+            if kept is not False:
+                # The database predates this service, so deleting the service keeps it.
+                write_atomic(service_dir(name) / "drop-database", "false\n", 0o644)
+                kept_path(name).unlink()
             if owner is not None:
                 write_atomic(service_dir(name) / "owner.json", dumps(owner), 0o644)
             if not self.changes(name, normalized):
@@ -896,6 +919,11 @@ class Controller:
                     systemctl("stop", unit(name), check=False)
                     dropin_path(name).unlink(missing_ok=True)
                     systemctl("daemon-reload")
+                elif stopped(name):
+                    # An operator stopped the service, and only a successful deploy starts it again.
+                    systemctl("stop", unit(name), check=False)
+                    write_dropin(name, previous)
+                    systemctl("daemon-reload")
                 else:
                     cutover(name, previous)
             except Exception as error:  # noqa: BLE001
@@ -924,14 +952,15 @@ class Controller:
                 log(f"fleet: {name}: not deleted for {owned_by(owner)}, since it belongs to {owned_by(current)}")
                 return {"name": name, "deleted": False, "reason": f"{name} belongs to {owned_by(current)}"}
             if not tombstone(name).exists():
-                write_atomic(tombstone(name), dumps({"dropDatabase": drops_database(name), "at": int(time.time())}))
+                write_atomic(tombstone(name), dumps({"dropDatabase": drops_database(name), "owner": current, "at": int(time.time())}))
             drop = read_json(tombstone(name))["dropDatabase"]
             self.finish_delete(name)
             return {"name": name, "deleted": True, "databaseDropped": drop and bool(CONFIG["postgresql"])}
 
     def stop(self, name: str) -> dict | None:
-        """Stops the service and removes its route until its next deploy, for operators. The
-        converge loop leaves it stopped. None when the service doesn't exist."""
+        """Stops the service and removes its route, for operators, until its stack deploys it again;
+        every stack run does, since a stopped service differs from its spec. The converge loop and
+        a failed deploy's rollback leave it stopped. None when the service doesn't exist."""
         with self.lock:
             if name in self.busy:
                 raise Busy(f"{name} is deploying")
@@ -944,8 +973,10 @@ class Controller:
             return describe(name)
 
     def finish_delete(self, name: str) -> None:
-        """Carries out a deletion its tombstone records; at start, one a restart interrupted."""
-        drop = read_json(tombstone(name))["dropDatabase"]
+        """Carries out a deletion its tombstone records; at start, one a restart interrupted. A
+        database it keeps stays its owner's: another stack reuses it only by adopting it."""
+        record = read_json(tombstone(name))
+        drop = record["dropDatabase"]
         systemctl("stop", unit(name), check=False)
         stop_prepare(name)
         shutil.rmtree(dropin_path(name).parent, ignore_errors=True)
@@ -953,6 +984,8 @@ class Controller:
         write_routes()
         if drop and CONFIG["postgresql"]:
             drop_database(name)
+        elif CONFIG["postgresql"] and database_exists(name):
+            write_atomic(kept_path(name), dumps({"owner": record.get("owner"), "at": record["at"]}), 0o644)
         shutil.rmtree(Path(CONFIG["runtimeDir"]) / name, ignore_errors=True)
         shutil.rmtree(Path(CONFIG["gcrootsDir"]) / name, ignore_errors=True)
         shutil.rmtree(service_dir(name))
@@ -1007,6 +1040,9 @@ class Controller:
                             systemctl("stop", unit(name), check=False)
                             continue
                     if held:
+                        if unit_state(name)[0] in ("active", "activating", "reloading"):
+                            log(f"fleet: {name}: stopping again, since {held['reason']}")
+                            systemctl("stop", unit(name), check=False)
                         continue
                     rewritten = False
                     credentials = credentials_dir(name, record["generation"])
@@ -1033,9 +1069,14 @@ class Controller:
                 systemctl("daemon-reload", check=False)
             write_routes()
         for name in restart + start:
-            log(f"fleet: {name}: {'restarting with new credentials or settings' if name in restart else 'starting'}")
-            systemctl("reset-failed", unit(name), check=False)
-            systemctl("restart", unit(name), check=False)
+            # A stop that came in meanwhile wins: it either lands before this check, or its stop job
+            # queues behind this restart job.
+            with self.lock:
+                if name in self.busy or stopped(name) or tombstone(name).exists():
+                    continue
+                log(f"fleet: {name}: {'restarting with new credentials or settings' if name in restart else 'starting'}")
+                systemctl("reset-failed", unit(name), check=False)
+                systemctl("restart", "--no-block", unit(name), check=False)
         return failures
 
 
@@ -1155,7 +1196,8 @@ def handler(controller: Controller, operator: bool = False):
             try:
                 if method == "GET":
                     if not service_dir(name).is_dir() or tombstone(name).exists():
-                        return self.send_json(404, {"error": "no such service", "name": name})
+                        kept = kept_owner(name)
+                        return self.send_json(404, {"error": "no such service", "name": name, **({} if kept is False else {"kept": {"owner": kept}})})
                     return self.send_json(200, describe(name))
                 if method == "DELETE":
                     body = body if isinstance(body, dict) else {}
