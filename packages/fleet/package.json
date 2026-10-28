@@ -1,7 +1,7 @@
 {
   "name": "@schnau/fleet",
-  "version": "0.2.0",
-  "description": "Alchemy provider for placing releases on a nix-infra-modules host within its grant",
+  "version": "0.3.0",
+  "description": "Alchemy provider for services and placements on a nix-infra-modules host within its grant",
   "license": "MIT",
   "type": "module",
   "repository": "https://github.com/HaukeSchnau/nix-infra-modules/tree/main/packages/fleet",
