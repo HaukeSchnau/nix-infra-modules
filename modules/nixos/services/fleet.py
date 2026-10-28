@@ -4,10 +4,14 @@ Usage:
   fleet status [<service>] [--json]     every service, or one with its recent deploys
   fleet logs <service> [journalctl options...]
   fleet console <service> [arguments...]  the service's console command, as the service's user
+  fleet stop <service>                  stop it and remove its route until its next deploy
+  fleet delete <service>                delete it; its database stays unless its specs said dropOnDelete
 """
 
+import http.client
 import json
 import os
+import socket
 import sys
 import time
 
@@ -49,7 +53,7 @@ def status(arguments: list[str]) -> int:
                 service["name"],
                 (service["revision"] or "-")[:12],
                 str(service["generation"] or "-"),
-                service["state"] + (" (over its grant)" if service["violations"] else ""),
+                "stopped" if service["stopped"] else service["state"] + (" (over its grant)" if service["violations"] else ""),
                 service["url"] or "-",
                 service["memory"].get("max", "-"),
                 last_deploy(service),
@@ -67,6 +71,7 @@ def detail(service: dict) -> None:
         ("revision", service["revision"]),
         ("generation", service["generation"]),
         ("state", service["state"]),
+        ("stopped", service["stopped"] and service["stopped"]["reason"]),
         ("over grant", "; ".join(service["violations"]) or None),
         ("owner", service["owner"] and fleet.owned_by(service["owner"])),
         ("unit", service["unit"]),
@@ -125,6 +130,44 @@ def console(arguments: list[str]) -> int:
     os.execv(args[0], args)
 
 
+class OperatorConnection(http.client.HTTPConnection):
+    """HTTP over the controller's root-only operator socket."""
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(fleet.CONFIG["operatorSocket"])
+
+
+def operate(method: str, path: str) -> tuple[int, dict]:
+    connection = OperatorConnection("localhost", timeout=600)
+    connection.request(method, path)
+    response = connection.getresponse()
+    return response.status, json.loads(response.read() or b"{}")
+
+
+def stop(arguments: list[str]) -> int:
+    if len(arguments) != 1:
+        return usage()
+    status, answer = operate("POST", f"/services/{arguments[0]}/stop")
+    if status != 200:
+        print(f"fleet: {answer.get('error', status)}", file=sys.stderr)
+        return 1
+    print(f"{arguments[0]} stopped until its next deploy")
+    return 0
+
+
+def delete(arguments: list[str]) -> int:
+    if len(arguments) != 1:
+        return usage()
+    status, answer = operate("DELETE", f"/services/{arguments[0]}")
+    if status != 200:
+        print(f"fleet: {answer.get('error', status)}", file=sys.stderr)
+        return 1
+    kept = "its database was dumped and dropped" if answer.get("databaseDropped") else "its database, if it had one, stays"
+    print(f"{arguments[0]} deleted; {kept}")
+    return 0
+
+
 def usage() -> int:
     print(__doc__.strip(), file=sys.stderr)
     return 64
@@ -133,10 +176,11 @@ def usage() -> int:
 def main() -> int:
     fleet.load_config()
     command, arguments = (sys.argv[1], sys.argv[2:]) if len(sys.argv) > 1 else (None, [])
-    if os.geteuid() != 0 and command in ("status", "console"):
+    if os.geteuid() != 0 and command in ("status", "console", "stop", "delete"):
         print("fleet: run as root, which reads the services' state", file=sys.stderr)
         return 1
-    return {"status": status, "logs": logs, "console": console}.get(command, lambda _: usage())(arguments)
+    commands = {"status": status, "logs": logs, "console": console, "stop": stop, "delete": delete}
+    return commands.get(command, lambda _: usage())(arguments)
 
 
 if __name__ == "__main__":

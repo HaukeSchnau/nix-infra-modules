@@ -62,6 +62,7 @@ let
     builtins.toJSON {
       stateDir = "/var/lib/fleet";
       runtimeDir = "/run/fleet";
+      operatorSocket = "/run/fleet/controller.sock";
       unitsDir = "/run/systemd/system";
       gcrootsDir = "/nix/var/nix/gcroots/fleet";
       inherit (cfg)
@@ -259,10 +260,12 @@ in
       };
       connectionLimit = lib.mkOption {
         type = lib.types.ints.positive;
-        default = 25;
+        default = 40;
         description = ''
-          Connections each service's role may hold. A new database is refused once the services'
-          limits would exceed `services.postgresql.settings.max_connections` less 10.
+          Connections a service's role may hold unless its spec sets `database.connections`. The
+          server, `prepare` and the console share the role while a deploy runs, so this sits above
+          one process's pool. A database is refused once the services' limits would exceed
+          `services.postgresql.settings.max_connections` less 10.
         '';
       };
     };

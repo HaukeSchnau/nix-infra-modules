@@ -6,6 +6,7 @@ import { Stack } from "alchemy/Stack"
 import { Stage } from "alchemy/Stage"
 import * as Config from "effect/Config"
 import * as Data from "effect/Data"
+import type * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Option from "effect/Option"
 import * as Redacted from "effect/Redacted"
@@ -39,10 +40,17 @@ export interface ServiceProps {
   readonly health: { readonly path: string; readonly timeoutSec?: number }
   /**
    * A PostgreSQL database of the service's own. Its URL goes into `env` (`DATABASE_URL`), and
-   * `majorVersion` must match the host's. Deleting the service keeps the database unless
-   * `dropOnDelete` is set, as previews do; the host then dumps it before dropping it.
+   * `majorVersion` must match the host's. Its role may hold `connections` (the host's default, 40),
+   * shared by the server, `prepare` and the console. Deleting the service keeps the database
+   * unless every spec the host accepted for it set `dropOnDelete`, as previews do; the host then
+   * dumps it before dropping it.
    */
-  readonly database?: { readonly env?: string; readonly majorVersion?: number; readonly dropOnDelete?: boolean }
+  readonly database?: {
+    readonly env?: string
+    readonly majorVersion?: number
+    readonly dropOnDelete?: boolean
+    readonly connections?: number
+  }
   /** Environment variables. The host adds `HOST`, `PORT`, the database URL and `<SECRET>_FILE`. */
   readonly env?: Readonly<Record<string, string>>
   /**
@@ -96,13 +104,14 @@ export class ServiceRefused extends Data.TaggedError("ServiceRefused")<{
 export class DeployFailed extends Data.TaggedError("DeployFailed")<{
   readonly service: string
   readonly revision: string
-  readonly outcome: "failed" | "rolled-back" | "no verdict"
+  readonly outcome: "failed" | "rolled-back" | "broken" | "no verdict"
   readonly reason: string
 }> {
   override get message() {
     const what = {
       "failed": "failed, and the old revision keeps running",
       "rolled-back": "was rolled back",
+      "broken": "failed, and restoring the old revision failed too, so the service is down",
       "no verdict": "got no verdict from the host",
     }[this.outcome]
     return `${this.service}: ${this.revision} ${what}: ${this.reason}`
@@ -112,16 +121,20 @@ export class DeployFailed extends Data.TaggedError("DeployFailed")<{
 class Busy extends Data.TaggedError("Busy")<{ readonly service: string }> {}
 
 /**
- * How long a deploy waits for the host, while another deploy of the service runs and for its own
- * verdict. It covers the host's longest `prepare` (20 minutes), the health check and realizing.
+ * How long a deploy or deletion waits for the host, while another deploy of the service runs and
+ * for its own verdict. It covers the host's longest `prepare` (20 minutes), the health check and
+ * realizing.
  */
-const deadline = "40 minutes"
+const deadline: Duration.Input = "40 minutes"
+
+/** How long a plan or a read tries to reach the host before it fails. */
+const lookup: Duration.Input = "1 minute"
 
 const Owner = Schema.Struct({ stack: Schema.String, stage: Schema.String, fqn: Schema.String })
 type Owner = typeof Owner.Type
 const Deploy = Schema.Struct({
   generation: Schema.Number,
-  outcome: Schema.Literals(["deploying", "active", "failed", "rolled-back"]),
+  outcome: Schema.Literals(["deploying", "active", "failed", "rolled-back", "broken"]),
   reason: Schema.NullOr(Schema.String),
 })
 const Status = Schema.Struct({
@@ -164,17 +177,20 @@ const refused = (props: ServiceProps) => (response: HttpClientResponse.HttpClien
     (refusal) => new ServiceRefused({ service: props.name, reasons: refusal.reasons }),
   )
 
-/** A request that waits while another deploy of the service runs (423) and the connection fails. */
-const sendWaiting = (props: Pick<ServiceProps, "name">, request: ReturnType<typeof send>) =>
+/**
+ * A request that waits, up to `window`, while another deploy of the service runs (423) and while
+ * the host can't be reached.
+ */
+const sendWaiting = (props: Pick<ServiceProps, "name">, request: ReturnType<typeof send>, window: Duration.Input = deadline) =>
   retryTransient(
     request.pipe(Effect.filterOrFail((response) => response.status !== 423, () => new Busy({ service: props.name }))),
-    deadline,
+    window,
     (error) => error._tag === "Busy",
   )
 
-const status = (props: Pick<ServiceProps, "host" | "name">) =>
+const status = (props: Pick<ServiceProps, "host" | "name">, window: Duration.Input = deadline) =>
   Effect.gen(function*() {
-    const response = yield* sendWaiting(props, send("GET", yield* url(props)))
+    const response = yield* sendWaiting(props, send("GET", yield* url(props)), window)
     return response.status === 404 ? undefined : yield* HttpClientResponse.schemaBodyJson(Status)(response)
   })
 
@@ -249,20 +265,24 @@ export const ServiceProvider = () =>
           // The host compares the spec with what it runs, so an unchanged service needs no deploy and
           // a refusal shows in a dry run.
           const request = send("POST", yield* url(news, "/plan"), { payload: body(news), handled: [422] })
-          const response = yield* sendWaiting(news, request)
+          const response = yield* sendWaiting(news, request, lookup)
           if (response.status === 422) return yield* refused(news)(response)
           const plan = yield* HttpClientResponse.schemaBodyJson(Plan)(response)
           return { action: plan.changes.length === 0 ? "noop" : "update" } as const
         }),
         read: Effect.fn(function*({ fqn, olds }) {
           if (olds === undefined) return undefined
-          const running = yield* status(olds)
+          const running = yield* status(olds, lookup)
           if (running === undefined) return undefined
           // A service another stack, stage or logical ID put is not this resource's to change.
           return sameOwner(running.owner, ownerOf(fqn)) ? attributes(olds, running) : Unowned(attributes(olds, running))
         }),
         reconcile: Effect.fn(function*({ fqn, news, olds, output }) {
-          // Alchemy adopted a service it found but didn't create, so the host may change its owner.
+          // An output without olds means Alchemy adopts what `read` found: the host then lets this
+          // stack take the service over. Alchemy also passes one when a create resumes after an
+          // interruption, from the attributes it checkpointed after that read (Apply.ts,
+          // `let attr = node.state?.attr` in the create branch, alchemy 2.0.0-beta.83). Either way
+          // the read already passed the ownership check, or ran with `--adopt`.
           return yield* deploy(news, ownerOf(fqn), output !== undefined && olds === undefined)
         }),
         delete: Effect.fn(function*({ fqn, olds }) {

@@ -13,7 +13,7 @@ from controller import Refused, check, grant_of, unit_quote
 
 BUNDLE = "/nix/store/" + "a" * 32 + "-bundle"
 NODE = "/nix/store/" + "b" * 32 + "-nodejs-26.4.0"
-POSTGRES = {"major": 18, "room": 5}
+POSTGRES = {"major": 18, "free": 200, "connectionLimit": 40}
 GRANT = {
     "hostNames": ["*.shop.example.net"],
     "public": False,
@@ -52,7 +52,7 @@ class Grants(unittest.TestCase):
     def test_a_valid_spec_is_kept_with_its_defaults(self):
         kept = check("shop-beta", "shop", GRANT, spec(database={}), [], {}, POSTGRES)
         self.assertEqual(kept["health"], {"path": "/ready", "timeoutSec": 60})
-        self.assertEqual(kept["database"], {"env": "DATABASE_URL", "dropOnDelete": False})
+        self.assertEqual(kept["database"], {"env": "DATABASE_URL", "dropOnDelete": False, "connections": 40})
         self.assertIsNone(kept["prepare"])
 
     def test_hostnames_stay_within_the_grant_and_are_not_shared(self):
@@ -104,9 +104,20 @@ class Grants(unittest.TestCase):
         self.assertIn("blog may not have databases", reasons(spec(database={}), grant={**GRANT, "databases": False}, grant_name="blog"))
         self.assertIn("the service needs PostgreSQL 17, and this host runs 18", reasons(spec(database={"majorVersion": 17})))
         self.assertIn(
-            "this host's PostgreSQL has no connections left for another service's database",
-            reasons(spec(database={}), postgres={"major": 18, "room": 0}),
+            "the database asks for 40 connections, and this host's PostgreSQL has 30 left",
+            reasons(spec(database={}), postgres={**POSTGRES, "free": 30}),
         )
+        self.assertEqual(reasons(spec(database={"connections": 30}), postgres={**POSTGRES, "free": 30}), [])
+
+    def test_revocations_are_told_apart_from_capacity(self):
+        try:
+            check("shop-beta", "shop", {**GRANT, "public": False, "services": 1}, spec(
+                endpoint={"hostName": "beta.shop.example.net", "visibility": "public"},
+                secrets={"K": {"sops": "projects/other/k"}},
+            ), [spec()], {}, POSTGRES)
+        except Refused as refused:
+            self.assertEqual(refused.revoked, ["shop may not be public", "secret K names a SOPS key outside projects/shop/, which shop may read"])
+            self.assertIn("shop may run 1 services, and runs 1 others", refused.reasons)
 
 
 class Host(unittest.TestCase):
@@ -126,7 +137,7 @@ class Host(unittest.TestCase):
             "portRange": {"from": 18300, "to": 18399},
             "addresses": {"ipv4": None, "ipv6": None},
             "postgresql": None,
-            "grants": {"shop": GRANT},
+            "grants": {"shop": dict(GRANT)},
         })
         self.calls = []
         self.state = ("active", "running")
@@ -139,8 +150,24 @@ class Host(unittest.TestCase):
             self.addCleanup(patcher.stop)
         self.controller = fleet.Controller()
 
+    def put(self, name, value, owner=None, healthy=True, **extra):
+        """A PUT whose deploy runs at once, with the deploy's host work stubbed."""
+        body = {**value, "owner": owner or {"stack": "Shop", "stage": "beta", "fqn": "Server"}, **extra}
+        with mock.patch.object(fleet.threading, "Thread") as thread:
+            status, _ = self.controller.put(name, body)
+        if status == 202:
+            _, record, plain = thread.call_args.kwargs["args"]
+            stubs = {
+                "realize": lambda *_: None, "ensure_database": lambda *_: None, "secret_values": lambda *_: {},
+                "prepare": lambda *_: None, "cutover": lambda *_: None, "invocation": lambda _: "",
+                "healthy": lambda *_: None if healthy else "unhealthy",
+            }
+            with mock.patch.multiple(fleet, **stubs):
+                self.controller.deploy(name, record, plain)
+        return fleet.deploys(name)[0]["outcome"] if fleet.deploys(name) else status
+
     def generation(self, name, generation, value, active=False):
-        record = {"generation": generation, "spec": check(name, "shop", {**GRANT, "services": 9, "memoryMax": "9G"}, value, [], {}, POSTGRES, stored=True)}
+        record = {"generation": generation, "spec": check(name, "shop", {**GRANT, "public": True, "services": 9, "memoryMax": "9G"}, value, [], {}, POSTGRES, stored=True)}
         fleet.write_atomic(fleet.service_dir(name) / "generations" / f"{generation}.json", fleet.dumps(record))
         if active:
             fleet.write_atomic(fleet.service_dir(name) / "active", f"{generation}\n")
@@ -214,20 +241,74 @@ class Host(unittest.TestCase):
     def test_a_fence_outlives_the_deletion(self):
         self.generation("shop-pr-1", 1, spec(), active=True)
         self.controller.fence("shop-pr-1", 50)
-        self.assertEqual(self.controller.delete("shop-pr-1", None, None), {"name": "shop-pr-1", "deleted": True})
+        self.assertTrue(self.controller.delete("shop-pr-1", None, None)["deleted"])
         with self.assertRaises(fleet.Stale):
             self.controller.fence("shop-pr-1", 49)
 
-    def test_a_database_is_dropped_only_when_every_generation_says_so(self):
-        fleet.CONFIG["postgresql"] = {"major": 18}
+    def test_a_database_is_dropped_only_when_every_accepted_spec_says_so(self):
+        fleet.CONFIG["postgresql"] = {"major": 18, "free": 200, "connectionLimit": 40, "maxConnections": 210}
         dropped = []
+        prod = {"stack": "Shop", "stage": "prod", "fqn": "Server"}
+        preview = {"stack": "Shop", "stage": "pr-12", "fqn": "Server"}
         with mock.patch.object(fleet, "drop_database", dropped.append):
-            self.generation("shop-beta", 1, spec(database={}), active=True)
-            self.generation("shop-beta", 2, spec(database={"dropOnDelete": True}))
-            self.controller.delete("shop-beta", None, None)
-            self.generation("shop-pr-1", 1, spec(database={"dropOnDelete": True}), active=True)
-            self.controller.delete("shop-pr-1", None, None)
-        self.assertEqual(dropped, ["shop-pr-1"])
+            # A preview whose first deploy never went healthy still drops the database it created.
+            self.assertEqual(self.put("shop-pr-12", spec(database={"dropOnDelete": True}), owner=preview, healthy=False), "failed")
+            self.controller.delete("shop-pr-12", None, preview)
+            # Prod adopted by a stack that asks for dropOnDelete keeps its database.
+            self.assertEqual(self.put("shop", spec(database={}), owner=prod), "active")
+            self.assertEqual(self.put("shop", spec(database={"dropOnDelete": True}), owner=preview, adopt=True), "active")
+            self.assertFalse(self.controller.delete("shop", None, preview)["databaseDropped"])
+        self.assertEqual(dropped, ["shop-pr-12"])
+
+    def test_restore_stops_a_service_whose_grant_revokes_a_permission(self):
+        public = spec(endpoint={"hostName": "www.shop.example.net", "visibility": "public"})
+        self.generation("shop", 1, public, active=True)
+        fleet.CONFIG["grants"]["shop"] = {**GRANT, "public": False, "hostNames": []}
+        with mock.patch.object(fleet, "secret_values", lambda *_: {}):
+            self.controller.restore()
+            self.assertIn(("stop", "fleet-service@shop.service"), self.calls)
+            self.assertEqual(json.loads(Path(fleet.CONFIG["routesFile"]).read_text()), [])
+            self.assertEqual(fleet.stopped("shop")["by"], "grant")
+            fleet.CONFIG["grants"] = {}
+            self.calls.clear()
+            self.controller.restore()
+            self.assertIn(("stop", "fleet-service@shop.service"), self.calls)
+            fleet.CONFIG["grants"] = {"shop": {**GRANT, "public": True}}
+            self.calls.clear()
+            self.state = ("inactive", "dead")
+            self.controller.restore()
+        self.assertIsNone(fleet.stopped("shop"))
+        self.assertIn(("restart", "fleet-service@shop.service"), self.calls)
+        self.assertEqual(len(json.loads(Path(fleet.CONFIG["routesFile"]).read_text())), 1)
+
+    def test_an_operator_stop_holds_until_the_next_deploy(self):
+        self.assertEqual(self.put("shop", spec(endpoint={"hostName": "a.shop.example.net"})), "active")
+        self.controller.stop("shop")
+        self.assertIn(("stop", "fleet-service@shop.service"), self.calls)
+        self.state = ("inactive", "dead")
+        self.calls.clear()
+        with mock.patch.object(fleet, "secret_values", lambda *_: {}):
+            self.controller.restore()
+        self.assertFalse([call for call in self.calls if call[0] in ("start", "restart")], self.calls)
+        self.assertEqual(json.loads(Path(fleet.CONFIG["routesFile"]).read_text()), [])
+        self.assertEqual(self.put("shop", spec(endpoint={"hostName": "a.shop.example.net"})), "active")
+        self.assertIsNone(fleet.stopped("shop"))
+
+    def test_a_rollback_that_fails_too_is_broken_not_rolled_back(self):
+        self.assertEqual(self.put("shop", spec()), "active")
+
+        def cutover(*_):
+            raise RuntimeError("daemon-reload timed out")
+
+        with mock.patch.object(fleet, "threading") as threading:
+            self.controller.put("shop", {**spec(release={"revision": "def5678", "paths": {"bundle": BUNDLE, "node": NODE}}), "owner": {"stack": "Shop", "stage": "beta", "fqn": "Server"}})
+        _, record, plain = threading.Thread.call_args.kwargs["args"]
+        stubs = {"realize": lambda *_: None, "secret_values": lambda *_: {}, "prepare": lambda *_: None, "cutover": cutover}
+        with mock.patch.multiple(fleet, **stubs):
+            self.controller.deploy("shop", record, plain)
+        outcome = fleet.deploys("shop")[0]
+        self.assertEqual(outcome["outcome"], "broken")
+        self.assertTrue(outcome["reason"].endswith("restoring the previous generation failed too: daemon-reload timed out"), outcome)
 
     def test_another_owner_deletes_nothing(self):
         self.generation("shop-beta", 1, spec(), active=True)

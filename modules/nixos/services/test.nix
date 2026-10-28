@@ -72,7 +72,7 @@ let
           exec ${node}/bin/node -e 'require("net").createServer().listen(Number(process.argv[1]), "127.0.0.1", () => console.log("bound")).on("error", (error) => { console.log("bind refused: " + error.code); process.exit(3) })' "$2" ;;
       esac
       echo "console of ${revision} as $USER: $*"
-      ${psql} "$DATABASE_URL" -At -c "SELECT string_agg(revision, ',' ORDER BY revision) FROM releases"
+      ${psql} "$DATABASE_URL" -At -c "SELECT string_agg(DISTINCT revision, ',' ORDER BY revision) FROM releases"
       SH
       chmod +x $out/bin/*
     '';
@@ -177,9 +177,11 @@ pkgs.testers.runNixOSTest {
           blog.hostNames = [ "blog.example.net" ];
         };
       };
-      # The same host after its grant shrank below what runs.
+      # The same host after its grant shrank below what runs, and after it revoked a permission.
       specialisation.shrunk.configuration.vps.services.serviceController.grants.shop.memoryMax =
         lib.mkForce "256M";
+      specialisation.revoked.configuration.vps.services.serviceController.grants.shop.public =
+        lib.mkForce false;
     };
 
   testScript = ''
@@ -261,7 +263,7 @@ pkgs.testers.runNixOSTest {
 
     with subtest("each service is isolated: no swap, its own port, its own database with a connection limit"):
         assert machine.succeed("systemctl show --property=MemorySwapMax --value fleet-service@shop-beta.service").strip() == "0"
-        assert sql("SELECT rolconnlimit FROM pg_roles WHERE rolname = 'fleet-shop-beta'") == "25"
+        assert sql("SELECT rolconnlimit FROM pg_roles WHERE rolname = 'fleet-shop-beta'") == "40"
         assert sql("SELECT has_database_privilege('public', 'fleet-shop-beta', 'CONNECT')") == "f"
         status, output = machine.execute("fleet console shop-beta bind 18450 2>&1")
         assert status == 3 and "bind refused: EPERM" in output, output
@@ -366,7 +368,7 @@ pkgs.testers.runNixOSTest {
 
     with subtest("a grant that shrinks under a running service keeps it running and refuses its next PUT"):
         pid = main_pid()
-        machine.succeed("/run/current-system/specialisation/shrunk/bin/switch-to-configuration test")
+        machine.succeed("/run/booted-system/specialisation/shrunk/bin/switch-to-configuration test")
         machine.wait_for_open_port(18110)
         assert main_pid() == pid
         violations = call("GET", "shop-beta", {})[1]["violations"]
@@ -378,6 +380,35 @@ pkgs.testers.runNixOSTest {
         machine.wait_for_open_port(18110)
         assert main_pid() == pid
         assert call("GET", "shop-beta", {})[1]["violations"] == []
+
+    with subtest("a grant that revokes a permission stops the service and drops its route until it allows it again"):
+        machine.succeed("/run/booted-system/specialisation/revoked/bin/switch-to-configuration test")
+        machine.wait_for_open_port(18110)
+        machine.wait_until_fails("systemctl is-active fleet-service@shop-beta.service")
+        assert json.loads(machine.succeed("cat /var/lib/fleet/routes.json")) == []
+        assert call("GET", "shop-beta", {})[1]["stopped"] == {"by": "grant", "reason": "shop may not be public"}
+        assert put("shop-beta", spec("${bundles.second}"))["status"] == 422
+        machine.succeed("/run/booted-system/bin/switch-to-configuration test")
+        machine.wait_for_open_port(18110)
+        machine.wait_until_succeeds("curl -sf http://127.0.0.1:18300/ready")
+        assert [route["name"] for route in json.loads(machine.succeed("cat /var/lib/fleet/routes.json"))] == ["shop-beta"]
+
+    with subtest("an operator stops a service until its next deploy, and deletes one"):
+        print(machine.succeed("fleet stop shop-beta"))
+        machine.fail("systemctl is-active fleet-service@shop-beta.service")
+        restart_controller()
+        machine.fail("systemctl is-active fleet-service@shop-beta.service")
+        assert json.loads(machine.succeed("cat /var/lib/fleet/routes.json")) == []
+        assert "stopped" in machine.succeed("fleet status")
+        assert put("shop-beta", spec("${bundles.second}"))["outcome"] == "active"
+        assert info()["revision"] == "2222222"
+        preview = spec("${bundles.second}", endpoint=None, memory={"max": "256M"}, database={"dropOnDelete": True})
+        assert put("shop-pr-3", preview, owner=PREVIEW)["outcome"] == "active"
+        status, answer = call("DELETE", "shop-pr-3", {})
+        assert status == 400, "over TCP a deletion names its owner"
+        print(machine.succeed("fleet delete shop-pr-3"))
+        assert sql("SELECT count(*) FROM pg_database WHERE datname = 'fleet-shop-pr-3'") == "0"
+        machine.succeed("ls /var/backup/fleet/deleted/fleet-shop-pr-3-*.dump")
 
     with subtest("a secret that can't be decrypted keeps the credentials the service has"):
         pid = main_pid()

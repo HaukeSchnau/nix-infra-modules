@@ -35,7 +35,7 @@ service.address.ipv4 // the host's public address, for a DNS record
 
 - `diff` asks the host what the spec would change (`POST /services/<name>/plan`). An unchanged
   service needs no deploy, and a spec outside the grant fails in a dry run with the host's
-  reasons (`ServiceRefused`).
+  reasons (`ServiceRefused`). `diff` and `read` give up after a minute without the host.
 - `reconcile` puts the spec and waits up to 40 minutes for the host's verdict, also while
   another deploy of the service runs or the host can't be reached. When `prepare` fails, or the
   new revision fails its health check, the host keeps or restores the old revision, and the
@@ -43,8 +43,9 @@ service.address.ipv4 // the host's public address, for a DNS record
 - The host records the stack, stage and logical ID that put a service. `read` returns a service
   someone else put as `Unowned`, so Alchemy takes it over only with `--adopt`, and the host
   refuses a deploy or deletion from another owner.
-- `delete` stops the service and removes its route. Its database stays unless
-  `database.dropOnDelete` is set, as for previews; the host then dumps it before dropping it.
+- `delete` stops the service and removes its route. Its database stays unless every spec the
+  host accepted for the service set `database.dropOnDelete`, as for previews; the host then dumps
+  it before dropping it. `database.connections` (40 by default) is what its role may hold.
   `RemovalPolicy.retain()` keeps the service running too, since Alchemy never deletes it.
 - A secret is `{ sops: "<key>" }`, a key of the host's SOPS file under the grant's prefix, or a
   `Redacted` value, which the host seals with its age key. The process reads each from the file

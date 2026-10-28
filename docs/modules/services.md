@@ -54,6 +54,10 @@ GET    /services/<name>        what runs, its owner, grant violations and recent
 DELETE /services/<name>        stop the service and remove its route; see below for its database
 ```
 
+Root on the host reaches the same API through `/run/fleet/controller.sock`, which `fleet stop` and
+`fleet delete` use. There, requests need no token or owner, and `POST /services/<name>/stop`
+stops a service.
+
 A request carries `Authorization: Bearer <token>`: the grant's token, `HMAC-SHA256(key, grant)`
 with the key in `grantKeyFile`, or the token in `tokenFile`, which opens every service. An empty
 token or key opens nothing. Placements derive project tokens from the same kind of key, so one key
@@ -62,11 +66,11 @@ serves both.
 A refusal answers 422 with every reason; reasons never quote a secret's value or SOPS key. A PUT
 or DELETE while the service deploys answers 423, and the client tries again.
 
-Besides the spec, a PUT may carry:
+Besides the spec, a PUT carries:
 
-- `owner`, the `{stack, stage, fqn}` that puts the service. The controller records it and refuses
-  a PUT from another owner, unless the PUT also says `adopt: true`, which Alchemy sends only when
-  it adopts the service.
+- `owner`, the `{stack, stage, fqn}` that puts the service, which a request over TCP must name.
+  The controller records it and refuses a PUT from another owner, unless the PUT also says
+  `adopt: true`, which Alchemy sends only when it adopts the service.
 - `fence`, the deploy lease's fencing token. The controller remembers the highest fence per
   service, also after a deletion, and answers 409 to a lower one.
 
@@ -84,7 +88,7 @@ and answers `{"deleted": false}`.
   "console": ["{node}/bin/node", "{bundle}/server/main.mjs", "console"],
   "endpoint": { "hostName": "beta.shop.example.net", "visibility": "public" },
   "health": { "path": "/api/health/ready", "timeoutSec": 60 },
-  "database": { "env": "DATABASE_URL", "majorVersion": 18, "dropOnDelete": false },
+  "database": { "env": "DATABASE_URL", "majorVersion": 18, "dropOnDelete": false, "connections": 40 },
   "env": { "PUBLIC_URL": "https://beta.shop.example.net" },
   "secrets": { "AUTH_SECRET": { "value": "..." }, "MAIL_URL": { "sops": "projects/shop/mail-url" } },
   "memory": { "max": "1G" },
@@ -116,7 +120,8 @@ database URL, and `<NAME>_FILE` for each secret, a file in its credentials direc
 5. It waits for the health path to answer 200. If it doesn't within `timeoutSec`, the process
    exits, or anything else after the cutover fails, the controller puts the previous drop-in
    back, and the outcome is `rolled-back`. A first deploy has nothing to go back to: it stops,
-   and the outcome is `failed`.
+   and the outcome is `failed`. When putting the previous generation back fails too, the outcome
+   is `broken`: the service runs nothing healthy.
 
 The client polls `GET /services/<name>` until its generation's outcome is `active`, `failed` or
 `rolled-back`. A `prepare` that a rolled-back release ran stays applied, so migrations have to
@@ -125,8 +130,9 @@ expand and contract.
 ## Deleting
 
 A DELETE writes a tombstone first, then stops the service and removes its drop-in, route and
-state. The service's database and role stay, unless every generation's spec set
-`database.dropOnDelete`, as a preview's does. Then the controller dumps the database into
+state. The service's database and role stay, unless every spec the host ever accepted for the
+service set `database.dropOnDelete`, as a preview's does. A spec without it, even one later
+replaced or adopted by another stack, keeps the database for good. Then the controller dumps the database into
 `<backup.directory>/deleted/fleet-<name>-<time>.dump` and drops it only after the dump succeeded.
 Those dumps stay for `backup.deletedRetentionDays`. A deletion a restart interrupted finishes at
 the next start.
@@ -142,10 +148,12 @@ strict, the service has no state directory, it never swaps (`MemorySwapMax=0`), 
 only its own port. `prepare` and the console bind none.
 
 Only a service's own role may connect to its database: the controller revokes `CONNECT` and
-`TEMPORARY` from `PUBLIC`. Each role may hold `postgresql.connectionLimit` connections (25), and a
-new database is refused once the services' limits would exceed `max_connections` less 10, which
-stay for the superuser, the dumps and operators. Raise
-`services.postgresql.settings.max_connections` for more services.
+`TEMPORARY` from `PUBLIC`. Each role may hold the connections its spec asks for in
+`database.connections`, or `postgresql.connectionLimit` (40). The server, `prepare` and the console
+share the role during a deploy, so the limit sits above one process's pool. A database is refused
+once the services' limits would exceed `max_connections` less 10, which stay for the superuser,
+the dumps and operators. Raise `services.postgresql.settings.max_connections` for more services:
+five services at 40 need at least 210.
 
 ## On the host
 
@@ -154,18 +162,24 @@ fleet status                    every service: revision, generation, state, URL,
 fleet status <service>          one service, with its owner, grant violations and recent deploys
 fleet logs <service> [-f ...]   journalctl for the service
 fleet console <service> [args]  the spec's console command, as the service's user
+fleet stop <service>            stop it and remove its route until its next deploy
+fleet delete <service>          delete it, with the same rule for its database as a DELETE
 ```
 
 - State lives in `/var/lib/fleet/services/<name>/`: the active generation's spec with sealed
   secret values, the service's port, its owner and its recent deploys. Fences live in
   `/var/lib/fleet/fences/`. Secret values are sealed with the host's age key (`ageKeyFile`).
 - At start, and every five minutes, the controller writes again what a boot empties from `/run`
-  (credentials and drop-ins) and starts services that aren't running. It never stops a running
-  service. When a switch shrinks a grant below what runs, the service keeps running, `fleet
-  status` shows the violations, and its next PUT is refused until it fits again. When a secret
-  can't be decrypted, the service keeps the credentials it has. Every five minutes it only
-  decrypts credentials that are missing; a changed SOPS file arrives with a switch, which
-  restarts the controller.
+  (credentials and drop-ins) and starts services that aren't running, except those `fleet stop`
+  stopped. A `systemctl stop` alone doesn't hold.
+- When a switch shrinks a grant's capacity below what runs (service count, memory, a hostname
+  another service claims, connections), the service keeps running, `fleet status` shows the
+  violations, and its next PUT is refused until it fits again. When a switch revokes a
+  permission the service uses (the whole grant, a hostname, public visibility, a secret prefix,
+  databases), the service stops and loses its route until the grant allows it again.
+- When a secret can't be decrypted, the service keeps the credentials it has. Every five minutes
+  the controller only decrypts credentials that are missing; a changed SOPS file arrives with a
+  switch, which restarts the controller.
 - `routesFile` lists the active services' routes, `{name, hostName, visibility, upstreamPort}`.
   The host's runtime ingress serves them with its default proxy. The grant has checked each
   hostname, so the ingress has to accept names below any parent from this source.
@@ -179,7 +193,8 @@ fleet console <service> [args]  the spec's console command, as the service's use
 `checks.<system>.service-controller` is a NixOS VM test. It deploys a service, rolls back a
 revision whose health check fails and one whose process exits, keeps the old revision when
 `prepare` fails, checks the grant's refusals and owners, deletes a preview with its database and a
-service without it, checks isolation, shrinks the grant under a running service through a switch,
-loses the age key, dumps, reboots, and prints `fleet status`. Its SOPS file is a path in the
+service without it, checks isolation, shrinks a grant's capacity and revokes a permission through
+switches, stops and deletes as an operator, loses the age key, dumps, reboots, and prints `fleet
+status`. Its SOPS file is a path in the
 repository, as with sops-nix. `service-controller-unit` tests the grant checks and the
 controller's decisions against a stubbed systemd.
