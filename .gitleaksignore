@@ -1,0 +1,3 @@
+# Test-only age key of the service controller VM test.
+modules/nixos/services/test-secrets/key.txt:age-secret-key:4
+modules/nixos/services/test-secrets/key.txt:generic-api-key:3

@@ -22,6 +22,7 @@ let
     DynamicUser = true;
     CapabilityBoundingSet = "";
     LockPersonality = true;
+    MemorySwapMax = 0;
     NoNewPrivileges = true;
     PrivateDevices = true;
     PrivateTmp = true;
@@ -43,6 +44,8 @@ let
     RestrictNamespaces = true;
     RestrictRealtime = true;
     RestrictSUIDSGID = true;
+    # The drop-in allows the service its own port; prepare and the console bind none.
+    SocketBindDeny = "any";
     SystemCallArchitectures = "native";
     UMask = "0077";
   };
@@ -68,12 +71,12 @@ let
         addresses
         tokenFile
         grantKeyFile
-        sopsFile
         ageKeyFile
         prepareTimeoutSec
         grants
         ;
-      sitesDir = cfg.sitesDirectory;
+      # Interpolated, so a path such as sops-nix's defaultSopsFile lands in the store and the closure.
+      sopsFile = if cfg.sopsFile == null then null else "${cfg.sopsFile}";
       backupDir = cfg.backup.directory;
       postgresql =
         if usesDatabases then
@@ -81,6 +84,8 @@ let
             socket = "/run/postgresql";
             port = postgresql.settings.port;
             major = lib.toInt (lib.versions.major cfg.postgresql.package.version);
+            maxConnections = postgresql.settings.max_connections or 100;
+            inherit (cfg.postgresql) connectionLimit;
           }
         else
           null;
@@ -94,6 +99,7 @@ let
         age = lib.getExe pkgs.age;
         ageKeygen = "${pkgs.age}/bin/age-keygen";
         psql = if usesDatabases then "${cfg.postgresql.package}/bin/psql" else null;
+        pgDump = if usesDatabases then "${cfg.postgresql.package}/bin/pg_dump" else null;
       };
     }
   );
@@ -229,8 +235,8 @@ in
     };
 
     sopsFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = if hasSops then toString config.sops.defaultSopsFile else null;
+      type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
+      default = if hasSops then config.sops.defaultSopsFile else null;
       defaultText = lib.literalExpression "config.sops.defaultSopsFile, with sops-nix";
       description = "The SOPS file secrets name keys in.";
     };
@@ -242,17 +248,28 @@ in
       description = "The host's age key, which decrypts the SOPS file and seals secret values at rest.";
     };
 
-    postgresql.package = lib.mkOption {
-      type = lib.types.package;
-      example = lib.literalExpression "pkgs.postgresql_18";
-      description = ''
-        The PostgreSQL the services' databases run on, required once a grant allows databases. It
-        is set here so that the major version never follows `system.stateVersion` unnoticed.
-      '';
+    postgresql = {
+      package = lib.mkOption {
+        type = lib.types.package;
+        example = lib.literalExpression "pkgs.postgresql_18";
+        description = ''
+          The PostgreSQL the services' databases run on, required once a grant allows databases. It
+          is set here so that the major version never follows `system.stateVersion` unnoticed.
+        '';
+      };
+      connectionLimit = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 25;
+        description = ''
+          Connections each service's role may hold. A new database is refused once the services'
+          limits would exceed `services.postgresql.settings.max_connections` less 10.
+        '';
+      };
     };
 
     prepareTimeoutSec = lib.mkOption {
-      type = lib.types.ints.positive;
+      # Fleet.Service waits 40 minutes for a verdict, which covers this, the health check and realizing.
+      type = lib.types.ints.between 1 1200;
       default = 900;
       description = "How long a service's `prepare` may run before its deploy fails.";
     };
@@ -268,6 +285,11 @@ in
         default = "*-*-* 23:45:00";
         description = "When the dumps run, as a systemd calendar.";
       };
+      deletedRetentionDays = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 30;
+        description = "How long the final dumps of dropped databases stay in `deleted/`.";
+      };
     };
 
     routesFile = lib.mkOption {
@@ -275,16 +297,10 @@ in
       readOnly = true;
       default = "/var/lib/fleet/routes.json";
       description = ''
-        Routes of the active services, `{name, hostName, visibility, upstreamPort, site}`, for the
-        host's runtime ingress to serve. Each `site` is a Caddy snippet in `sitesDirectory`.
+        Routes of the active services, `{name, hostName, visibility, upstreamPort}`, for the
+        host's runtime ingress to serve with its default proxy. The grant has checked each
+        hostname, so the ingress may serve names below any parent.
       '';
-    };
-
-    sitesDirectory = lib.mkOption {
-      type = lib.types.str;
-      readOnly = true;
-      default = "/var/lib/fleet/sites";
-      description = "Caddy snippets the routes import, one per service.";
     };
   };
 
@@ -348,10 +364,7 @@ in
           };
         };
 
-        systemd.tmpfiles.rules = [
-          "d /var/lib/fleet 0700 root root -"
-          "d ${cfg.sitesDirectory} 0755 root root -"
-        ];
+        systemd.tmpfiles.rules = [ "d /var/lib/fleet 0700 root root -" ];
       }
 
       (lib.mkIf usesDatabases {
@@ -383,6 +396,8 @@ in
                 failed=1
               fi
             done
+            find ${lib.escapeShellArg cfg.backup.directory}/deleted -name '*.dump' \
+              -mtime +${toString cfg.backup.deletedRetentionDays} -delete
             exit "$failed"
           '';
         };
@@ -393,7 +408,10 @@ in
             Persistent = true;
           };
         };
-        systemd.tmpfiles.rules = [ "d ${cfg.backup.directory} 0700 postgres postgres -" ];
+        systemd.tmpfiles.rules = [
+          "d ${cfg.backup.directory} 0700 postgres postgres -"
+          "d ${cfg.backup.directory}/deleted 0700 postgres postgres -"
+        ];
       })
 
       (lib.optionalAttrs (options ? server.backup) {

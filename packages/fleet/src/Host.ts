@@ -1,10 +1,12 @@
 import * as Config from "effect/Config"
 import * as Data from "effect/Data"
+import type * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Option from "effect/Option"
 import * as Redacted from "effect/Redacted"
+import * as Schedule from "effect/Schedule"
 import * as Schema from "effect/Schema"
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
+import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "effect/http"
 import { readFile } from "node:fs/promises"
 
 export class FleetError extends Data.TaggedError("FleetError")<{
@@ -53,3 +55,18 @@ export const send = (
     }
     return response
   }).pipe(Effect.provide(FetchHttpClient.layer))
+
+/**
+ * Retries every 2 seconds, for up to `duration`, while the host can't be reached or `also` holds
+ * for the error.
+ */
+export const retryTransient = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  duration: Duration.Input,
+  also: (error: E) => boolean = () => false,
+) =>
+  Effect.retry(effect, {
+    while: (error: E) =>
+      (HttpClientError.isHttpClientError(error) && error.reason._tag === "TransportError") || also(error),
+    schedule: Schedule.spaced("2 seconds").pipe(Schedule.upTo({ duration })),
+  })

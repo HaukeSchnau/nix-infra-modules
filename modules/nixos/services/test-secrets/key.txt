@@ -1,0 +1,4 @@
+# Test-only key for the service controller VM test. It decrypts secrets.yaml here and nothing else.
+# created: 2026-10-28T19:31:05+01:00
+# public key: age1s6gsyfrgr2c2ukcftqty7y9e7e99ff5z3vlsgyheh68umdnlfujsud8l89
+AGE-SECRET-KEY-1VJCUNPTDHEEX977GH9SRR5UN60HRWVT5YXRHA4F6UQKGXWV2NUXQCV0ZTU

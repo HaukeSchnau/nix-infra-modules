@@ -1,6 +1,9 @@
 import { Resource } from "alchemy"
+import { Unowned } from "alchemy/AdoptPolicy"
 import { isResolved } from "alchemy/Diff"
 import * as Provider from "alchemy/Provider"
+import { Stack } from "alchemy/Stack"
+import { Stage } from "alchemy/Stage"
 import * as Config from "effect/Config"
 import * as Data from "effect/Data"
 import * as Effect from "effect/Effect"
@@ -9,11 +12,16 @@ import * as Redacted from "effect/Redacted"
 import * as Schedule from "effect/Schedule"
 import * as Schema from "effect/Schema"
 import { HttpClientResponse } from "effect/http"
-import { baseUrl, Refusal, send } from "./Host.ts"
+import { baseUrl, Refusal, retryTransient, send } from "./Host.ts"
 import type { Providers } from "./Providers.ts"
 
+/** A secret the host decrypts from its own SOPS file, by key, such as `{ sops: "projects/shop/mail-url" }`. */
+export interface SopsKey {
+  readonly sops: string
+}
+
 export interface ServiceProps {
-  /** The host that runs the service, such as `srv-2`. */
+  /** The host that runs the service, such as `core-01`. */
   readonly host: string
   /** The service's name on the host: its grant's name, or that name and a suffix, such as `shop-pr-12`. */
   readonly name: string
@@ -29,16 +37,20 @@ export interface ServiceProps {
   readonly endpoint?: { readonly hostName: string; readonly visibility: "public" | "tailnet" }
   /** The path that answers 200 once the process is ready, within `timeoutSec` (60) of a start. Otherwise the host rolls back. */
   readonly health: { readonly path: string; readonly timeoutSec?: number }
-  /** A PostgreSQL database of the service's own. Its URL goes into `env` (`DATABASE_URL`); `majorVersion` must match the host's. */
-  readonly database?: { readonly env?: string; readonly majorVersion?: number }
+  /**
+   * A PostgreSQL database of the service's own. Its URL goes into `env` (`DATABASE_URL`), and
+   * `majorVersion` must match the host's. Deleting the service keeps the database unless
+   * `dropOnDelete` is set, as previews do; the host then dumps it before dropping it.
+   */
+  readonly database?: { readonly env?: string; readonly majorVersion?: number; readonly dropOnDelete?: boolean }
   /** Environment variables. The host adds `HOST`, `PORT`, the database URL and `<SECRET>_FILE`. */
   readonly env?: Readonly<Record<string, string>>
   /**
-   * Secrets by variable name: a string names a SOPS key of the host's secrets, and a `Redacted` is a
-   * value the host seals with its age key. The process reads each from the file `<NAME>_FILE` names.
+   * Secrets by variable name: a SOPS key of the host's secrets, or a `Redacted` value the host
+   * seals with its age key. The process reads each from the file `<NAME>_FILE` names.
    */
-  readonly secrets?: Readonly<Record<string, string | Redacted.Redacted<string>>>
-  /** systemd memory limits, within the grant's share. */
+  readonly secrets?: Readonly<Record<string, SopsKey | Redacted.Redacted<string>>>
+  /** systemd memory limits, within the grant's share. The service never swaps. */
   readonly memory?: { readonly max: string; readonly high?: string }
 }
 
@@ -61,8 +73,10 @@ export type Service = Resource<"Fleet.Service", ServiceProps, ServiceAttributes,
  * host's verdict: the new revision healthy, or the old one kept because `prepare` or the health
  * check failed.
  *
- * Deleting it stops the service and drops its database. Keep a database that must outlive the
- * stack with `RemovalPolicy.retain()`.
+ * The host records which stack, stage and logical ID put the service. It refuses a deploy from
+ * another owner unless Alchemy adopts the service, and a deletion from another owner deletes
+ * nothing. Deleting stops the service and removes its route; its database stays unless
+ * `database.dropOnDelete` is set. `RemovalPolicy.retain()` keeps the service running as well.
  *
  * The host's API takes the grant's token from `FLEET_TOKEN`, or from the file `FLEET_TOKEN_FILE`
  * names. `FLEET_FENCE`, when set, is the deploy lease's fencing token; the host refuses a lower one
@@ -82,23 +96,36 @@ export class ServiceRefused extends Data.TaggedError("ServiceRefused")<{
 export class DeployFailed extends Data.TaggedError("DeployFailed")<{
   readonly service: string
   readonly revision: string
-  readonly outcome: "failed" | "rolled-back"
+  readonly outcome: "failed" | "rolled-back" | "no verdict"
   readonly reason: string
 }> {
   override get message() {
-    const what = this.outcome === "rolled-back" ? "was rolled back" : "failed, and the old revision keeps running"
+    const what = {
+      "failed": "failed, and the old revision keeps running",
+      "rolled-back": "was rolled back",
+      "no verdict": "got no verdict from the host",
+    }[this.outcome]
     return `${this.service}: ${this.revision} ${what}: ${this.reason}`
   }
 }
 
 class Busy extends Data.TaggedError("Busy")<{ readonly service: string }> {}
 
+/**
+ * How long a deploy waits for the host, while another deploy of the service runs and for its own
+ * verdict. It covers the host's longest `prepare` (20 minutes), the health check and realizing.
+ */
+const deadline = "40 minutes"
+
+const Owner = Schema.Struct({ stack: Schema.String, stage: Schema.String, fqn: Schema.String })
+type Owner = typeof Owner.Type
 const Deploy = Schema.Struct({
   generation: Schema.Number,
   outcome: Schema.Literals(["deploying", "active", "failed", "rolled-back"]),
   reason: Schema.NullOr(Schema.String),
 })
 const Status = Schema.Struct({
+  owner: Schema.NullOr(Owner),
   revision: Schema.NullOr(Schema.String),
   url: Schema.NullOr(Schema.String),
   address: Schema.Struct({ ipv4: Schema.NullOr(Schema.String), ipv6: Schema.NullOr(Schema.String) }),
@@ -125,7 +152,7 @@ const body = (props: ServiceProps) => ({
   secrets: Object.fromEntries(
     Object.entries(props.secrets ?? {}).map(([name, secret]) => [
       name,
-      Redacted.isRedacted(secret) ? { value: Redacted.value(secret) } : { sops: secret },
+      Redacted.isRedacted(secret) ? { value: Redacted.value(secret) } : { sops: secret.sops },
     ]),
   ),
   memory: props.memory ?? {},
@@ -137,9 +164,17 @@ const refused = (props: ServiceProps) => (response: HttpClientResponse.HttpClien
     (refusal) => new ServiceRefused({ service: props.name, reasons: refusal.reasons }),
   )
 
+/** A request that waits while another deploy of the service runs (423) and the connection fails. */
+const sendWaiting = (props: Pick<ServiceProps, "name">, request: ReturnType<typeof send>) =>
+  retryTransient(
+    request.pipe(Effect.filterOrFail((response) => response.status !== 423, () => new Busy({ service: props.name }))),
+    deadline,
+    (error) => error._tag === "Busy",
+  )
+
 const status = (props: Pick<ServiceProps, "host" | "name">) =>
   Effect.gen(function*() {
-    const response = yield* send("GET", yield* url(props))
+    const response = yield* sendWaiting(props, send("GET", yield* url(props)))
     return response.status === 404 ? undefined : yield* HttpClientResponse.schemaBodyJson(Status)(response)
   })
 
@@ -151,17 +186,13 @@ const attributes = (props: Pick<ServiceProps, "host" | "name">, running: typeof 
   address: { ipv4: running.address.ipv4 ?? undefined, ipv6: running.address.ipv6 ?? undefined },
 })
 
-/** PUTs the spec, retrying while another deploy runs, and waits until the host reports its generation's outcome. */
-const deploy = (props: ServiceProps) =>
+const sameOwner = (a: Owner | null, b: Owner) => a !== null && a.stack === b.stack && a.stage === b.stage && a.fqn === b.fqn
+
+/** PUTs the spec and waits until the host reports its generation's outcome. */
+const deploy = (props: ServiceProps, owner: Owner, adopt: boolean) =>
   Effect.gen(function*() {
-    const payload = { ...body(props), fence: yield* fence }
-    const response = yield* send("PUT", yield* url(props), { payload, handled: [422, 423] }).pipe(
-      Effect.filterOrFail((response) => response.status !== 423, () => new Busy({ service: props.name })),
-      Effect.retry({
-        while: (error) => error._tag === "Busy",
-        schedule: Schedule.spaced("2 seconds").pipe(Schedule.upTo({ duration: "10 minutes" })),
-      }),
-    )
+    const payload = { ...body(props), owner, adopt, fence: yield* fence }
+    const response = yield* sendWaiting(props, send("PUT", yield* url(props), { payload, handled: [422, 423] }))
     if (response.status === 422) return yield* refused(props)(response)
     if (response.status === 202) {
       const { generation } = yield* HttpClientResponse.schemaBodyJson(Accepted)(response)
@@ -171,6 +202,18 @@ const deploy = (props: ServiceProps) =>
         Effect.repeat({
           schedule: Schedule.spaced("250 millis"),
           until: (running) => outcome(running)?.outcome !== "deploying",
+        }),
+        Effect.timeoutOrElse({
+          duration: deadline,
+          orElse: () =>
+            Effect.fail(
+              new DeployFailed({
+                service: props.name,
+                revision: props.release.revision,
+                outcome: "no verdict",
+                reason: `generation ${generation} was still deploying after ${deadline}`,
+              }),
+            ),
         }),
       )
       const entry = outcome(settled)
@@ -192,31 +235,40 @@ const deploy = (props: ServiceProps) =>
   })
 
 export const ServiceProvider = () =>
-  Provider.succeed(
+  Provider.effect(
     Service,
-    Service.Provider.of({
-      list: () => Effect.succeed([]),
-      diff: Effect.fn(function*({ news, olds }) {
-        if (!isResolved(news)) return undefined
-        if (news.name !== olds.name || news.host !== olds.host) return { action: "replace" } as const
-        // The host compares the spec with what it runs, so an unchanged service needs no deploy and
-        // a refusal shows in a dry run.
-        const response = yield* send("POST", yield* url(news, "/plan"), { payload: body(news), handled: [422] })
-        if (response.status === 422) return yield* refused(news)(response)
-        const plan = yield* HttpClientResponse.schemaBodyJson(Plan)(response)
-        return { action: plan.changes.length === 0 ? "noop" : "update" } as const
-      }),
-      read: Effect.fn(function*({ olds }) {
-        if (olds === undefined) return undefined
-        const running = yield* status(olds)
-        return running === undefined ? undefined : attributes(olds, running)
-      }),
-      reconcile: Effect.fn(function*({ news }) {
-        return yield* deploy(news)
-      }),
-      delete: Effect.fn(function*({ olds }) {
-        const current = yield* fence
-        yield* send("DELETE", yield* url(olds), current === undefined ? {} : { headers: { "X-Fleet-Fence": String(current) } })
-      }),
+    Effect.gen(function*() {
+      const stack = yield* Stack
+      const stage = yield* Stage
+      const ownerOf = (fqn: string): Owner => ({ stack: stack.name, stage, fqn })
+      return Service.Provider.of({
+        list: () => Effect.succeed([]),
+        diff: Effect.fn(function*({ news, olds }) {
+          if (!isResolved(news)) return undefined
+          if (news.name !== olds.name || news.host !== olds.host) return { action: "replace" } as const
+          // The host compares the spec with what it runs, so an unchanged service needs no deploy and
+          // a refusal shows in a dry run.
+          const request = send("POST", yield* url(news, "/plan"), { payload: body(news), handled: [422] })
+          const response = yield* sendWaiting(news, request)
+          if (response.status === 422) return yield* refused(news)(response)
+          const plan = yield* HttpClientResponse.schemaBodyJson(Plan)(response)
+          return { action: plan.changes.length === 0 ? "noop" : "update" } as const
+        }),
+        read: Effect.fn(function*({ fqn, olds }) {
+          if (olds === undefined) return undefined
+          const running = yield* status(olds)
+          if (running === undefined) return undefined
+          // A service another stack, stage or logical ID put is not this resource's to change.
+          return sameOwner(running.owner, ownerOf(fqn)) ? attributes(olds, running) : Unowned(attributes(olds, running))
+        }),
+        reconcile: Effect.fn(function*({ fqn, news, olds, output }) {
+          // Alchemy adopted a service it found but didn't create, so the host may change its owner.
+          return yield* deploy(news, ownerOf(fqn), output !== undefined && olds === undefined)
+        }),
+        delete: Effect.fn(function*({ fqn, olds }) {
+          const payload = { owner: ownerOf(fqn), fence: yield* fence }
+          yield* sendWaiting(olds, send("DELETE", yield* url(olds), { payload, handled: [423] }))
+        }),
+      })
     }),
   )

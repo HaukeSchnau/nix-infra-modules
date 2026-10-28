@@ -50,6 +50,8 @@ FIELDS = {"release", "command", "prepare", "console", "endpoint", "health", "dat
 COMMANDS = ("command", "prepare", "console")
 HISTORY = 10
 CONVERGE_SECONDS = 300
+# Connections the services' budget leaves to the superuser, the nightly dumps and operators.
+RESERVED_CONNECTIONS = 10
 
 CONFIG: dict = {}
 
@@ -122,12 +124,15 @@ def check_command(field: str, value, paths: dict, reasons: list):
     return list(value)
 
 
-def check(name: str, grant_name: str, grant: dict, spec, others: list, claimed: dict, postgres_major, stored=False) -> dict:
+def check(name: str, grant_name: str, grant: dict, spec, others: list, claimed: dict, postgres: dict | None, stored=False) -> dict:
     """The spec as the controller keeps it, or Refused with every way it breaks the grant.
 
-    `others` are the latest specs of the grant's other services, for its service count and memory
-    ceiling. `claimed` maps the hostnames of every other service on the host to that service. A
-    `stored` spec carries sealed secret values instead of plain ones.
+    `others` holds one spec per other service of the grant, for its service count and memory
+    ceiling; a service that is deploying counts with the larger memory of its two generations.
+    `claimed` maps every hostname another service on the host runs or deploys to that service.
+    `postgres` is this host's `{major, room}`, where room is how many more services' databases its
+    connection budget fits. A `stored` spec carries sealed secret values instead of plain ones.
+    Reasons never quote a secret's value or SOPS key.
     """
     if not isinstance(spec, dict):
         raise Refused(["a service is a JSON object"])
@@ -197,18 +202,22 @@ def check(name: str, grant_name: str, grant: dict, spec, others: list, claimed: 
 
     database = spec.get("database")
     if database is not None:
-        if not isinstance(database, dict) or set(database) - {"env", "majorVersion"}:
-            reasons.append("database takes env and majorVersion")
+        if not isinstance(database, dict) or set(database) - {"env", "majorVersion", "dropOnDelete"}:
+            reasons.append("database takes env, majorVersion and dropOnDelete")
             database = None
         else:
             if not grant["databases"]:
                 reasons.append(f"{grant_name} may not have databases")
+            elif postgres is None or postgres["room"] < 1:
+                reasons.append("this host's PostgreSQL has no connections left for another service's database")
             major = database.get("majorVersion")
-            if major is not None and major != postgres_major:
-                reasons.append(f"the service needs PostgreSQL {major}, and this host runs {postgres_major}")
-            database = {"env": database.get("env", "DATABASE_URL")}
+            if major is not None and major != (postgres or {}).get("major"):
+                reasons.append(f"the service needs PostgreSQL {major}, and this host runs {(postgres or {}).get('major')}")
+            database = {"env": database.get("env", "DATABASE_URL"), "dropOnDelete": database.get("dropOnDelete", False)}
             if not isinstance(database["env"], str) or not ENV_NAME.fullmatch(database["env"]):
                 reasons.append(f"database env {database['env']!r} is not a variable name")
+            if type(database["dropOnDelete"]) is not bool:
+                reasons.append("database dropOnDelete is true or false")
 
     env = spec.get("env", {})
     if not isinstance(env, dict) or not all(isinstance(value, str) for value in env.values()):
@@ -233,10 +242,10 @@ def check(name: str, grant_name: str, grant: dict, spec, others: list, claimed: 
         elif "sops" in source:
             path = source["sops"]
             if not all(KEY_SEGMENT.fullmatch(part) for part in path.split("/")):
-                reasons.append(f"secret {key} reads {path!r}, which is not a SOPS key such as projects/{grant_name}/{key.lower()}")
+                reasons.append(f"secret {key} names no SOPS key such as projects/{grant_name}/{key.lower()}")
             elif not any(path.startswith(prefix) for prefix in grant["secretPrefixes"]):
                 allowed = " or ".join(grant["secretPrefixes"]) or "no prefix"
-                reasons.append(f"secret {key} may not read {path}; {grant_name} reads keys under {allowed}")
+                reasons.append(f"secret {key} names a SOPS key outside {allowed}, which {grant_name} may read")
         elif not next(iter(source.values())) or "\0" in next(iter(source.values())):
             reasons.append(f"secret {key} has an empty value or a NUL")
 
@@ -328,7 +337,9 @@ def journal(invocation_id: str, lines: int = 15) -> str:
     return output.strip()
 
 
-# State: /var/lib/fleet/services/<name>/{generations/<g>.json, active, port, fence, deploys.json}
+# State: /var/lib/fleet/services/<name>/ holds generations/<g>.json, active, port, owner.json,
+# deploys.json, violations and, while a deletion runs, the tombstone `deleting`. Fences live in
+# /var/lib/fleet/fences/<name>, so they outlive a deletion.
 
 
 def state() -> Path:
@@ -382,11 +393,30 @@ def active_record(name: str) -> dict | None:
     return None if generation is None else record_of(name, generation)
 
 
-def latest_spec(name: str) -> dict | None:
-    """The spec of the service's newest generation: the active one, or the one being deployed."""
+def specs_of(name: str) -> list[dict]:
+    """The specs of the service's generations, oldest first: the active one, and the one being
+    deployed while a deploy runs."""
     directory = service_dir(name) / "generations"
     generations = sorted(int(path.stem) for path in directory.glob("*.json")) if directory.is_dir() else []
-    return record_of(name, generations[-1])["spec"] if generations else None
+    return [record_of(name, generation)["spec"] for generation in generations]
+
+
+def fence_path(name: str) -> Path:
+    return state() / "fences" / name
+
+
+def owner_of(name: str) -> dict | None:
+    """Which stack, stage and logical ID put the service, as Fleet.Service sends it."""
+    return read_json(service_dir(name) / "owner.json")
+
+
+def tombstone(name: str) -> Path:
+    return service_dir(name) / "deleting"
+
+
+def violations(name: str) -> list[str]:
+    """How the running service breaks its grant since the grant changed; the next PUT is refused."""
+    return read_json(service_dir(name) / "violations", [])
 
 
 def port_of(name: str) -> int:
@@ -518,6 +548,7 @@ def dropin(name: str, record: dict) -> str:
         f"# Written by fleet-controller: generation {record['generation']}, revision {spec['release']['revision']}.",
         "[Service]",
         *properties(name, record),
+        f"SocketBindAllow=tcp:{port_of(name)}",
         "ExecStart=",
         "ExecStart=" + " ".join(unit_quote(word, dollar=True) for word in command),
     ]
@@ -567,17 +598,39 @@ def psql(sql: str) -> str:
 
 
 def ensure_database(name: str) -> None:
-    role = user(name)
+    """The service's role and database. Only its role may connect to it, with at most the host's
+    connection limit per service."""
+    role, limit = user(name), CONFIG["postgresql"]["connectionLimit"]
     psql(
         f"SELECT 'CREATE ROLE \"{role}\" LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{role}')\\gexec\n"
         f"SELECT 'CREATE DATABASE \"{role}\" OWNER \"{role}\"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{role}')\\gexec\n"
+        f'ALTER ROLE "{role}" CONNECTION LIMIT {limit};\n'
+        f'REVOKE CONNECT, TEMPORARY ON DATABASE "{role}" FROM PUBLIC;\n'
     )
 
 
 def drop_database(name: str) -> None:
+    """Dumps the service's database into the backup directory's `deleted/`, then drops it and its
+    role. A failed dump keeps both."""
     role = user(name)
+    if psql(f"SELECT 1 FROM pg_database WHERE datname = '{role}'").strip():
+        postgres = CONFIG["postgresql"]
+        target = Path(CONFIG["backupDir"]) / "deleted" / f"{role}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.dump"
+        result = run(
+            [CONFIG["bin"]["pgDump"], "-Fc", "-h", postgres["socket"], "-p", str(postgres["port"]), "-f", str(target), role],
+            check=False, user="postgres",
+        )
+        if result.returncode != 0:
+            raise Failed(f"the final dump of {role} failed, so the database stays: {result.stderr.strip()[-300:]}")
+        log(f"fleet: {name}: dumped {role} to {target}")
     psql(f'DROP DATABASE IF EXISTS "{role}" WITH (FORCE);\nDROP ROLE IF EXISTS "{role}";\n')
     (Path(CONFIG["backupDir"]) / f"{role}.dump").unlink(missing_ok=True)
+
+
+def stop_prepare(name: str) -> None:
+    """Stops a `prepare` that a controller restart left behind, so the next one can start."""
+    systemctl("stop", f"fleet-prepare-{name}.service", check=False)
+    systemctl("reset-failed", f"fleet-prepare-{name}.service", check=False)
 
 
 def prepare(name: str, record: dict) -> None:
@@ -585,6 +638,7 @@ def prepare(name: str, record: dict) -> None:
     argv = record["spec"]["prepare"]
     if argv is None:
         return
+    stop_prepare(name)
     extra = ["--pipe", "--service-type=oneshot", f"--property=TimeoutStartSec={CONFIG['prepareTimeoutSec']}"]
     started = time.monotonic()
     result = subprocess.run(
@@ -599,6 +653,20 @@ def prepare(name: str, record: dict) -> None:
     log(f"fleet: {name}: prepare took {time.monotonic() - started:.1f}s")
 
 
+def probe(url: str) -> str | None:
+    """None when url answers 200, otherwise what it answered. Any failure, such as a reply that is
+    not HTTP, counts as unhealthy."""
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:
+            return None if response.status == 200 else f"status {response.status}"
+    except urllib.error.HTTPError as error:
+        return f"status {error.code}"
+    except urllib.error.URLError as error:
+        return str(error.reason)
+    except Exception as error:  # noqa: BLE001 - http.client raises more than URLError
+        return f"{type(error).__name__}: {error}"
+
+
 def healthy(name: str, record: dict, invocation_id: str) -> str | None:
     """Waits until the health path answers 200; None then, or why it didn't."""
     health = record["spec"]["health"]
@@ -607,18 +675,12 @@ def healthy(name: str, record: dict, invocation_id: str) -> str | None:
     last = "no answer"
     while time.monotonic() < deadline:
         active, sub = unit_state(name)
-        if active == "failed" or sub == "auto-restart":
+        if active in ("failed", "inactive", "deactivating") or sub == "auto-restart":
             reason = "the process exited"
             break
-        try:
-            with urllib.request.urlopen(url, timeout=2) as response:
-                if response.status == 200:
-                    return None
-                last = f"status {response.status}"
-        except urllib.error.HTTPError as error:
-            last = f"status {error.code}"
-        except (urllib.error.URLError, OSError) as error:
-            last = str(getattr(error, "reason", error))
+        last = probe(url)
+        if last is None:
+            return None
         time.sleep(0.2)
     else:
         reason = f"{health['path']} did not answer 200 within {health['timeoutSec']}s, last {last}"
@@ -659,24 +721,35 @@ class Controller:
         self.busy: set[str] = set()
 
     def others(self, name: str, grant_name: str) -> tuple[list, dict]:
+        """The grant's other services, each as the generation with the most memory, and every
+        hostname another service on the host runs or deploys."""
         others, claimed = [], {}
         for other in services():
-            spec = latest_spec(other)
-            if other == name or spec is None:
+            specs = specs_of(other)
+            if other == name or not specs:
                 continue
             if grant_of(other, CONFIG["grants"])[0] == grant_name:
-                others.append(spec)
-            if spec["endpoint"] is not None:
-                claimed[spec["endpoint"]["hostName"]] = other
+                others.append(max(specs, key=lambda spec: size(spec["memory"].get("max")) or 0))
+            for spec in specs:
+                if spec["endpoint"] is not None:
+                    claimed[spec["endpoint"]["hostName"]] = other
         return others, claimed
+
+    def postgres(self, name: str) -> dict | None:
+        """The host's PostgreSQL major, and how many more services' databases its connections fit."""
+        postgres = CONFIG["postgresql"]
+        if postgres is None:
+            return None
+        used = sum(1 for other in services() if other != name and any(spec["database"] for spec in specs_of(other)))
+        capacity = (postgres["maxConnections"] - RESERVED_CONNECTIONS) // postgres["connectionLimit"]
+        return {"major": postgres["major"], "room": capacity - used}
 
     def check(self, name: str, spec, stored=False) -> dict:
         grant_name, grant = grant_of(name, CONFIG["grants"])
         if grant is None:
             raise Refused([f"{name} belongs to no grant on this host"])
         others, claimed = self.others(name, grant_name)
-        major = CONFIG["postgresql"]["major"] if CONFIG["postgresql"] else None
-        return check(name, grant_name, grant, spec, others, claimed, major, stored)
+        return check(name, grant_name, grant, spec, others, claimed, self.postgres(name), stored)
 
     def changes(self, name: str, spec: dict) -> list[str]:
         """What a spec changes against the active generation; nothing means a PUT does nothing."""
@@ -701,23 +774,35 @@ class Controller:
             return
         if type(fence) is not int or fence < 0:
             raise Refused(["fence is a whole number"])
-        path = service_dir(name) / "fence"
+        path = fence_path(name)
         current = int(path.read_text()) if path.is_file() else 0
         if fence < current:
             raise Stale(f"fence {fence} is stale; the host has seen {current}")
         write_atomic(path, f"{fence}\n", 0o644)
 
-    def plan(self, name: str, spec) -> dict:
+    def plan(self, name: str, spec: dict) -> dict:
         normalized = self.check(name, spec)
         return {"name": name, "changes": self.changes(name, normalized)}
 
-    def put(self, name: str, spec, fence) -> tuple[int, dict]:
+    def put(self, name: str, body: dict) -> tuple[int, dict]:
+        """Accepts a spec as a new generation and deploys it in the background. A service another
+        owner put is refused unless the request adopts it."""
+        fence, owner, adopt = body.pop("fence", None), body.pop("owner", None), body.pop("adopt", False)
+        if owner is not None and (not isinstance(owner, dict) or set(owner) != {"stack", "stage", "fqn"}
+                                  or not all(isinstance(value, str) for value in owner.values())):
+            raise Refused(["owner takes stack, stage and fqn"])
         with self.lock:
-            if name in self.busy:
-                raise Busy(f"{name} is deploying generation {deploys(name)[0]['generation']}")
-            normalized = self.check(name, spec)
             self.fence(name, fence)
+            if name in self.busy or tombstone(name).exists():
+                raise Busy(f"{name} is deploying or being deleted")
+            normalized = self.check(name, body)
+            current = owner_of(name)
+            if owner is not None and current is not None and owner != current and adopt is not True:
+                raise Refused([f"{name} belongs to {owned_by(current)}; a stack takes it over only by adopting it"])
+            if owner is not None:
+                write_atomic(service_dir(name) / "owner.json", dumps(owner), 0o644)
             if not self.changes(name, normalized):
+                (service_dir(name) / "violations").unlink(missing_ok=True)
                 return 200, {**describe(name), "changed": False}
             directory = service_dir(name)
             counter = directory / "generation"
@@ -754,52 +839,78 @@ class Controller:
                 note_deploy(name, generation, revision, "failed", reason)
                 return
             previous = active_record(name)
-            cutover(name, record)
-            reason = healthy(name, record, invocation(name))
+            try:
+                cutover(name, record)
+                reason = healthy(name, record, invocation(name))
+            except Exception as error:  # noqa: BLE001 - whatever failed, the previous generation comes back
+                reason = f"the controller failed after the cutover: {error}"
             if reason is None:
                 with self.lock:
                     write_atomic(service_dir(name) / "active", f"{generation}\n", 0o644)
+                    (service_dir(name) / "violations").unlink(missing_ok=True)
                     write_routes()
                 note_deploy(name, generation, revision, "active")
                 log(f"fleet: {name}: generation {generation} took {time.monotonic() - started:.1f}s")
-            elif previous is not None:
-                cutover(name, previous)
-                note_deploy(name, generation, revision, "rolled-back", reason)
-            else:
-                systemctl("stop", unit(name), check=False)
-                dropin_path(name).unlink(missing_ok=True)
-                systemctl("daemon-reload")
-                note_deploy(name, generation, revision, "failed", reason)
+                return
+            try:
+                if previous is None:
+                    systemctl("stop", unit(name), check=False)
+                    dropin_path(name).unlink(missing_ok=True)
+                    systemctl("daemon-reload")
+                else:
+                    cutover(name, previous)
+            except Exception as error:  # noqa: BLE001
+                reason += f"; restoring the previous generation failed too: {error}"
+            note_deploy(name, generation, revision, "failed" if previous is None else "rolled-back", reason)
         except Exception as error:  # noqa: BLE001 - the client waits for an outcome, whatever happened
-            note_deploy(name, generation, revision, "failed", f"the controller failed: {error}")
+            note_deploy(name, generation, revision, "failed", f"the controller failed before the cutover: {error}")
         finally:
             with self.lock:
                 prune(name)
                 self.busy.discard(name)
 
-    def delete(self, name: str, fence) -> bool:
+    def delete(self, name: str, fence, owner) -> dict | None:
+        """Stops the service and removes its route and state. Its database stays unless every
+        generation's spec says `dropOnDelete`, and then goes only after a final dump. A request from
+        another owner deletes nothing. None when the service doesn't exist."""
         with self.lock:
+            self.fence(name, fence)
             if name in self.busy:
                 raise Busy(f"{name} is deploying")
             if not service_dir(name).is_dir():
-                return False
-            self.fence(name, fence)
-            systemctl("stop", unit(name), check=False)
-            shutil.rmtree(dropin_path(name).parent, ignore_errors=True)
-            systemctl("daemon-reload")
-            if CONFIG["postgresql"]:
-                drop_database(name)
-            shutil.rmtree(Path(CONFIG["runtimeDir"]) / name, ignore_errors=True)
-            shutil.rmtree(Path(CONFIG["gcrootsDir"]) / name, ignore_errors=True)
-            shutil.rmtree(service_dir(name))
-            write_routes()
-            log(f"fleet: {name}: deleted")
-            return True
+                return None
+            current = owner_of(name)
+            if owner is not None and current is not None and owner != current:
+                log(f"fleet: {name}: not deleted for {owned_by(owner)}, since it belongs to {owned_by(current)}")
+                return {"name": name, "deleted": False, "reason": f"{name} belongs to {owned_by(current)}"}
+            if not tombstone(name).exists():
+                specs = specs_of(name)
+                drop = bool(specs) and all(spec["database"] and spec["database"]["dropOnDelete"] for spec in specs)
+                write_atomic(tombstone(name), dumps({"dropDatabase": drop, "at": int(time.time())}))
+            self.finish_delete(name)
+            return {"name": name, "deleted": True}
+
+    def finish_delete(self, name: str) -> None:
+        """Carries out a deletion its tombstone records; at start, one a restart interrupted."""
+        drop = read_json(tombstone(name))["dropDatabase"]
+        systemctl("stop", unit(name), check=False)
+        stop_prepare(name)
+        shutil.rmtree(dropin_path(name).parent, ignore_errors=True)
+        systemctl("daemon-reload")
+        write_routes()
+        if drop and CONFIG["postgresql"]:
+            drop_database(name)
+        shutil.rmtree(Path(CONFIG["runtimeDir"]) / name, ignore_errors=True)
+        shutil.rmtree(Path(CONFIG["gcrootsDir"]) / name, ignore_errors=True)
+        shutil.rmtree(service_dir(name))
+        log(f"fleet: {name}: deleted" + (", and its database dropped" if drop else ", its database kept"))
 
     def restore(self, decrypt_secrets: bool = True) -> int:
         """Brings every service in line with its active generation: credentials, drop-ins, a running
-        process. A service its grant no longer allows stops, and keeps its state and database. The
-        number of services that failed.
+        process. It never stops a running service: one its grant no longer allows keeps running and
+        records the violations, which refuse its next PUT. A secret that can't be decrypted keeps the
+        credentials the service has. Finishes deletions a restart interrupted. The number of
+        services that failed.
 
         Without `decrypt_secrets`, credentials that exist stay as they are. A changed SOPS file
         arrives with a switch, which restarts the controller and restores with them."""
@@ -808,38 +919,48 @@ class Controller:
             for name in services():
                 if name in self.busy:
                     continue
-                for entry in deploys(name):
-                    if entry["outcome"] == "deploying":
-                        note_deploy(name, entry["generation"], entry["revision"], "failed", "the controller restarted during the deploy")
-                prune(name)
-                record = active_record(name)
-                if record is None:
-                    continue
-                refused = service_dir(name) / "refused"
                 try:
-                    self.check(name, record["spec"], stored=True)
+                    if tombstone(name).exists():
+                        self.finish_delete(name)
+                        continue
+                    for entry in deploys(name):
+                        if entry["outcome"] == "deploying":
+                            stop_prepare(name)
+                            note_deploy(name, entry["generation"], entry["revision"], "failed", "the controller restarted during the deploy")
+                    prune(name)
+                    record = active_record(name)
+                    if record is None:
+                        continue
+                    try:
+                        self.check(name, record["spec"], stored=True)
+                        (service_dir(name) / "violations").unlink(missing_ok=True)
+                    except Refused as refused:
+                        if violations(name) != refused.reasons:
+                            log(f"fleet: {name}: keeps running, but its grant no longer allows it: {refused}")
+                            write_atomic(service_dir(name) / "violations", json.dumps(refused.reasons) + "\n", 0o644)
                     rewritten = False
-                    if decrypt_secrets or not credentials_dir(name, record["generation"]).is_dir():
-                        rewritten = write_credentials(name, record["generation"], secret_values(record["spec"]))
+                    credentials = credentials_dir(name, record["generation"])
+                    if decrypt_secrets or not credentials.is_dir():
+                        try:
+                            rewritten = write_credentials(name, record["generation"], secret_values(record["spec"]))
+                        except (Failed, subprocess.CalledProcessError) as error:
+                            failures += 1
+                            reason = error.stderr.strip() if isinstance(error, subprocess.CalledProcessError) else str(error)
+                            if not credentials.is_dir():
+                                log(f"fleet: {name}: can't start without its secrets: {reason}")
+                                continue
+                            log(f"fleet: {name}: keeps its credentials, since {reason}")
                     dropped_in = write_dropin(name, record)
-                except (Refused, Failed, subprocess.CalledProcessError) as error:
+                    reload = reload or dropped_in
+                    if rewritten or dropped_in:
+                        restart.append(name)
+                    elif unit_state(name)[0] not in ("active", "activating", "reloading"):
+                        start.append(name)
+                except Exception as error:  # noqa: BLE001 - one broken service must not stop the others
                     failures += 1
-                    if not refused.is_file():
-                        log(f"fleet: {name}: stopped, since {error}")
-                        write_atomic(refused, f"{error}\n", 0o644)
-                    systemctl("stop", unit(name), check=False)
-                    if dropin_path(name).is_file():
-                        dropin_path(name).unlink()
-                        reload = True
-                    continue
-                refused.unlink(missing_ok=True)
-                reload = reload or dropped_in
-                if rewritten or dropped_in:
-                    restart.append(name)
-                elif unit_state(name)[0] not in ("active", "activating", "reloading"):
-                    start.append(name)
+                    log(f"fleet: {name}: not restored: {error}")
             if reload:
-                systemctl("daemon-reload")
+                systemctl("daemon-reload", check=False)
             write_routes()
         for name in restart + start:
             log(f"fleet: {name}: {'restarting with new credentials or settings' if name in restart else 'starting'}")
@@ -851,23 +972,20 @@ class Controller:
 # Routes and status
 
 
+def owned_by(owner: dict) -> str:
+    return f"{owner['fqn']} in stack {owner['stack']}, stage {owner['stage']}"
+
+
 def write_routes() -> None:
-    """The route file the host's runtime ingress reads, and the Caddy site each route imports."""
-    sites = Path(CONFIG["sitesDir"])
-    sites.mkdir(parents=True, exist_ok=True)
+    """The route file the host's runtime ingress reads: one entry per active service with an
+    endpoint, proxied with the ingress's defaults."""
     routes = []
     for name in services():
         record = active_record(name)
-        site = sites / f"{name}.caddy"
-        if record is None or record["spec"]["endpoint"] is None or (service_dir(name) / "refused").is_file():
-            site.unlink(missing_ok=True)
+        if record is None or record["spec"]["endpoint"] is None or tombstone(name).exists():
             continue
-        endpoint, port = record["spec"]["endpoint"], port_of(name)
-        write_atomic(site, f"encode zstd gzip\nreverse_proxy 127.0.0.1:{port}\n", 0o644)
-        routes.append({"name": name, "hostName": endpoint["hostName"], "visibility": endpoint["visibility"], "upstreamPort": port, "site": str(site)})
-    for site in sites.glob("*.caddy"):
-        if not (service_dir(site.stem) / "active").is_file():
-            site.unlink()
+        endpoint = record["spec"]["endpoint"]
+        routes.append({"name": name, "hostName": endpoint["hostName"], "visibility": endpoint["visibility"], "upstreamPort": port_of(name)})
     write_atomic(Path(CONFIG["routesFile"]), json.dumps(routes, indent=2) + "\n", 0o644)
 
 
@@ -877,10 +995,10 @@ def describe(name: str) -> dict:
     spec = record["spec"] if record else None
     endpoint = spec["endpoint"] if spec else None
     active, sub = unit_state(name)
-    refused = service_dir(name) / "refused"
     return {
         "name": name,
-        "refused": refused.read_text().strip() if refused.is_file() else None,
+        "owner": owner_of(name),
+        "violations": violations(name),
         "unit": unit(name),
         "user": user(name),
         "revision": spec["release"]["revision"] if spec else None,
@@ -905,15 +1023,19 @@ def token_for(key: bytes, grant: str) -> str:
 
 
 def authorized(header: str, name: str) -> bool:
+    """Whether the bearer token is the host's token or the grant's. An empty token or key never
+    authorizes anything."""
     if not header.startswith("Bearer "):
         return False
     given = header.removeprefix("Bearer ").strip()
-    if CONFIG.get("tokenFile") and hmac.compare_digest(given, Path(CONFIG["tokenFile"]).read_text().strip()):
+    if not given:
+        return False
+    admin = Path(CONFIG["tokenFile"]).read_text().strip() if CONFIG.get("tokenFile") else ""
+    if admin and hmac.compare_digest(given, admin):
         return True
     grant_name, _ = grant_of(name, CONFIG["grants"])
-    if grant_name is None or not CONFIG.get("grantKeyFile"):
-        return False
-    return hmac.compare_digest(given, token_for(Path(CONFIG["grantKeyFile"]).read_bytes().strip(), grant_name))
+    key = Path(CONFIG["grantKeyFile"]).read_bytes().strip() if CONFIG.get("grantKeyFile") else b""
+    return grant_name is not None and bool(key) and hmac.compare_digest(given, token_for(key, grant_name))
 
 
 def handler(controller: Controller):
@@ -955,19 +1077,20 @@ def handler(controller: Controller):
                     return self.send_json(400, {"error": "invalid json"})
             try:
                 if method == "GET":
-                    if not service_dir(name).is_dir():
+                    if not service_dir(name).is_dir() or tombstone(name).exists():
                         return self.send_json(404, {"error": "no such service", "name": name})
                     return self.send_json(200, describe(name))
                 if method == "DELETE":
-                    fence = self.headers.get("X-Fleet-Fence")
-                    deleted = controller.delete(name, None if fence is None else int(fence))
-                    return self.send_json(200 if deleted else 404, {"name": name})
+                    body = body if isinstance(body, dict) else {}
+                    result = controller.delete(name, body.get("fence"), body.get("owner"))
+                    return self.send_json(404 if result is None else 200, result or {"name": name})
                 if not isinstance(body, dict):
                     return self.send_json(400, {"error": "the body is a service spec"})
-                fence = body.pop("fence", None)
                 if planning:
+                    for field in ("fence", "owner", "adopt"):
+                        body.pop(field, None)
                     return self.send_json(200, controller.plan(name, body))
-                status, payload = controller.put(name, body, fence)
+                status, payload = controller.put(name, body)
                 return self.send_json(status, payload)
             except Refused as refused:
                 return self.send_json(422, {"error": "refused", "reasons": refused.reasons})
@@ -975,8 +1098,8 @@ def handler(controller: Controller):
                 return self.send_json(423, {"error": str(busy)})
             except Stale as stale:
                 return self.send_json(409, {"error": str(stale)})
-            except ValueError:
-                return self.send_json(400, {"error": "X-Fleet-Fence is a whole number"})
+            except Failed as failed:
+                return self.send_json(500, {"error": str(failed)})
 
         def do_GET(self):
             self.route("GET")
@@ -1006,7 +1129,10 @@ def serve() -> None:
     def converge():
         while True:
             time.sleep(CONVERGE_SECONDS)
-            controller.restore(decrypt_secrets=False)
+            try:
+                controller.restore(decrypt_secrets=False)
+            except Exception as error:  # noqa: BLE001 - the next round tries again
+                log(f"fleet: converging failed: {error}")
 
     threading.Thread(target=converge, daemon=True).start()
     listen = CONFIG["listen"]
