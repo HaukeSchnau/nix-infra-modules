@@ -1,3 +1,6 @@
-export { FleetError, Placement, PlacementRefused } from "./Placement.ts"
+export { FleetError } from "./Host.ts"
+export { Placement, PlacementRefused } from "./Placement.ts"
 export type { JobSchedule, PlacementAttributes, PlacementProps } from "./Placement.ts"
 export { Providers, providers } from "./Providers.ts"
+export { DeployFailed, Service, ServiceRefused } from "./Service.ts"
+export type { ServiceAttributes, ServiceProps } from "./Service.ts"

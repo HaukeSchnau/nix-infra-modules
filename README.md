@@ -52,6 +52,7 @@ nix-infra-modules ../nix-infra-modules` for fast local iteration.
 | `nixosModules.githubRunner` | NixOS | GitHub Actions runner leaf module | [runners](docs/modules/runners.md), `github-runner-example` |
 | `nixosModules.caddyIngress` | NixOS | Tailnet-first Caddy virtual hosts | [ingress](docs/modules/ingress.md) |
 | `nixosModules.appDeployments` | NixOS | Tailnet webhook and shared app deployment plumbing | [app deployments](docs/modules/app-deployments.md) |
+| `nixosModules.services` | NixOS | Services repositories declare at runtime through `Fleet.Service`, within a grant | [services](docs/modules/services.md), `service-controller` |
 | `darwinModules.wireguardProfiles` | nix-darwin | WireGuard profile activation helpers | [workstation](docs/modules/workstation.md) |
 | `darwinModules.developerFonts` | nix-darwin | Developer font defaults | [workstation](docs/modules/workstation.md) |
 | `darwinModules.developerPaths` | nix-darwin | Developer path defaults | [workstation](docs/modules/workstation.md) |

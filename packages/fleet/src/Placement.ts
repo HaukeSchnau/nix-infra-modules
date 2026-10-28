@@ -1,14 +1,10 @@
 import { Resource } from "alchemy"
 import { isResolved } from "alchemy/Diff"
 import * as Provider from "alchemy/Provider"
-import * as Config from "effect/Config"
 import * as Data from "effect/Data"
 import * as Effect from "effect/Effect"
-import * as Option from "effect/Option"
-import * as Redacted from "effect/Redacted"
-import * as Schema from "effect/Schema"
-import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
-import { readFile } from "node:fs/promises"
+import { HttpClientResponse } from "effect/http"
+import { baseUrl, Refusal, send } from "./Host.ts"
 import type { Providers } from "./Providers.ts"
 
 /** When a job runs: a systemd calendar such as `*-*-* 04:00`, or an interval such as `30min`. */
@@ -61,31 +57,6 @@ export class PlacementRefused extends Data.TaggedError("PlacementRefused")<{
   }
 }
 
-export class FleetError extends Data.TaggedError("FleetError")<{
-  readonly request: string
-  readonly status: number
-  readonly body: string
-}> {
-  override get message() {
-    return `${this.request} answered ${this.status}: ${this.body}`
-  }
-}
-
-const Refusal = Schema.Struct({ reasons: Schema.Array(Schema.String) })
-
-const token = Effect.gen(function*() {
-  const direct = yield* Config.option(Config.Redacted("FLEET_TOKEN"))
-  if (Option.isSome(direct)) return Redacted.value(direct.value)
-  const file = yield* Config.String("FLEET_TOKEN_FILE")
-  return (yield* Effect.tryPromise(() => readFile(file, "utf8"))).trim()
-})
-
-/** The host's placement API: `http://<host>:18100`, unless `FLEET_URL` says otherwise. */
-const base = (host: string) =>
-  Config.option(Config.String("FLEET_URL")).pipe(
-    Effect.map(Option.getOrElse(() => `http://${host}:18100`)),
-  )
-
 const body = (props: PlacementProps) => ({
   ...(props.endpoint === undefined ? {} : { endpoint: props.endpoint }),
   secrets: props.secrets ?? {},
@@ -96,19 +67,15 @@ const body = (props: PlacementProps) => ({
 
 const call = (method: "GET" | "PUT" | "POST" | "DELETE", props: Pick<PlacementProps, "host" | "project">, path: string, payload?: unknown) =>
   Effect.gen(function*() {
-    const url = `${yield* base(props.host)}/placements/${props.project}${path}`
-    const plain = HttpClientRequest.make(method)(url).pipe(HttpClientRequest.bearerToken(yield* token))
-    const request = payload === undefined ? plain : HttpClientRequest.bodyJsonUnsafe(plain, payload)
-    const response = yield* HttpClient.execute(request)
+    // The host's placement API: `http://<host>:18100`, unless `FLEET_URL` says otherwise.
+    const url = `${yield* baseUrl(props.host, 18100, "FLEET_URL")}/placements/${props.project}${path}`
+    const response = yield* send(method, url, { payload, handled: [422] })
     if (response.status === 422) {
       const refusal = yield* HttpClientResponse.schemaBodyJson(Refusal)(response)
       return yield* new PlacementRefused({ project: props.project, reasons: refusal.reasons })
     }
-    if (response.status >= 300 && response.status !== 404) {
-      return yield* new FleetError({ request: `${method} ${url}`, status: response.status, body: yield* response.text })
-    }
     return response
-  }).pipe(Effect.provide(FetchHttpClient.layer))
+  })
 
 const attributes = (props: PlacementProps): PlacementAttributes => ({
   project: props.project,
