@@ -754,7 +754,10 @@ let
     fi
 
     ${lib.optionalString (isProject && isService) ''
-      if [ "$new_store_path" != "$old_store_path" ]; then
+      # The tasks also gate a restart that only rebinds the running release, such as a placement's
+      # redeploy: they are what waits for it to be idle. A stopped release has nothing to wait for.
+      if [ "$new_store_path" != "$old_store_path" ] \
+        || systemctl is-active --quiet ${lib.escapeShellArg "${unitName}.service"}; then
         mapfile -t pre_deploy_tasks < <(jq -er '.preDeployOrder[]' "$candidate_release_plan")
         if [ "''${#pre_deploy_tasks[@]}" -gt 0 ]; then
           echo "app-deployment/${name}: running pre-deploy tasks for $resolved_revision"

@@ -893,6 +893,7 @@ in
     grep -Fq -- '--property=NoNewPrivileges=true' ${pairedProjectUpdateScript}
     grep -Fq '.preDeployOrder[]' ${pairedProjectUpdateScript}
     grep -Fq '.preDeployTasks[$task].failureMode' ${pairedProjectUpdateScript}
+    grep -Fq '|| systemctl is-active --quiet app-deployment-demo-project.service; then' ${pairedProjectUpdateScript}
     grep -Fq 'systemd-run' ${projectReleaseCommand}
     grep -Fq '.commands[$command].secrets[]' ${projectReleaseCommand}
     grep -Fq -- '--working-directory="$working_directory"' ${projectReleaseCommand}
