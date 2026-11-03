@@ -114,6 +114,9 @@ in
 
           "${pruneUnitName}" = {
             description = "Prune stale Podman CI artifacts";
+            # A rootless store whose user has no running Podman yet needs NixOS's setuid
+            # newuidmap and newgidmap to set up its user namespace.
+            path = [ "/run/wrappers" ];
             serviceConfig = {
               Type = "oneshot";
             };
