@@ -272,8 +272,8 @@ topology and the set of its jobs still come from the host's configuration.
 ```console
 PUT    /placements/<project>        apply a placement, the JSON body
 POST   /placements/<project>/plan   check one without applying it
-GET    /placements/<project>        the placement that applies
-DELETE /placements/<project>        back to the configuration's values
+GET    /placements/<project>        the repository's placement
+DELETE /placements/<project>        back to the grant's default, if it has one
 ```
 
 Both PUT and the dry run also plan the release the host accepts, its compiled descriptor, with
@@ -309,14 +309,19 @@ timers; a rescheduled timer restarts. Its route goes to
 from `/etc/app-deployments/sites`. Then it asks the update unit to activate the current release
 again. Parameters merge over the configuration's; secrets add to them.
 
-`app-deployments-placements.service` runs before the releases start, at boot and after every
-switch that changes a release's registration. It binds each placement again over the current
-compiled bindings and redeploys a release whose bindings changed. It deletes a placement the grant
-no longer allows, so the release falls back to its compiled bindings, and fails so the deletion
-shows. It writes the credentials and drop-ins a boot emptied from `/run`.
+A grant's `default` is the placement the host applies itself while the repository has placed
+none, in the same form as the JSON above. A host that the repository doesn't place gives its
+releases their hostnames and secrets this way. A repository placement replaces the default
+entirely, and deleting it brings the default back; DELETE answers 422 with the reasons when the
+default can't apply. The controller plans a default before it binds it, as the webhook plans a
+repository's placement, and a route follows what is bound.
 
-A placement's values replace the configuration's, so a project moves without downtime: grant
-first, placement second, then remove its old values from the configuration.
+`app-deployments-placements.service` runs before the releases start, at boot and after every
+switch that changes a release's registration. It binds what applies to each granted release
+again over the current compiled bindings, the repository's placement or else the grant's default,
+and redeploys a release whose bindings changed. It deletes a repository placement the grant no
+longer allows, so the default applies again, and fails so the deletion shows; a default the grant
+refuses fails it too. It writes the credentials and drop-ins a boot emptied from `/run`.
 
 A switch can move the host's contract or bindings ahead of the active release, such as a lock
 bump that adds an ingress header. The release then keeps running on the plan and Runtime Context

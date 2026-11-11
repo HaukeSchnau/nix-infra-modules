@@ -140,10 +140,8 @@ class BindingTests(unittest.TestCase):
         self.assertEqual(placements.policy_file(self.app), str(self.dir / "placement" / "policy.json"))
 
     def test_routes_list_placed_releases_with_their_site(self):
-        (self.dir / "placement").mkdir()
-        (self.dir / "placement" / "placement.json").write_text(json.dumps(
-            {"endpoint": {"hostName": "shop.example.org", "visibility": "public"}, "secrets": {}, "parameters": {}, "memory": {}}
-        ))
+        stored = placements.check("shop", GRANT, {"endpoint": {"hostName": "shop.example.org", "visibility": "public"}})
+        placements.write_bound(self.app, stored, placements.bindings("shop", self.app, stored))
         placements.ROUTES_FILE = self.dir / "routes.json"
         placements.write_routes({"shop": self.app, "blog": {"placement": None}})
         self.assertEqual(json.loads(placements.ROUTES_FILE.read_text()), [{
@@ -210,12 +208,114 @@ class RestoreTests(unittest.TestCase):
         _, commands = self.restore()
         self.assertEqual(commands, [["systemctl", "daemon-reload"]])
 
+    def test_a_placement_whose_key_cant_be_decrypted_is_kept_for_the_next_restore(self):
+        stored = placements.check("shop", GRANT, {"secrets": {"apiKey": "projects/shop/api-key"}})
+        placements.write_bound(self.app, stored, placements.bindings("shop", self.app, stored))
+        with mock.patch.object(placements, "decrypt", side_effect=placements.Refused(["no key"])):
+            failures, commands = self.restore()
+        self.assertEqual(failures, 1)
+        self.assertTrue((self.dir / "placement" / "placement.json").is_file())
+        self.assertNotIn("start", [word for command in commands for word in command])
+
     def test_a_placement_the_grant_no_longer_allows_is_deleted(self):
         self.app["placement"]["grant"] = {**GRANT, "hostNames": ["other.example.org"]}
         failures, commands = self.restore()
         self.assertEqual(failures, 1)
         self.assertFalse((self.dir / "placement").exists())
         self.assertEqual(json.loads(placements.ROUTES_FILE.read_text()), [])
+        self.assertIn(["systemctl", "start", "--no-block", "app-deployment-shop-update.service"], commands)
+
+
+class DefaultTests(unittest.TestCase):
+    """A grant's default: the placement the host applies itself while the repository has placed none."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        placements.ROUTES_FILE = self.dir / "routes.json"
+        placements.CREDENTIALS = self.dir / "run"
+        placements.UNITS = self.dir / "units"
+        files = {
+            "policy.json": {"descriptor": {}, "managedJobs": [], "bindings": {"parameters": {"otlp": "http://o"}, "secrets": [], "resources": {}}},
+            "secrets.json": {},
+            "runtime.json": {"endpoints": {"web": {"listen": {"port": 18200}}}},
+        }
+        for name, value in files.items():
+            (self.dir / name).write_text(json.dumps(value))
+        (self.dir / "current-revision").write_text("abc\n")
+        (self.dir / "current").symlink_to(self.dir)
+        default = {"endpoint": {"hostName": "shop.example.org", "visibility": "tailnet"}, "secrets": {}, "parameters": {"title": "Host"}}
+        self.app = {
+            "deliveryMode": "source",
+            "requestedReleaseFile": str(self.dir / "requested-release.json"),
+            "requestedRevisionFile": str(self.dir / "requested-revision"),
+            "updateUnit": "app-deployment-shop-update.service",
+            "placement": {
+                "grant": {**GRANT, "default": default}, "port": 18200, "stateDir": str(self.dir), "action": "web",
+                "policy": str(self.dir / "policy.json"), "secretBindings": str(self.dir / "secrets.json"),
+                "runtimeBase": str(self.dir / "runtime.json"), "site": "/etc/app-deployments/sites/shop.caddy",
+                "credentialUnits": ["app-deployment-shop.service"],
+            },
+        }
+
+    def run_quietly(self, action, plan=None):
+        with mock.patch.object(placements.subprocess, "run") as run, mock.patch.object(placements, "plan", side_effect=plan):
+            result = action()
+        return result, [call.args[0] for call in run.call_args_list]
+
+    def bound(self):
+        policy = json.loads((self.dir / "placement" / "policy.json").read_text())
+        return policy["bindings"]["parameters"], json.loads(placements.ROUTES_FILE.read_text())
+
+    def test_the_default_applies_while_the_repository_has_placed_none(self):
+        failures, commands = self.run_quietly(lambda: placements.restore({"shop": self.app}))
+        parameters, routes = self.bound()
+        self.assertEqual((failures, parameters), (0, {"otlp": "http://o", "title": "Host"}))
+        self.assertEqual([route["hostName"] for route in routes], ["shop.example.org"])
+        self.assertEqual((self.dir / "placement" / "host").read_text(), "shop.example.org\n")
+        # The repository has placed nothing, so the webhook still answers that.
+        self.assertIsNone(placements.get(self.app))
+        self.assertIn(["systemctl", "start", "--no-block", "app-deployment-shop-update.service"], commands)
+
+    def test_a_repository_placement_replaces_the_default_and_its_deletion_brings_it_back(self):
+        self.run_quietly(lambda: placements.restore({"shop": self.app}))
+        mine = {"endpoint": {"hostName": "beta.shop.example.net", "visibility": "public"}, "parameters": {"title": "Repo"}}
+        self.run_quietly(lambda: placements.put("shop", self.app, {"shop": self.app}, mine, dry_run=False))
+        parameters, routes = self.bound()
+        self.assertEqual((parameters["title"], [route["hostName"] for route in routes]), ("Repo", ["beta.shop.example.net"]))
+
+        deleted, commands = self.run_quietly(lambda: placements.delete("shop", self.app, {"shop": self.app}))
+        parameters, routes = self.bound()
+        self.assertTrue(deleted)
+        self.assertEqual((parameters["title"], [route["hostName"] for route in routes]), ("Host", ["shop.example.org"]))
+        self.assertIn(["systemctl", "start", "--no-block", "app-deployment-shop-update.service"], commands)
+
+    def test_a_default_outside_the_grant_fails_and_binds_nothing(self):
+        self.app["placement"]["grant"]["default"]["endpoint"]["hostName"] = "other.example.org"
+        failures, _ = self.run_quietly(lambda: placements.restore({"shop": self.app}))
+        self.assertEqual(failures, 1)
+        self.assertFalse((self.dir / "placement").exists())
+        self.assertEqual(json.loads(placements.ROUTES_FILE.read_text()), [])
+
+    def test_a_default_the_release_cant_run_with_binds_nothing(self):
+        failures, _ = self.run_quietly(lambda: placements.restore({"shop": self.app}), plan=placements.Refused(["the release: missing required secret binding: apiKey"]))
+        self.assertEqual(failures, 1)
+        self.assertFalse((self.dir / "placement").exists())
+        self.assertEqual(json.loads(placements.ROUTES_FILE.read_text()), [])
+
+    def test_deleting_the_repository_placement_says_when_the_default_is_refused(self):
+        self.run_quietly(lambda: placements.put("shop", self.app, {"shop": self.app}, {"parameters": {"title": "Repo"}}, dry_run=False))
+        self.app["placement"]["grant"]["default"]["endpoint"]["hostName"] = "other.example.org"
+        with self.assertRaises(placements.Refused):
+            self.run_quietly(lambda: placements.delete("shop", self.app, {"shop": self.app}))
+        self.assertFalse((self.dir / "placement").exists())
+
+    def test_dropping_the_default_unbinds_the_release(self):
+        self.run_quietly(lambda: placements.restore({"shop": self.app}))
+        self.app["placement"]["grant"] = GRANT
+        failures, commands = self.run_quietly(lambda: placements.restore({"shop": self.app}))
+        self.assertEqual(failures, 0)
+        self.assertFalse((self.dir / "placement").exists())
+        self.assertFalse((self.dir / "units" / "app-deployment-shop.service.d" / "50-placement.conf").exists())
         self.assertIn(["systemctl", "start", "--no-block", "app-deployment-shop-update.service"], commands)
 
 
