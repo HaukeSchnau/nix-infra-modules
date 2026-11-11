@@ -471,7 +471,7 @@ let
     set -euo pipefail
 
     export PATH=${lib.escapeShellArg shellPath}:$PATH
-    export NIX_CONFIG=$'experimental-features = nix-command flakes\nwarn-dirty = false${
+    export NIX_CONFIG=$'extra-experimental-features = nix-command flakes\nwarn-dirty = false${
       lib.optionalString (
         cfg.delivery.mode == "cache"
       ) "\\nextra-substituters = ${cfg.delivery.cacheStore}\\nbuilders = \\nmax-jobs = 0"
