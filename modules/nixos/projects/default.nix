@@ -105,26 +105,7 @@ let
       instance = mkOption {
         type = types.strMatching namePattern;
         default = "default";
-        description = "Placement identity; other than default it prefixes the generated hostname.";
-      };
-      endpoint = {
-        hostName = mkOption {
-          type = types.nullOr hostNameType;
-          default = null;
-          description = "Canonical hostname; defaults to <project>.<releaseDomain>.";
-        };
-        aliases = mkOption {
-          type = types.listOf hostNameType;
-          default = [ ];
-          description = "Hostnames redirected to the canonical one.";
-        };
-        visibility = mkOption {
-          type = types.enum [
-            "tailnet"
-            "public"
-          ];
-          default = "tailnet";
-        };
+        description = "Identity of this host's release of the project, in its instance id.";
       };
       delivery = {
         mode = mkOption {
@@ -152,8 +133,8 @@ let
         description = ''
           Limits within which the repository places this release at runtime (app-deployments'
           /placements API): its hostname and visibility, secret bindings, parameters and memory.
-          The placement's values replace the ones here. With a grant and no endpoint.hostName, the
-          release has no hostname until its placement gives it one.
+          The placement's parameters replace the ones here. Without a grant, the release has no
+          hostname and no secrets.
         '';
         type = types.nullOr (
           types.submodule {
@@ -178,6 +159,42 @@ let
                 default = null;
                 description = "Ceiling for the placement's memory limits; null lets it set none.";
               };
+              default = mkOption {
+                default = null;
+                description = ''
+                  The placement this host applies itself while the repository has placed none, within
+                  the grant. A repository placement replaces it.
+                '';
+                type = types.nullOr (
+                  types.submodule {
+                    options = {
+                      endpoint = mkOption {
+                        default = null;
+                        type = types.nullOr (
+                          types.submodule {
+                            options = {
+                              hostName = mkOption { type = hostNameType; };
+                              visibility = mkOption {
+                                type = types.enum [
+                                  "tailnet"
+                                  "public"
+                                ];
+                                default = "tailnet";
+                              };
+                            };
+                          }
+                        );
+                      };
+                      secrets = mkOption {
+                        type = types.attrsOf types.str;
+                        default = { };
+                        description = "The SOPS key each secret reads, by the secret's name.";
+                      };
+                      parameters = parametersOption;
+                    };
+                  }
+                );
+              };
             };
           }
         );
@@ -188,7 +205,6 @@ let
         description = "Host providers for requirements; host-postgresql creates a database owned by the release user with nightly backups.";
       };
       parameters = parametersOption;
-      secrets = secretsOption;
       jobs = mkOption {
         type = types.attrsOf jobScheduleType;
         default = { };
@@ -327,18 +343,8 @@ let
       executable = mkOption { type = types.nullOr types.str; };
       action = mkOption { type = types.nullOr types.str; };
       health = mkOption { type = types.attrsOf types.unspecified; };
-      hostName = mkOption { type = hostNameType; };
-      aliases = mkOption { type = types.listOf hostNameType; };
-      visibility = mkOption {
-        type = types.enum [
-          "tailnet"
-          "public"
-        ];
-      };
+      grant = mkOption { type = types.nullOr types.attrs; };
       parameters = mkOption { type = types.attrsOf types.unspecified; };
-      secrets = mkOption {
-        type = types.attrsOf (types.submodule { options.path = mkOption { type = types.str; }; });
-      };
       unitDependencies = mkOption { type = types.attrsOf (types.listOf types.str); };
     };
   };
@@ -395,30 +401,29 @@ let
   releaseUser =
     name: project:
     if project.release.runtime.user == null then "app-${name}" else project.release.runtime.user;
-  releaseGroup =
+  # The grant as placements.py reads it, with the default SOPS prefix filled in.
+  releaseGrant =
     name: project:
-    if project.release.runtime.group == null then
-      releaseUser name project
+    let
+      inherit (project.release) grant;
+    in
+    if grant == null then
+      null
     else
-      project.release.runtime.group;
-  defaultReleaseHostName =
-    name: project:
-    lib.optionalString (project.release.instance != "default") "${project.release.instance}."
-    + "${name}.${serviceCfg.releaseDomain}";
-  releaseHostName =
-    name: project:
-    if project.release.endpoint.hostName == null then
-      defaultReleaseHostName name project
-    else
-      project.release.endpoint.hostName;
-  releaseAliases =
-    name: project:
-    lib.unique (
-      project.release.endpoint.aliases
-      ++ lib.optional (releaseHostName name project != defaultReleaseHostName name project) (
-        defaultReleaseHostName name project
-      )
-    );
+      grant
+      // {
+        secretPrefix = if grant.secretPrefix == null then "projects/${name}/" else grant.secretPrefix;
+      };
+  # A name the grant allows: exactly, or below a `*.` suffix, as placements.py's granted_host.
+  grantsHost =
+    grant: hostName:
+    lib.any (
+      pattern:
+      if lib.hasPrefix "*." pattern then
+        lib.hasSuffix (lib.removePrefix "*" pattern) hostName
+      else
+        pattern == hostName
+    ) grant.hostNames;
   postgresqlMajor = lib.toInt (lib.versions.major config.services.postgresql.package.version);
   # Host-allocated resources; secret requirements are bound by releaseApp.
   releaseBindings =
@@ -488,22 +493,7 @@ let
           inherit (credential) netrcHost username;
           giteaTokenSecretName = credential.tokenSecretName;
         };
-        domain =
-          if policy.grant != null && policy.endpoint.hostName == null then
-            null
-          else
-            releaseHostName name project;
-        public = policy.endpoint.visibility == "public";
-        grant =
-          if policy.grant == null then
-            null
-          else
-            policy.grant
-            // {
-              secretPrefix =
-                if policy.grant.secretPrefix == null then "projects/${name}/" else policy.grant.secretPrefix;
-            };
-        secrets = secretPaths name "release" policy.secrets;
+        grant = releaseGrant name project;
         inherit (policy)
           approvedOci
           delivery
@@ -543,10 +533,7 @@ let
         unitDependencies
         ;
       inherit (descriptors.${name}.release) action;
-      secrets = lib.mapAttrs (_: path: { inherit path; }) app.project.secrets;
-      hostName = releaseHostName name project;
-      aliases = releaseAliases name project;
-      visibility = project.release.endpoint.visibility;
+      grant = releaseGrant name project;
     }
   ) releaseProjects;
 
@@ -626,13 +613,6 @@ let
           group = "users";
           restartUnits = [ "project-development-${project.repository.checkout.owner}-reconcile.service" ];
         } project.development.secrets
-      )
-      ++ lib.optionals (project.release != null) (
-        records "release" {
-          user = releaseUser name project;
-          group = releaseGroup name project;
-          restartUnits = [ "app-deployment-${name}.service" ];
-        } project.release.secrets
       )
     ) enabledProjects
   );
@@ -837,10 +817,14 @@ let
 
   repositoryUrls = lib.mapAttrsToList checkoutUrl enabledProjects;
   checkoutPaths = lib.mapAttrsToList checkoutRelativePath checkoutProjects;
-  releaseHostNames = lib.concatLists (
+  # Releases whose grant gives a default placement, with that grant.
+  defaultGrants = lib.filterAttrs (_: grant: grant != null && grant.default != null) (
+    lib.mapAttrs releaseGrant releaseProjects
+  );
+  defaultHostNames = lib.concatLists (
     lib.mapAttrsToList (
-      name: project: [ (releaseHostName name project) ] ++ releaseAliases name project
-    ) releaseProjects
+      _: grant: lib.optional (grant.default.endpoint != null) grant.default.endpoint.hostName
+    ) defaultGrants
   );
 in
 {
@@ -903,10 +887,6 @@ in
         type = types.strMatching "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$";
         default = "dev";
         description = "DNS label under the base domain for development hostnames.";
-      };
-      releaseDomain = mkOption {
-        type = types.str;
-        default = config.vps.baseDomain;
       };
       missingGraceSec = mkOption {
         type = types.ints.positive;
@@ -1000,8 +980,8 @@ in
           message = "Project checkout paths must be unique on a host.";
         }
         {
-          assertion = lib.allUnique releaseHostNames;
-          message = "Project release hostnames must be unique on a host.";
+          assertion = lib.allUnique (map lib.toLower defaultHostNames);
+          message = "The hostnames of the releases' default placements must be unique on a host.";
         }
         {
           assertion =
@@ -1016,13 +996,30 @@ in
           assertion = serviceCfg.garbageCollectAfterSec > serviceCfg.missingGraceSec;
           message = "Project Development garbage collection must occur after the missing-checkout grace.";
         }
-        {
-          assertion =
-            serviceCfg.releaseDomain == config.vps.baseDomain
-            || lib.hasSuffix ".${config.vps.baseDomain}" serviceCfg.releaseDomain;
-          message = "vps.services.projects.releaseDomain must be the base domain or beneath it.";
-        }
       ]
+      # A default placement outside its grant would only fail at runtime, in placements.py.
+      ++ lib.concatLists (
+        lib.mapAttrsToList (
+          name: grant:
+          let
+            inherit (grant.default) endpoint;
+          in
+          [
+            {
+              assertion = endpoint == null || grantsHost grant endpoint.hostName;
+              message = "projects.${name}.release.grant.default claims a hostname its grant doesn't list.";
+            }
+            {
+              assertion = endpoint == null || endpoint.visibility != "public" || grant.public;
+              message = "projects.${name}.release.grant.default is public, but its grant isn't.";
+            }
+            {
+              assertion = lib.all (lib.hasPrefix grant.secretPrefix) (lib.attrValues grant.default.secrets);
+              message = "projects.${name}.release.grant.default reads SOPS keys outside ${grant.secretPrefix}.";
+            }
+          ]
+        ) defaultGrants
+      )
       ++ lib.concatLists (
         lib.mapAttrsToList (
           name: project:
@@ -1038,9 +1035,7 @@ in
                   ) (projectDescriptor.forRealization realization descriptor.requirements)
                 )
               );
-            secrets =
-              (if project.development == null then { } else project.development.secrets)
-              // (if project.release == null then { } else project.release.secrets);
+            secrets = if project.development == null then { } else project.development.secrets;
           in
           [
             {
@@ -1182,20 +1177,6 @@ in
         compression = lib.mkDefault "zstd";
         startAt = lib.mkDefault "*-*-* 23:30:00";
       };
-      vps.services.caddy.virtualHosts = lib.listToAttrs (
-        lib.concatLists (
-          lib.mapAttrsToList (
-            name: project:
-            map (alias: {
-              name = alias;
-              value = {
-                tailscaleOnly = project.release.endpoint.visibility != "public";
-                extraConfig = "redir https://${releaseHostName name project}{uri} 308";
-              };
-            }) (releaseAliases name project)
-          ) releaseProjects
-        )
-      );
     })
   ];
 }

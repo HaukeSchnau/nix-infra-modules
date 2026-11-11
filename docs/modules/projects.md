@@ -27,8 +27,15 @@ are cloned and kept up to date.
     development.secrets.apiKey.sopsKey = "shop/api-key";
     release = {
       delivery.mode = "cache";
-      endpoint = { hostName = "shop.example.net"; visibility = "public"; };
-      secrets.apiKey.sopsKey = "shop/api-key";
+      grant = {
+        hostNames = [ "shop.example.net" ];
+        public = true;
+        secretPrefix = "shop/";
+        default = {
+          endpoint = { hostName = "shop.example.net"; visibility = "public"; };
+          secrets.apiKey = "shop/api-key";
+        };
+      };
       providers.database = "host-postgresql";
     };
   };
@@ -72,15 +79,28 @@ Each placed release becomes an app deployment with the repository's topology
 and this host's bindings. Directory requirements live under
 `/var/lib/app-deployments/<project>/runtime`, `host-postgresql` creates a
 database owned by the release user with nightly logical backups, and bound
-secret requirements use the credential of the same name. Releases default to
-`<project>.<releaseDomain>`, or `<instance>.<project>.<releaseDomain>` for a
-named placement; an explicit `hostName` keeps the generated name as a redirect
-alongside `endpoint.aliases`.
+secret requirements use the credential of the same name.
 
-`release.grant` lets the repository place the release itself, within limits:
-hostnames, public or not, a SOPS key prefix (`projects/<project>/` by default) and a
-memory ceiling. See [Placements](./app-deployments.md#placements). With a grant and
-no `endpoint.hostName`, the release has no hostname until its placement gives one.
+A release's hostname and secrets come only from a placement. `release.grant` sets the
+limits a placement must stay within: hostnames, public or not, a SOPS key prefix
+(`projects/<project>/` by default) and a memory ceiling. See
+[Placements](./app-deployments.md#placements). The repository places the release through
+its stack, or the host places it itself with `grant.default`, the placement that applies
+while the repository has placed none:
+
+```nix
+projects.t3code.release.grant = {
+  hostNames = [ "t3.example.net" ];
+  secretPrefix = "t3code/";
+  default = {
+    endpoint.hostName = "t3.example.net";
+    secrets.apnsPrivateKey = "t3code/apns-private-key";
+    parameters.apnsTeamId = "TEAM";
+  };
+};
+```
+
+A release without a grant has no hostname and no secrets.
 
 `vps.services.projects.resolvedReleases` and `resolvedDevelopments` summarize
 the placements for other modules.

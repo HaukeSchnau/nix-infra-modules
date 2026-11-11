@@ -10,10 +10,14 @@ site stay in NixOS; a placement replaces only the bindings the host's configurat
   drop-ins in /run/systemd/system, which also carry its memory limits and its jobs' schedules.
 - Its route goes to a file agent-service-routes serves and imports the release's compiled site.
 
+A grant may carry a default: the placement the host applies itself while the repository has placed
+none, such as a hostname on a host the repository doesn't place. A repository placement replaces it,
+and deleting that placement brings the default back.
+
 `restore` runs before releases start, at boot and after every switch that changes a release's
-registration: it binds each placement again over the host's current compiled bindings, deletes one
-the grant no longer allows, and writes the credentials and drop-ins a boot emptied from /run. The
-webhook (app-deployments.nix) serves the HTTP side.
+registration: it binds what applies to each granted release again over the host's current compiled
+bindings, deletes a repository placement the grant no longer allows, and writes the credentials and
+drop-ins a boot emptied from /run. The webhook (app-deployments.nix) serves the HTTP side.
 """
 
 import contextlib
@@ -261,8 +265,9 @@ def bindings(project: str, app: dict, stored: dict) -> dict:
     return {"policy": policy, "secrets": secrets, "runtime": runtime}
 
 
-def write_bound(app: dict, stored: dict, bound: dict) -> bool:
-    """Writes the files the update script prefers; whether any of them changed."""
+def write_bound(app: dict, stored: dict, bound: dict, repository: bool = True) -> bool:
+    """Writes the files the update script prefers, and the repository's placement unless the grant's
+    default applies; whether any of them changed."""
     directory = placement_dir(app)
     endpoint = stored.get("endpoint")
     files = {
@@ -270,7 +275,7 @@ def write_bound(app: dict, stored: dict, bound: dict) -> bool:
         "secrets.json": dumps(bound["secrets"]),
         "runtime-base.json": dumps(bound["runtime"]),
         "host": None if endpoint is None else endpoint["hostName"] + "\n",
-        "placement.json": dumps(stored),
+        "placement.json": dumps(stored) if repository else None,
     }
     changed = False
     for name, text in files.items():
@@ -383,28 +388,32 @@ def unmaterialize(project: str, app: dict) -> list[str]:
     return schedule(app, None)
 
 
-def placed(apps: dict) -> dict:
-    """Every release with a placement on this host, by project."""
-    out = {}
-    for project, app in apps.items():
-        if app.get("placement") is None:
-            continue
-        stored = placement_dir(app) / "placement.json"
-        if stored.is_file():
-            out[project] = read_json(stored)
-    return out
+def candidates(app: dict):
+    """The placements that may apply to a granted release, in turn: the repository's, then the
+    default its grant gives. Each with whether the repository placed it."""
+    stored = placement_dir(app) / "placement.json"
+    if stored.is_file():
+        yield read_json(stored), True
+    default = app["placement"]["grant"].get("default")
+    if default is not None:
+        yield default, False
 
 
 def write_routes(apps: dict) -> None:
+    """The routes of the endpoints granted releases were bound to, so a placement that failed to bind
+    publishes none."""
     routes = []
-    for project, stored in sorted(placed(apps).items()):
-        endpoint = stored.get("endpoint")
-        if endpoint is None:
+    for project, app in sorted(apps.items()):
+        bound = None if app.get("placement") is None else placement_dir(app) / "runtime-base.json"
+        if bound is None or not bound.is_file():
             continue
-        registration = apps[project]["placement"]
+        registration = app["placement"]
+        endpoint = read_json(bound)["endpoints"][registration["action"]]
+        if not endpoint.get("hostNames"):
+            continue
         routes.append({
             "name": project,
-            "hostName": endpoint["hostName"],
+            "hostName": endpoint["hostNames"][0],
             "visibility": endpoint["visibility"],
             "upstreamPort": registration["port"],
             "site": registration["site"],
@@ -463,15 +472,60 @@ def put(project: str, app: dict, apps: dict, placement: object, dry_run: bool) -
     return summary
 
 
+def settle(project: str, app: dict) -> tuple[list[str], tuple | None]:
+    """Binds what applies to a granted release again: its repository placement, else its grant's
+    default. Deletes a repository placement the grant no longer allows, and unbinds the release when
+    nothing applies. A placement that the grant allows but that can't be bound now, say for a key
+    SOPS can't decrypt, stays as it is. Returns the problems and the change for `apply`, if any."""
+    registration = app["placement"]
+    problems = []
+
+    def problem(text: str) -> None:
+        print(f"placements: {project}: {text}", flush=True)
+        problems.append(text)
+
+    for placement, repository in candidates(app):
+        whose = "its placement" if repository else "its grant's default"
+        try:
+            stored = check(project, registration["grant"], placement, registration.get("jobs", {}))
+        except Refused as refused:
+            problem(f"{whose} is refused: {refused}")
+            if repository:
+                (placement_dir(app) / "placement.json").unlink()
+            continue
+        try:
+            bound = bindings(project, app, stored)
+            if not repository:
+                # The webhook planned the repository's placement when it was put; a default only now.
+                plan(bound["policy"])
+            values = {name: decrypt(key) for name, key in stored["secrets"].items()}
+        except (Refused, OSError, ValueError) as error:
+            problem(f"{whose} can't be bound: {error}")
+            return problems, None
+        rebound = write_bound(app, stored, bound, repository)
+        rewritten = materialize(project, app, stored, bound["secrets"], values)
+        return problems, (app, rebound, rewritten, schedule(app, stored))
+    if not placement_dir(app).exists():
+        return problems, None
+    shutil.rmtree(placement_dir(app))
+    return problems, (app, True, False, unmaterialize(project, app))
+
+
 def delete(project: str, app: dict, apps: dict) -> bool:
-    if app.get("placement") is None or not (placement_dir(app) / "placement.json").exists():
+    """Deletes the repository's placement; the grant's default applies again, if there is one.
+    Refused, after the deletion, when that default can't apply."""
+    stored = None if app.get("placement") is None else placement_dir(app) / "placement.json"
+    if stored is None or not stored.exists():
         return False
     with locked():
-        shutil.rmtree(placement_dir(app))
-        timers = unmaterialize(project, app)
+        stored.unlink()
+        problems, change = settle(project, app)
         write_routes(apps)
         subprocess.run(["systemctl", "daemon-reload"], check=True)
-        apply(app, True, False, timers)
+    if change is not None:
+        apply(*change)
+    if problems:
+        raise Refused(problems)
     return True
 
 
@@ -483,29 +537,17 @@ def get(app: dict) -> dict | None:
 
 
 def restore(apps: dict) -> int:
-    """Binds every placement again and writes /run; the number of placements that failed."""
+    """Binds what applies to every granted release again and writes /run; the number of failures."""
     failures = 0
     changes = []
     with locked():
-        for project, stored in sorted(placed(apps).items()):
-            app = apps[project]
-            try:
-                stored = check(project, app["placement"]["grant"], stored, app["placement"].get("jobs", {}))
-                bound = bindings(project, app, stored)
-                values = {name: decrypt(key) for name, key in stored["secrets"].items()}
-            except Refused as refused:
-                failures += 1
-                print(f"placements: {project}: deleted, since {refused}", flush=True)
-                shutil.rmtree(placement_dir(app))
-                changes.append((app, True, False, unmaterialize(project, app)))
+        for project, app in sorted(apps.items()):
+            if app.get("placement") is None:
                 continue
-            except (OSError, ValueError) as error:
-                failures += 1
-                print(f"placements: {project}: {error}", flush=True)
-                continue
-            rebound = write_bound(app, stored, bound)
-            rewritten = materialize(project, app, stored, bound["secrets"], values)
-            changes.append((app, rebound, rewritten, schedule(app, stored)))
+            problems, change = settle(project, app)
+            failures += len(problems)
+            if change is not None:
+                changes.append(change)
         write_routes(apps)
         subprocess.run(["systemctl", "daemon-reload"], check=False)
     for app, rebound, rewritten, timers in changes:

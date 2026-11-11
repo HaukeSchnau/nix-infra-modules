@@ -295,6 +295,14 @@ let
                           default = null;
                           description = "Ceiling for a placement's memory limits; null lets it set none.";
                         };
+                        default = lib.mkOption {
+                          type = lib.types.nullOr lib.types.attrs;
+                          default = null;
+                          description = ''
+                            The placement the host applies itself while the repository has placed
+                            none, in the /placements API's form. A repository placement replaces it.
+                          '';
+                        };
                       };
                     }
                   );
@@ -1127,7 +1135,12 @@ let
           self.send_json(200, stored) if stored is not None else self.send_json(404, {"error": "no placement"})
           return True
         if method == "DELETE":
-          self.send_json(200 if placements.delete(project, app, APPS) else 404, {"project": project})
+          try:
+            found = placements.delete(project, app, APPS)
+          except placements.Refused as refused:
+            self.send_json(422, {"error": "placement deleted, but the grant's default can't apply", "reasons": refused.reasons})
+            return True
+          self.send_json(200 if found else 404, {"project": project})
           return True
         length = int(self.headers.get("Content-Length", "0") or "0")
         try:

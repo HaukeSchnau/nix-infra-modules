@@ -31,77 +31,99 @@ let
       };
     };
   };
-  host = mkFleetSystem "projects-01" [
-    self.nixosModules.projects
-    {
-      vps.services.projects = {
-        defaultOwner = "demo";
-        # Only the bundle builder's paths are needed; nothing builds a bundle here.
-        devenv = {
-          outPath = pkgs.emptyDirectory;
-          packages.${system} = {
-            devenv = pkgs.hello // {
-              version = "2.3.1";
+  hostWith =
+    grant:
+    mkFleetSystem "projects-01" [
+      self.nixosModules.projects
+      {
+        vps.services.projects = {
+          defaultOwner = "demo";
+          # Only the bundle builder's paths are needed; nothing builds a bundle here.
+          devenv = {
+            outPath = pkgs.emptyDirectory;
+            packages.${system} = {
+              devenv = pkgs.hello // {
+                version = "2.3.1";
+              };
+              devenv-tasks = pkgs.hello;
             };
-            devenv-tasks = pkgs.hello;
+          };
+          releaseCacheStore = "https://cache.example.net";
+          repositoryRemotes.forge = {
+            checkoutUrlPrefix = "git@forge.example.net:";
+            releaseUrlPrefix = "git+https://forge.example.net/";
           };
         };
-        releaseCacheStore = "https://cache.example.net";
-        repositoryRemotes.forge = {
-          checkoutUrlPrefix = "git@forge.example.net:";
-          releaseUrlPrefix = "git+https://forge.example.net/";
+        vps.appDeployments.webhook.enable = false;
+        projects.demo = {
+          source = {
+            outPath = pkgs.emptyDirectory;
+            lib.project = descriptor;
+          };
+          repository = {
+            remote = "forge";
+            path = "team/demo.git";
+          };
+          development = null;
+          release = {
+            delivery.mode = "cache";
+            inherit grant;
+          };
         };
-      };
-      vps.appDeployments.webhook.enable = false;
-      projects.demo = {
-        source = {
-          outPath = pkgs.emptyDirectory;
-          lib.project = descriptor;
+        users.users.demo = {
+          isNormalUser = true;
+          uid = 1000;
         };
-        repository = {
-          remote = "forge";
-          path = "team/demo.git";
+        projects.tool = {
+          source = {
+            outPath = pkgs.emptyDirectory;
+            lib.project = developmentDescriptor;
+          };
+          repository = {
+            remote = "forge";
+            path = "team/tool.git";
+          };
+          development.parameters = { };
+          release = null;
         };
-        development = null;
-        release = {
-          delivery.mode = "cache";
-          endpoint.aliases = [ "demo-old.example.net" ];
-          secrets.token.path = "/run/credentials/demo-token";
-        };
-      };
-      users.users.demo = {
-        isNormalUser = true;
-        uid = 1000;
-      };
-      projects.tool = {
-        source = {
-          outPath = pkgs.emptyDirectory;
-          lib.project = developmentDescriptor;
-        };
-        repository = {
-          remote = "forge";
-          path = "team/tool.git";
-        };
-        development.parameters = { };
-        release = null;
-      };
-    }
-  ];
+      }
+    ];
+  grant = {
+    hostNames = [ "demo.example.net" ];
+    default = {
+      endpoint.hostName = "demo.example.net";
+      secrets.token = "projects/demo/token";
+    };
+  };
+  host = hostWith grant;
+  # A default placement its grant doesn't allow fails the evaluation, before placements.py sees it.
+  outside = hostWith (lib.recursiveUpdate grant { default.endpoint.hostName = "shop.example.net"; });
+  failed = system: map (a: a.message) (lib.filter (a: !a.assertion) system.config.assertions);
   release = host.config.vps.services.projects.resolvedReleases.demo;
   app = host.config.vps.services.appDeployments.apps.demo;
 in
 {
   project-controller = pkgs.callPackage ./controller/package.nix { };
   projects-module =
-    assert release.hostName == "demo.example.net";
-    assert release.aliases == [ "demo-old.example.net" ];
     assert
-      release.bindings.token == {
-        kind = "secret";
-        credential = "token";
+      release.grant.default == {
+        endpoint = {
+          hostName = "demo.example.net";
+          visibility = "tailnet";
+        };
+        secrets.token = "projects/demo/token";
+        parameters = { };
       };
+    assert release.grant.secretPrefix == "projects/demo/";
+    assert app.project.grant == release.grant;
+    # The release's hostname and secret come from its placement, so NixOS compiles neither.
+    assert app.domain == null && app.project.secrets == { };
+    assert failed host == [ ];
+    assert
+      failed outside == [
+        "projects.demo.release.grant.default claims a hostname its grant doesn't list."
+      ];
     assert app.delivery.cacheStore == "https://cache.example.net";
-    assert host.config.vps.services.caddy.virtualHosts ? "demo-old.example.net";
     pkgs.runCommand "projects-module-check" { nativeBuildInputs = [ pkgs.jq ]; } ''
       jq -e '
         .schemaVersion == 2
