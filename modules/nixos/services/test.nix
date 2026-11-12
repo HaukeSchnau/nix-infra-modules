@@ -158,8 +158,8 @@ pkgs.testers.runNixOSTest {
         source = ./test-secrets/key.txt;
         mode = "0400";
       };
-      vps.enable = true;
-      vps.services.serviceController = {
+      fleet.enable = true;
+      fleet.services.serviceController = {
         enable = true;
         grantKeyFile = "${pkgs.writeText "grant-key" "test-grant-key"}";
         postgresql.package = pkgs.postgresql_18;
@@ -178,9 +178,9 @@ pkgs.testers.runNixOSTest {
         };
       };
       # The same host after its grant shrank below what runs, and after it revoked a permission.
-      specialisation.shrunk.configuration.vps.services.serviceController.grants.shop.memoryMax =
+      specialisation.shrunk.configuration.fleet.services.serviceController.grants.shop.memoryMax =
         lib.mkForce "256M";
-      specialisation.revoked.configuration.vps.services.serviceController.grants.shop.public =
+      specialisation.revoked.configuration.fleet.services.serviceController.grants.shop.public =
         lib.mkForce false;
     };
 

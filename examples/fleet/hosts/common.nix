@@ -7,7 +7,7 @@
   networking.useDHCP = false;
   networking.firewall.enable = true;
 
-  vps = {
+  fleet = {
     enable = true;
     baseDomain = "example.net";
     caddy.acmeEmail = "admin@example.net";

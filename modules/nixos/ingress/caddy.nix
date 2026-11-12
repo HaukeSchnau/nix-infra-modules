@@ -1,7 +1,7 @@
 { config, lib, ... }:
 let
-  vps = config.vps;
-  cfg = vps.services.caddy;
+  fleet = config.fleet;
+  cfg = fleet.services.caddy;
   virtualHostList = lib.attrValues cfg.virtualHosts;
   virtualHostNames = map (route: route.hostName) virtualHostList;
   rawSiteList = lib.attrValues cfg.rawSites;
@@ -44,7 +44,7 @@ in
 {
   imports = [ ../fleet/foundation.nix ];
 
-  options.vps.services.caddy = {
+  options.fleet.services.caddy = {
     enable = lib.mkEnableOption "Caddy reverse proxy";
 
     metadata = serviceMetadata.mkOptions {
@@ -180,30 +180,30 @@ in
     };
   };
 
-  config = lib.mkIf (vps.enable && cfg.enable) {
+  config = lib.mkIf (fleet.enable && cfg.enable) {
     assertions = [
       {
         assertion = lib.all (route: (route.extraConfig != "") != (route.backend != null)) virtualHostList;
-        message = "Each vps.services.caddy.virtualHosts entry must set exactly one of backend or extraConfig.";
+        message = "Each fleet.services.caddy.virtualHosts entry must set exactly one of backend or extraConfig.";
       }
       {
         assertion = lib.length virtualHostNames == lib.length (lib.unique virtualHostNames);
-        message = "Each vps.services.caddy.virtualHosts entry must use a unique hostName.";
+        message = "Each fleet.services.caddy.virtualHosts entry must use a unique hostName.";
       }
       {
         assertion = lib.length rawSiteLabels == lib.length (lib.unique rawSiteLabels);
-        message = "Each vps.services.caddy.rawSites entry must use a unique siteLabel.";
+        message = "Each fleet.services.caddy.rawSites entry must use a unique siteLabel.";
       }
       {
         assertion = lib.intersectLists virtualHostNames rawSiteLabels == [ ];
-        message = "vps.services.caddy.rawSites siteLabel values must not overlap with virtual host hostName values.";
+        message = "fleet.services.caddy.rawSites siteLabel values must not overlap with virtual host hostName values.";
       }
     ];
 
     services.caddy = {
       enable = true;
       dataDir = toString cfg.dataDir;
-      email = vps.caddy.acmeEmail;
+      email = fleet.caddy.acmeEmail;
 
       virtualHosts = lib.mapAttrs (_: route: {
         hostName = route.hostName;

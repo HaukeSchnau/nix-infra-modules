@@ -13,7 +13,7 @@
 }:
 let
   cfg = config.projects;
-  serviceCfg = config.vps.services.projects;
+  serviceCfg = config.fleet.services.projects;
   serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
   projectDescriptor = import ../../../lib/project-descriptor.nix { inherit lib; };
   projectRuntime = import ../../../lib/project-runtime.nix { inherit lib; };
@@ -119,7 +119,7 @@ let
         cacheStore = mkOption {
           type = types.nullOr types.str;
           default = serviceCfg.releaseCacheStore;
-          defaultText = lib.literalExpression "config.vps.services.projects.releaseCacheStore";
+          defaultText = lib.literalExpression "config.fleet.services.projects.releaseCacheStore";
           description = "Binary cache holding CI-promoted outputs for cache delivery.";
         };
       };
@@ -292,7 +292,7 @@ let
       repository = {
         remote = mkOption {
           type = types.str;
-          description = "Name of a vps.services.projects.repositoryRemotes profile.";
+          description = "Name of a fleet.services.projects.repositoryRemotes profile.";
         };
         path = mkOption {
           type = types.strMatching "^[^/].*";
@@ -306,7 +306,7 @@ let
           owner = mkOption {
             type = types.str;
             default = serviceCfg.defaultOwner;
-            defaultText = lib.literalExpression "config.vps.services.projects.defaultOwner";
+            defaultText = lib.literalExpression "config.fleet.services.projects.defaultOwner";
           };
           path = mkOption {
             type = types.nullOr (types.strMatching "^[^/].*");
@@ -704,7 +704,7 @@ let
           systemdUnitRoot = "/run/user/${ownerUid owner}/systemd/user";
           workspaceHostGateway = serviceCfg.workspaces.hostGateway;
           bundleBuilder = lib.getExe bundleBuilder;
-          developmentDomain = "${serviceCfg.developmentLabel}.${config.vps.baseDomain}";
+          developmentDomain = "${serviceCfg.developmentLabel}.${config.fleet.baseDomain}";
           inherit (serviceCfg) portRange missingGraceSec garbageCollectAfterSec;
           idleTimeoutSec = 30 * 60;
           stateRoot = "/var/lib/projects";
@@ -835,7 +835,7 @@ in
       description = "Projects placed on this host.";
     };
 
-    vps.services.projects = {
+    fleet.services.projects = {
       enable = lib.mkEnableOption "declarative Project realizations";
       repositoryCredentials = mkOption {
         type = types.attrsOf (
@@ -955,7 +955,7 @@ in
 
   config = lib.mkMerge [
     {
-      vps.services.projects = {
+      fleet.services.projects = {
         enable = lib.mkDefault (enabledProjects != { });
         inherit resolvedReleases resolvedDevelopments;
         routeSources = lib.genAttrs owners (owner: {
@@ -963,13 +963,13 @@ in
           inherit (serviceCfg) portRange;
         });
       };
-      vps.services.appDeployments.enable = lib.mkDefault (releaseProjects != { });
+      fleet.services.appDeployments.enable = lib.mkDefault (releaseProjects != { });
     }
-    (lib.mkIf (config.vps.enable && serviceCfg.enable) {
+    (lib.mkIf (config.fleet.enable && serviceCfg.enable) {
       assertions = [
         {
           assertion = serviceCfg.portRange.from <= serviceCfg.portRange.to;
-          message = "vps.services.projects.portRange.from must be <= portRange.to.";
+          message = "fleet.services.projects.portRange.from must be <= portRange.to.";
         }
         {
           assertion = lib.allUnique repositoryUrls;
@@ -987,8 +987,8 @@ in
           assertion =
             lib.all (range: serviceCfg.portRange.to < range.from || serviceCfg.portRange.from > range.to)
               [
-                config.vps.appDeployments.projectPortRange
-                config.vps.appDeployments.projectAuxiliaryPortRange
+                config.fleet.appDeployments.projectPortRange
+                config.fleet.appDeployments.projectAuxiliaryPortRange
               ];
           message = "The Project Development port range must not overlap the release port ranges.";
         }
@@ -1084,7 +1084,7 @@ in
       );
 
     })
-    (lib.mkIf (config.vps.enable && serviceCfg.enable) (
+    (lib.mkIf (config.fleet.enable && serviceCfg.enable) (
       lib.optionalAttrs hasHomeManager {
         home-manager.users = lib.mkMerge (
           lib.mapAttrsToList (name: project: {
@@ -1104,7 +1104,7 @@ in
         server.backup.paths = lib.mkIf (postgresUsers != [ ]) (lib.mkAfter [ "/var/backup/postgresql" ]);
       }
     ))
-    (lib.mkIf (config.vps.enable && serviceCfg.enable) {
+    (lib.mkIf (config.fleet.enable && serviceCfg.enable) {
       users.users = lib.genAttrs owners (_: {
         linger = lib.mkDefault true;
       });
@@ -1155,13 +1155,13 @@ in
         ) developmentProjects
       );
 
-      vps.services.projects.metadata.health.units =
+      fleet.services.projects.metadata.health.units =
         map (owner: "project-development-${owner}-reconcile.timer") owners
         ++ lib.mapAttrsToList (name: _: "app-deployment-${name}.service") (
           lib.filterAttrs (_: app: app.backend == "service") releaseApps
         );
 
-      vps.services.appDeployments.apps = releaseApps;
+      fleet.services.appDeployments.apps = releaseApps;
       services.postgresql = lib.mkIf (postgresUsers != [ ]) {
         enable = true;
         ensureDatabases = postgresUsers;

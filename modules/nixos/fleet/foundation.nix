@@ -4,7 +4,7 @@
   ...
 }:
 {
-  options.vps = {
+  options.fleet = {
     enable = lib.mkEnableOption "small-fleet infrastructure modules";
 
     baseDomain = lib.mkOption {
@@ -21,11 +21,11 @@
     };
   };
 
-  config = lib.mkIf config.vps.enable {
+  config = lib.mkIf config.fleet.enable {
     assertions = [
       {
-        assertion = config.vps.baseDomain != "";
-        message = "vps.baseDomain must not be empty when vps.enable = true.";
+        assertion = config.fleet.baseDomain != "";
+        message = "fleet.baseDomain must not be empty when fleet.enable = true.";
       }
     ];
   };

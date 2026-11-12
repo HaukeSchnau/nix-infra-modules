@@ -7,8 +7,8 @@ workers.
 
 ```nix
 {
-  vps.enable = true;
-  vps.services.githubRunner = {
+  fleet.enable = true;
+  fleet.services.githubRunner = {
     enable = true;
     url = "https://github.com/example-org/example-repo";
     tokenFile = "/run/secrets/github-runner-token";

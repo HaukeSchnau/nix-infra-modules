@@ -56,16 +56,16 @@ let
   healthUnitsForServices =
     services: lib.unique (lib.concatMap (service: service.healthUnits) services);
 
-  vpsConfigurations =
+  fleetConfigurations =
     configurations:
     lib.filterAttrs (
-      _: hostConfig: hostConfig.config ? vps && hostConfig.config.vps.enable
+      _: hostConfig: hostConfig.config ? fleet && hostConfig.config.fleet.enable
     ) configurations;
 
   generatedServicesForConfigurations =
     configurations:
-    lib.concatMap (hostConfig: hostConfig.config.vps.generated.services) (
-      lib.attrValues (vpsConfigurations configurations)
+    lib.concatMap (hostConfig: hostConfig.config.fleet.generated.services) (
+      lib.attrValues (fleetConfigurations configurations)
     );
 
   healthUnitsForConfigurations =
@@ -73,8 +73,8 @@ let
 
   ingressRoutesForConfigurations =
     configurations:
-    lib.concatMap (hostConfig: lib.attrValues hostConfig.config.vps.generated.ingressRoutes) (
-      lib.attrValues (vpsConfigurations configurations)
+    lib.concatMap (hostConfig: lib.attrValues hostConfig.config.fleet.generated.ingressRoutes) (
+      lib.attrValues (fleetConfigurations configurations)
     );
 
   ingressDomainsForConfigurations =
@@ -129,6 +129,6 @@ in
     privateIngressDomainsForConfigurations
     publicIngressDomainsForConfigurations
     serviceDomain
-    vpsConfigurations
+    fleetConfigurations
     ;
 }

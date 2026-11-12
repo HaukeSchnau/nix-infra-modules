@@ -11,7 +11,7 @@ let
   };
   gitMirrorsSystem = mkFleetSystem "git-mirror-01" [
     {
-      vps.services.gitMirrors = {
+      fleet.services.gitMirrors = {
         enable = true;
         mirrorAll = false;
         gitea = {
@@ -35,7 +35,7 @@ let
   service = cfg.systemd.services.git-mirrors-sync;
   timer = cfg.systemd.timers.git-mirrors-sync;
   script = builtins.elemAt (lib.splitString " " service.serviceConfig.ExecStart) 1;
-  healthUnits = cfg.vps.services.gitMirrors.metadata.health.units;
+  healthUnits = cfg.fleet.services.gitMirrors.metadata.health.units;
 in
 {
   git-mirrors-example =

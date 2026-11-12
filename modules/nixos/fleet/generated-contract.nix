@@ -4,14 +4,14 @@
   ...
 }:
 let
-  vps = config.vps;
-  caddyVirtualHostList = lib.attrValues vps.services.caddy.virtualHosts;
+  fleet = config.fleet;
+  caddyVirtualHostList = lib.attrValues fleet.services.caddy.virtualHosts;
   generatedTypes = import ../inventory/generated-types.nix { inherit lib; };
   generatedInventory = import ../inventory/generated-inventory.nix { inherit lib; };
 
   generatedServices = generatedInventory.generatedServicesFor {
-    baseDomain = vps.baseDomain;
-    services = vps.services;
+    baseDomain = fleet.baseDomain;
+    services = fleet.services;
   };
 
   generatedIngressRoutes = lib.listToAttrs (
@@ -29,7 +29,7 @@ in
     ../ingress/caddy.nix
   ];
 
-  options.vps.generated = {
+  options.fleet.generated = {
     services = lib.mkOption {
       default = [ ];
       type = lib.types.listOf generatedTypes.generatedServiceType;
@@ -49,9 +49,9 @@ in
     };
   };
 
-  config = lib.mkIf vps.enable {
-    vps.generated.services = generatedServices;
-    vps.generated.healthUnits = generatedInventory.healthUnitsForServices generatedServices;
-    vps.generated.ingressRoutes = generatedIngressRoutes;
+  config = lib.mkIf fleet.enable {
+    fleet.generated.services = generatedServices;
+    fleet.generated.healthUnits = generatedInventory.healthUnitsForServices generatedServices;
+    fleet.generated.ingressRoutes = generatedIngressRoutes;
   };
 }

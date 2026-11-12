@@ -59,7 +59,7 @@ let
           system.primaryUser = "demo";
           users.users.demo.home = "/Users/demo";
           networking.hostName = "mac-01";
-          vps.appDeployments.webhook.tokenSecretName = "/etc/app-deployments/webhook-token";
+          fleet.appDeployments.webhook.tokenSecretName = "/etc/app-deployments/webhook-token";
           projects.demo = {
             source = {
               outPath = pkgs.emptyDirectory;

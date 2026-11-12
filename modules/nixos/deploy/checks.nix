@@ -26,16 +26,16 @@ let
   ];
   typedSystem = mkFleetSystem "app-01" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps.demo = demoApp;
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   staticSystem = mkFleetSystem "static-01" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps.docs = {
           backend = "static";
@@ -56,32 +56,32 @@ let
           ];
         };
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   stoppedSystem = mkFleetSystem "app-stopped" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps.demo = demoApp // {
           enable = false;
         };
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   invalidNameSystem = mkFleetSystem "app-invalid-name" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps."bad.name" = demoApp;
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   invalidHealthSystem = mkFleetSystem "app-invalid-health" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps.demo = demoApp // {
           health = {
@@ -90,18 +90,18 @@ let
           };
         };
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   invalidStaticSystem = mkFleetSystem "app-invalid-static" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps.demo = demoApp // {
           backend = "static";
         };
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   configurationSucceeds =
@@ -155,9 +155,9 @@ let
           ;
       };
       tmpfiles = builtins.filter (lib.hasInfix "/var/lib/app-deployments") config.systemd.tmpfiles.rules;
-      webhook = config.vps.appDeployments.webhookApps.demo;
-      caddy = config.vps.services.caddy.virtualHosts."demo.example.net";
-      healthUnits = config.vps.services.appDeployments.metadata.health.units;
+      webhook = config.fleet.appDeployments.webhookApps.demo;
+      caddy = config.fleet.services.caddy.virtualHosts."demo.example.net";
+      healthUnits = config.fleet.services.appDeployments.metadata.health.units;
     };
   legacyRuntime = pkgs.writeText "legacy-app-runtime.json" (
     builtins.toJSON (appRuntimeProjection legacySystem.config)
@@ -171,9 +171,9 @@ let
       hasUpdateService = builtins.hasAttr "app-deployment-docs-update" staticSystem.config.systemd.services;
       hasUpdateTimer = builtins.hasAttr "app-deployment-docs-update" staticSystem.config.systemd.timers;
       hasUser = builtins.hasAttr "app-docs" staticSystem.config.users.users;
-      caddy = staticSystem.config.vps.services.caddy.virtualHosts."docs.example.net";
-      webhook = staticSystem.config.vps.appDeployments.webhookApps.docs;
-      healthUnits = staticSystem.config.vps.services.appDeployments.metadata.health.units;
+      caddy = staticSystem.config.fleet.services.caddy.virtualHosts."docs.example.net";
+      webhook = staticSystem.config.fleet.appDeployments.webhookApps.docs;
+      healthUnits = staticSystem.config.fleet.services.appDeployments.metadata.health.units;
     }
   );
   serviceUpdateScript =
@@ -323,52 +323,52 @@ let
     };
   projectSystem = mkFleetSystem "project-01" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps.demo-project = projectApp;
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   defaultScheduleProjectSystem = mkFleetSystem "project-default-schedule-01" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps.demo-project = defaultScheduleProjectApp;
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   nullCadenceScheduleProjectSystem = mkFleetSystem "project-null-cadence-schedule-01" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps.demo-project = nullCadenceScheduleProjectApp;
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   disabledScheduleProjectSystem = mkFleetSystem "project-disabled-schedule-01" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps.demo-project = disabledScheduleProjectApp;
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   trustedProjectSystem = mkFleetSystem "project-trusted-01" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps.demo-project = trustedProjectApp;
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   pairedProjectSystem = mkFleetSystem "paired-project-01" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps.demo-project = pairedProjectApp // {
           unitDependencies = {
@@ -378,12 +378,12 @@ let
           };
         };
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   noActivationProjectSystem = mkFleetSystem "no-activation-project-01" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps.demo-project = self.lib.projectDescriptor.releaseApp {
           descriptor = define [
@@ -394,7 +394,7 @@ let
           policy = projectPolicy;
         };
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   projectService = projectSystem.config.systemd.services.app-deployment-demo-project;
@@ -461,7 +461,7 @@ let
   ];
   staticProjectSystem = mkFleetSystem "project-static-01" [
     {
-      vps.services.appDeployments = {
+      fleet.services.appDeployments = {
         enable = true;
         apps.static-project = self.lib.projectDescriptor.releaseApp {
           descriptor = staticProjectDescriptor;
@@ -473,7 +473,7 @@ let
           };
         };
       };
-      vps.appDeployments.webhook.enable = false;
+      fleet.appDeployments.webhook.enable = false;
     }
   ];
   projectRuntime = pkgs.writeText "project-app-runtime.json" (
@@ -500,7 +500,7 @@ let
           User
           ;
       };
-      caddy = projectSystem.config.vps.services.caddy.virtualHosts."demo-project.example.net";
+      caddy = projectSystem.config.fleet.services.caddy.virtualHosts."demo-project.example.net";
       container =
         projectSystem.config.virtualisation.oci-containers.containers.project-demo-project-database;
       recoveryTimer =
@@ -567,7 +567,7 @@ let
         updaterUsesSandbox = lib.hasInfix "--property=NoNewPrivileges=true" trustedProjectUpdateScript;
       };
       staticCaddy =
-        staticProjectSystem.config.vps.services.caddy.virtualHosts."static-project.example.net";
+        staticProjectSystem.config.fleet.services.caddy.virtualHosts."static-project.example.net";
       tmpfiles = builtins.filter (lib.hasInfix "/var/lib/app-deployments/demo-project") projectSystem.config.systemd.tmpfiles.rules;
     }
   );
@@ -909,7 +909,7 @@ in
     grep -Fq -- '--working-directory="$working_directory"' ${projectReleaseCommand}
     grep -Fq 'stream_close_delay 300s' <<< ${
       lib.escapeShellArg
-        pairedProjectSystem.config.vps.services.caddy.virtualHosts."demo-project.example.net".extraConfig
+        pairedProjectSystem.config.fleet.services.caddy.virtualHosts."demo-project.example.net".extraConfig
     }
     grep -Fq 'cleanup_candidate' ${pairedProjectUpdateScript}
     grep -Fq 'requested-release.json' ${pairedProjectUpdateScript}

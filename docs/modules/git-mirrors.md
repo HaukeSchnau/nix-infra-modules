@@ -22,8 +22,8 @@ GitHub.
 
 ```nix
 {
-  vps.enable = true;
-  vps.services.gitMirrors = {
+  fleet.enable = true;
+  fleet.services.gitMirrors = {
     enable = true;
     mirrorAll = false;
     gitea = {

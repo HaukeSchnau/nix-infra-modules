@@ -6,8 +6,8 @@
   ...
 }:
 let
-  cfg = config.vps.appDeployments;
-  apps = config.vps.services.appDeployments.apps;
+  cfg = config.fleet.appDeployments;
+  apps = config.fleet.services.appDeployments.apps;
   hasSops = options ? sops;
   serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
   nixFlakeService = import ./nix-flake-service.nix;
@@ -985,14 +985,14 @@ let
     virtualisation.oci-containers.containers = lib.mkMerge (
       appRuntimeValues [ "virtualisation" "oci-containers" "containers" ] { }
     );
-    vps.appDeployments.webhookApps = lib.mkMerge (
-      appRuntimeValues [ "vps" "appDeployments" "webhookApps" ] { }
+    fleet.appDeployments.webhookApps = lib.mkMerge (
+      appRuntimeValues [ "fleet" "appDeployments" "webhookApps" ] { }
     );
-    vps.services.appDeployments.metadata.health.units = lib.mkMerge (
-      appRuntimeValues [ "vps" "services" "appDeployments" "metadata" "health" "units" ] [ ]
+    fleet.services.appDeployments.metadata.health.units = lib.mkMerge (
+      appRuntimeValues [ "fleet" "services" "appDeployments" "metadata" "health" "units" ] [ ]
     );
-    vps.services.caddy.virtualHosts = lib.mkMerge (
-      appRuntimeValues [ "vps" "services" "caddy" "virtualHosts" ] { }
+    fleet.services.caddy.virtualHosts = lib.mkMerge (
+      appRuntimeValues [ "fleet" "services" "caddy" "virtualHosts" ] { }
     );
   }
   // lib.optionalAttrs hasSops {
@@ -1030,7 +1030,7 @@ in
     ../ingress/caddy.nix
   ];
 
-  options.vps.appDeployments = {
+  options.fleet.appDeployments = {
     projectPortRange = {
       from = lib.mkOption {
         type = lib.types.port;
@@ -1141,7 +1141,7 @@ in
     };
   };
 
-  options.vps.services.appDeployments = {
+  options.fleet.services.appDeployments = {
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -1170,17 +1170,17 @@ in
         assertions =
           lib.mapAttrsToList (name: _app: {
             assertion = builtins.match "^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$" name != null;
-            message = "vps.services.appDeployments.apps.${name}: app names must contain only letters, digits, underscores, and hyphens, start with a letter or digit, and be at most 63 characters.";
+            message = "fleet.services.appDeployments.apps.${name}: app names must contain only letters, digits, underscores, and hyphens, start with a letter or digit, and be at most 63 characters.";
           }) apps
           ++ lib.concatLists (
             lib.mapAttrsToList (name: app: [
               {
                 assertion = app.backend != "service" || (app.port != null && app.executable != null);
-                message = "vps.services.appDeployments.apps.${name}: service deployments require port and executable.";
+                message = "fleet.services.appDeployments.apps.${name}: service deployments require port and executable.";
               }
               {
                 assertion = app.backend != "static" || (app.port == null && app.executable == null);
-                message = "vps.services.appDeployments.apps.${name}: static deployments must not set port or executable.";
+                message = "fleet.services.appDeployments.apps.${name}: static deployments must not set port or executable.";
               }
             ]) resolvedApps
           )
@@ -1188,26 +1188,26 @@ in
             assertion =
               app.project == null
               || (app.project.descriptor.project == name && app.project.descriptor.release != null);
-            message = "vps.services.appDeployments.apps.${name}: Project descriptor must define the matching Release realization.";
+            message = "fleet.services.appDeployments.apps.${name}: Project descriptor must define the matching Release realization.";
           }) resolvedApps
           ++ lib.concatLists (
             lib.mapAttrsToList (
               name: app:
               lib.mapAttrsToList (jobName: job: {
                 assertion = (job.calendar != null) != (job.interval != null);
-                message = "vps.services.appDeployments.apps.${name}.project.jobs.${jobName}: set exactly one of calendar or interval.";
+                message = "fleet.services.appDeployments.apps.${name}.project.jobs.${jobName}: set exactly one of calendar or interval.";
               }) (if app.project == null then { } else app.project.jobs)
             ) resolvedApps
           )
           ++ [
             {
               assertion = cfg.projectPortRange.from <= cfg.projectPortRange.to;
-              message = "vps.appDeployments.projectPortRange.from must be <= projectPortRange.to.";
+              message = "fleet.appDeployments.projectPortRange.from must be <= projectPortRange.to.";
             }
             {
               assertion =
                 builtins.length projectServiceNames <= cfg.projectPortRange.to - cfg.projectPortRange.from + 1;
-              message = "vps.appDeployments.projectPortRange is exhausted.";
+              message = "fleet.appDeployments.projectPortRange is exhausted.";
             }
             {
               assertion = lib.all (
@@ -1221,13 +1221,13 @@ in
             }
             {
               assertion = cfg.projectAuxiliaryPortRange.from <= cfg.projectAuxiliaryPortRange.to;
-              message = "vps.appDeployments.projectAuxiliaryPortRange.from must be <= projectAuxiliaryPortRange.to.";
+              message = "fleet.appDeployments.projectAuxiliaryPortRange.from must be <= projectAuxiliaryPortRange.to.";
             }
             {
               assertion =
                 builtins.length projectAuxiliaryPortRequests
                 <= cfg.projectAuxiliaryPortRange.to - cfg.projectAuxiliaryPortRange.from + 1;
-              message = "vps.appDeployments.projectAuxiliaryPortRange is exhausted.";
+              message = "fleet.appDeployments.projectAuxiliaryPortRange is exhausted.";
             }
             {
               assertion =
@@ -1247,15 +1247,15 @@ in
             }
           ];
       }
-      (lib.mkIf (config.vps.enable && config.vps.services.appDeployments.enable) {
+      (lib.mkIf (config.fleet.enable && config.fleet.services.appDeployments.enable) {
         assertions = [
           {
             assertion = cfg.webhook.enable -> cfg.webhook.tokenSecretName != null;
-            message = "vps.appDeployments.webhook.tokenSecretName must be set when the webhook is enabled.";
+            message = "fleet.appDeployments.webhook.tokenSecretName must be set when the webhook is enabled.";
           }
         ];
 
-        vps.services.appDeployments.metadata.health.units = lib.mkBefore (
+        fleet.services.appDeployments.metadata.health.units = lib.mkBefore (
           lib.optional cfg.webhook.enable "app-deployments-webhook.service"
         );
 
@@ -1300,16 +1300,18 @@ in
       })
     ]
     ++ lib.optionals hasSops [
-      (lib.mkIf (config.vps.enable && config.vps.services.appDeployments.enable && cfg.webhook.enable) {
-        sops.secrets.${cfg.webhook.tokenSecretName} = {
-          owner = "root";
-          mode = "0400";
-        };
-      })
+      (lib.mkIf (config.fleet.enable && config.fleet.services.appDeployments.enable && cfg.webhook.enable)
+        {
+          sops.secrets.${cfg.webhook.tokenSecretName} = {
+            owner = "root";
+            mode = "0400";
+          };
+        }
+      )
       (lib.mkIf
         (
-          config.vps.enable
-          && config.vps.services.appDeployments.enable
+          config.fleet.enable
+          && config.fleet.services.appDeployments.enable
           && cfg.webhook.enable
           && cfg.webhook.placementKeySecretName != null
         )

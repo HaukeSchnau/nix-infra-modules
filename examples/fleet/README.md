@@ -10,7 +10,7 @@ them into inventory, health units and ingress routes.
 
 ## What It Demonstrates
 
-- generated service inventory and `vps-health-check` command wiring
+- generated service inventory and `fleet-health-check` command wiring
 - tailnet-only and public Caddy routes
 - flake-based app deployment plumbing
 
@@ -18,8 +18,8 @@ them into inventory, health units and ingress routes.
 
 ```sh
 nix flake check
-nix eval --json .#nixosConfigurations.core-01.config.vps.generated.services
-nix eval --json .#nixosConfigurations.core-01.config.vps.generated.ingressRoutes
+nix eval --json .#nixosConfigurations.core-01.config.fleet.generated.services
+nix eval --json .#nixosConfigurations.core-01.config.fleet.generated.ingressRoutes
 ```
 
 The example systems are container-like NixOS configurations for evaluation and
