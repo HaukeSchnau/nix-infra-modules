@@ -13,7 +13,7 @@ deployment state in a private repo.
   consume them without duplicating inventory
 - tailnet-first ingress where public exposure is explicit per route
 - small operational commands generated from module metadata, such as
-  `vps-services` and `vps-health-check`
+  `fleet-services` and `fleet-health-check`
 - flake-based application deployment plumbing with health checks and rollback
 - private adapters over public modules for token files, SOPS secrets, real
   domains, and provider policy
@@ -45,7 +45,7 @@ nix-infra-modules ../nix-infra-modules` for fast local iteration.
 | `nixosModules.projects` | NixOS | Development instances and releases of Project repositories on a host | [Projects](docs/modules/projects.md), `projects-module`, `project-controller` |
 | `nixosModules.fleet` | NixOS | Complete small-fleet interface and metadata contract | [fleet](docs/modules/fleet.md), `core-example` |
 | `nixosModules.generatedContract` | NixOS | Generated services, health units and ingress routes | [fleet](docs/modules/fleet.md), `fleet-generated-services-example` |
-| `nixosModules.fleetTooling` | NixOS | `vps-services` and `vps-health-check` commands | [fleet](docs/modules/fleet.md) |
+| `nixosModules.fleetTooling` | NixOS | `fleet-services` and `fleet-health-check` commands | [fleet](docs/modules/fleet.md) |
 | `nixosModules.podmanRuntime` | NixOS | Shared root Podman runtime, proxy network, and host capabilities | [podman runtime](docs/modules/podman-runtime.md), `podman-runtime-example` |
 | `nixosModules.serverBackup` | NixOS | Restic backup policy with file-path secret interface | [server backup](docs/modules/server-backup.md), `server-backup-example` |
 | `nixosModules.gitMirrors` | NixOS | Periodic Gitea-to-GitHub repository mirrors | [git mirrors](docs/modules/git-mirrors.md), `git-mirrors-example` |

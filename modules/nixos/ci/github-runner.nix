@@ -5,8 +5,8 @@
   ...
 }:
 let
-  vps = config.vps;
-  cfg = vps.services.githubRunner;
+  fleet = config.fleet;
+  cfg = fleet.services.githubRunner;
   runnerIndices = lib.range 1 cfg.instanceCount;
   runnerSuffix = index: if cfg.instanceCount == 1 || index == 1 then "" else "-${toString index}";
   runnerInstanceName = index: "${cfg.instanceName}${runnerSuffix index}";
@@ -16,7 +16,7 @@ in
 {
   imports = [ ../fleet/foundation.nix ];
 
-  options.vps.services.githubRunner = {
+  options.fleet.services.githubRunner = {
     enable = lib.mkEnableOption "GitHub Actions self-hosted runner";
 
     metadata = serviceMetadata.mkOptions {
@@ -73,15 +73,15 @@ in
     };
   };
 
-  config = lib.mkIf (vps.enable && cfg.enable) {
+  config = lib.mkIf (fleet.enable && cfg.enable) {
     assertions = [
       {
         assertion = cfg.tokenFile != null;
-        message = "vps.services.githubRunner.tokenFile must be set when the GitHub runner is enabled.";
+        message = "fleet.services.githubRunner.tokenFile must be set when the GitHub runner is enabled.";
       }
     ];
 
-    vps.services.githubRunner.metadata.health.units = map (
+    fleet.services.githubRunner.metadata.health.units = map (
       index: "github-runner-${runnerInstanceName index}.service"
     ) runnerIndices;
 

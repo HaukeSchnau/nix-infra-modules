@@ -16,7 +16,7 @@
     })
   ];
 
-  vps.services = {
+  fleet.services = {
     caddy = {
       enable = true;
       virtualHosts."admin.example.net" = {
@@ -28,5 +28,5 @@
     appDeployments.enable = true;
   };
 
-  vps.appDeployments.webhook.enable = false;
+  fleet.appDeployments.webhook.enable = false;
 }

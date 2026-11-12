@@ -541,7 +541,7 @@ let
           }
           // projectJobTimers;
 
-        vps.appDeployments.webhookApps.${name} = {
+        fleet.appDeployments.webhookApps.${name} = {
           bindingPolicyFile = lib.optionalString isProject "${projectBindingPolicy}";
           compatibilityFile = "${stateDir}/compatibility.json";
           deliveryMode = cfg.delivery.mode;
@@ -569,7 +569,7 @@ let
           "app-deployments/sites/${name}.caddy".text = projectServiceCaddyConfig;
         };
 
-        vps.services.appDeployments.metadata.health.units = lib.optional isService "${unitName}.service";
+        fleet.services.appDeployments.metadata.health.units = lib.optional isService "${unitName}.service";
 
         virtualisation.oci-containers.containers = lib.mapAttrs' (
           auxiliaryName: auxiliary:
@@ -586,7 +586,7 @@ let
           }
         ) projectAuxiliaries;
 
-        vps.services.caddy.virtualHosts = lib.optionalAttrs (cfg.domain != null) {
+        fleet.services.caddy.virtualHosts = lib.optionalAttrs (cfg.domain != null) {
           ${cfg.domain} =
             if isService && !isProject then
               {
@@ -624,5 +624,5 @@ if internal then
   runtimeModule
 else
   {
-    config.vps.services.appDeployments.apps.${app.name} = declaredApp;
+    config.fleet.services.appDeployments.apps.${app.name} = declaredApp;
   }

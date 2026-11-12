@@ -5,8 +5,8 @@
   ...
 }:
 let
-  vps = config.vps;
-  cfg = vps.services.gitMirrors;
+  fleet = config.fleet;
+  cfg = fleet.services.gitMirrors;
   serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
 
   repositoryType = lib.types.submodule (
@@ -101,7 +101,7 @@ in
 {
   imports = [ ../fleet/foundation.nix ];
 
-  options.vps.services.gitMirrors = {
+  options.fleet.services.gitMirrors = {
     enable = lib.mkEnableOption "periodic Gitea-to-GitHub repository mirrors";
 
     metadata = serviceMetadata.mkOptions {
@@ -220,23 +220,23 @@ in
     };
   };
 
-  config = lib.mkIf (vps.enable && cfg.enable) {
+  config = lib.mkIf (fleet.enable && cfg.enable) {
     assertions = [
       {
         assertion = cfg.mirrorAll || cfg.repositories != { };
-        message = "vps.services.gitMirrors.repositories must not be empty when gitMirrors is enabled with mirrorAll=false.";
+        message = "fleet.services.gitMirrors.repositories must not be empty when gitMirrors is enabled with mirrorAll=false.";
       }
       {
         assertion = cfg.gitea.tokenFile != null;
-        message = "vps.services.gitMirrors.gitea.tokenFile must be set when gitMirrors is enabled.";
+        message = "fleet.services.gitMirrors.gitea.tokenFile must be set when gitMirrors is enabled.";
       }
       {
         assertion = cfg.github.tokenFile != null;
-        message = "vps.services.gitMirrors.github.tokenFile must be set when gitMirrors is enabled.";
+        message = "fleet.services.gitMirrors.github.tokenFile must be set when gitMirrors is enabled.";
       }
     ];
 
-    vps.services.gitMirrors.metadata.health.units = [
+    fleet.services.gitMirrors.metadata.health.units = [
       "git-mirrors-sync.timer"
     ];
 

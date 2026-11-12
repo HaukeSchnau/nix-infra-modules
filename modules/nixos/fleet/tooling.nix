@@ -5,25 +5,25 @@
   ...
 }:
 let
-  vps = config.vps;
+  fleet = config.fleet;
   generatedInventory = import ../inventory/generated-inventory.nix { inherit lib; };
-  inventoryRows = generatedInventory.formatInventoryRows vps.generated.services;
+  inventoryRows = generatedInventory.formatInventoryRows fleet.generated.services;
   healthUnitArgs = lib.concatStringsSep " " (
-    builtins.map lib.escapeShellArg vps.generated.healthUnits
+    builtins.map lib.escapeShellArg fleet.generated.healthUnits
   );
 in
 {
   imports = [ ./generated-contract.nix ];
 
-  options.vps.tooling.enable = lib.mkOption {
+  options.fleet.tooling.enable = lib.mkOption {
     type = lib.types.bool;
     default = true;
     description = "Install generated fleet inventory and health-check commands.";
   };
 
-  config = lib.mkIf (vps.enable && vps.tooling.enable) {
+  config = lib.mkIf (fleet.enable && fleet.tooling.enable) {
     environment.systemPackages = [
-      (pkgs.writeShellScriptBin "vps-services" ''
+      (pkgs.writeShellScriptBin "fleet-services" ''
                     printf '%-16s %-22s %-16s %-36s %s\n' "SERVICE" "DISPLAY" "CATEGORY" "DOMAIN" "HEALTH_UNITS"
                     printf '%-16s %-22s %-16s %-36s %s\n' "-------" "-------" "--------" "------" "------------"
 
@@ -35,7 +35,7 @@ in
         VPS_INVENTORY
       '')
 
-      (pkgs.writeShellScriptBin "vps-health-check" ''
+      (pkgs.writeShellScriptBin "fleet-health-check" ''
         failed=0
         units=( ${healthUnitArgs} )
 

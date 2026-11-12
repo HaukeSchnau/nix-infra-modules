@@ -1,11 +1,11 @@
 # App Deployments
 
-`vps.services.appDeployments.apps` is the primary interface for durable,
+`fleet.services.appDeployments.apps` is the primary interface for durable,
 flake-packaged services and static sites:
 
 ```nix
 {
-  vps.services.appDeployments = {
+  fleet.services.appDeployments = {
     enable = true;
     apps.demo = {
       domain = "demo.example.net";
@@ -16,7 +16,7 @@ flake-packaged services and static sites:
     };
   };
 
-  vps.appDeployments.webhook.tokenSecretName = "app-deployments/webhook-token";
+  fleet.appDeployments.webhook.tokenSecretName = "app-deployments/webhook-token";
 }
 ```
 
@@ -25,7 +25,7 @@ and webhook machinery without creating an application process:
 
 ```nix
 {
-  vps.services.appDeployments.apps.docs = {
+  fleet.services.appDeployments.apps.docs = {
     backend = "static";
     domain = "docs.example.net";
     public = true;
@@ -63,7 +63,7 @@ let
   descriptor = builtins.fromJSON (builtins.readFile ./project.json);
 in
 {
-  vps.services.appDeployments.apps.studienbuch =
+  fleet.services.appDeployments.apps.studienbuch =
     inputs.nix-infra-modules.lib.projectDescriptor.releaseApp {
       inherit descriptor;
       policy = {
@@ -244,7 +244,7 @@ activation symlinks, health checks, and rollback behavior. The Project adapter
 is additive.
 
 Each application's `enable` option controls its lifecycle. The surrounding
-`vps.services.appDeployments.enable` option controls shared deployment plumbing
+`fleet.services.appDeployments.enable` option controls shared deployment plumbing
 such as the webhook, so disabling that shared service does not stop explicitly
 declared applications. This preserves the compatibility adapter's established
 behavior.
@@ -391,5 +391,5 @@ policy.
   application systemd service.
 
 Declare ordinary flake-packaged HTTP apps under
-`vps.services.appDeployments.apps`. Add private wrappers when a real app needs
+`fleet.services.appDeployments.apps`. Add private wrappers when a real app needs
 credentials or deployment policy that should not be public.

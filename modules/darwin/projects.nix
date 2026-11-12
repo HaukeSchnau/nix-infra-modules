@@ -1,7 +1,7 @@
 # Project Releases on a Mac: the nix-darwin side of a release host. CI promotes releases to it
 # through the same webhook as to NixOS hosts, and the same update pipeline
 # (lib/release-host/scripts.nix) activates them; launchd takes systemd's place. The options mirror
-# the NixOS projects module's `projects.<name>.release` and `vps.appDeployments.webhook`, as far as
+# the NixOS projects module's `projects.<name>.release` and `fleet.appDeployments.webhook`, as far as
 # they apply here.
 #
 # A Mac runs a narrower release: cache delivery, a trusted runtime as the primary user, and the
@@ -19,7 +19,7 @@ let
   inherit (lib) mkOption types;
   projectDescriptor = import ../../lib/project-descriptor.nix { inherit lib; };
   hostConfig = config;
-  webhookCfg = config.vps.appDeployments.webhook;
+  webhookCfg = config.fleet.appDeployments.webhook;
   hasSops = options ? sops;
   enabledProjects = lib.filterAttrs (_: project: project.enable) config.projects;
   launchctl = "/bin/launchctl";
@@ -48,8 +48,8 @@ let
           delivery = {
             cacheStore = mkOption {
               type = types.nullOr types.str;
-              default = hostConfig.vps.services.projects.releaseCacheStore;
-              defaultText = lib.literalExpression "config.vps.services.projects.releaseCacheStore";
+              default = hostConfig.fleet.services.projects.releaseCacheStore;
+              defaultText = lib.literalExpression "config.fleet.services.projects.releaseCacheStore";
               description = "Binary cache holding CI-promoted outputs. The host's Nix must trust its key.";
             };
           };
@@ -492,13 +492,13 @@ in
       description = "Projects whose releases this Mac runs.";
     };
 
-    vps.services.projects.releaseCacheStore = mkOption {
+    fleet.services.projects.releaseCacheStore = mkOption {
       type = types.nullOr types.str;
       default = null;
       description = "Default binary cache for cache-delivered releases.";
     };
 
-    vps.appDeployments.webhook = {
+    fleet.appDeployments.webhook = {
       enable = mkOption {
         type = types.bool;
         default = true;
@@ -533,7 +533,7 @@ in
           }
           {
             assertion = webhookCfg.enable -> webhookCfg.tokenSecretName != null;
-            message = "vps.appDeployments.webhook.tokenSecretName must be set when the webhook is enabled.";
+            message = "fleet.appDeployments.webhook.tokenSecretName must be set when the webhook is enabled.";
           }
         ]
         ++ lib.concatLists (

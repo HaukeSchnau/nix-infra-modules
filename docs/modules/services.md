@@ -1,13 +1,13 @@
 # Services
 
-`vps.services.serviceController` runs services that repositories declare at runtime, with no NixOS
+`fleet.services.serviceController` runs services that repositories declare at runtime, with no NixOS
 switch. The host's configuration gives each repository a grant. The repository's Alchemy stack
 declares its services with `Fleet.Service` from [`@schnau/fleet`](../../packages/fleet), and the
 controller runs them within the grant.
 
 ```nix
 {
-  vps.services.serviceController = {
+  fleet.services.serviceController = {
     enable = true;
     grantKeyFile = config.sops.secrets."app-deployments/placement-key".path;
     postgresql.package = pkgs.postgresql_18;

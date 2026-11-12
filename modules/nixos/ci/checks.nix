@@ -11,7 +11,7 @@ let
   };
   githubRunnerSystem = mkFleetSystem "github-ci-01" [
     {
-      vps.services.githubRunner = {
+      fleet.services.githubRunner = {
         enable = true;
         url = "https://github.com/example-org/example-repo";
         tokenFile = "/run/secrets/github-runner-token";
@@ -26,7 +26,7 @@ in
   github-runner-example =
     let
       runners = githubRunnerSystem.config.services.github-runners;
-      healthUnits = githubRunnerSystem.config.vps.services.githubRunner.metadata.health.units;
+      healthUnits = githubRunnerSystem.config.fleet.services.githubRunner.metadata.health.units;
     in
     pkgs.runCommand "github-runner-example" { } ''
       test '${runners."github-ci".url}' = 'https://github.com/example-org/example-repo'

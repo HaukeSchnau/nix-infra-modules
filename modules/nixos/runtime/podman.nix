@@ -5,9 +5,9 @@
   ...
 }:
 let
-  vps = config.vps;
-  cfg = vps.services.podman;
-  hostCapabilities = vps.hostCapabilities;
+  fleet = config.fleet;
+  cfg = fleet.services.podman;
+  hostCapabilities = fleet.hostCapabilities;
   pruneUnitName = "${config.networking.hostName}-podman-prune";
   pruneUntil = "168h";
   serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
@@ -15,7 +15,7 @@ in
 {
   imports = [ ../fleet/foundation.nix ];
 
-  options.vps = {
+  options.fleet = {
     services.podman = {
       enable = lib.mkEnableOption "Podman runtime for VPS services";
 
@@ -57,10 +57,10 @@ in
     };
   };
 
-  config = lib.mkIf vps.enable (
+  config = lib.mkIf fleet.enable (
     lib.mkMerge [
       {
-        vps.hostCapabilities.containerNetworking.enable = lib.mkDefault cfg.enable;
+        fleet.hostCapabilities.containerNetworking.enable = lib.mkDefault cfg.enable;
 
         nix.settings = lib.mkIf hostCapabilities.networkedNixBuilds.enable {
           sandbox = lib.mkForce false;

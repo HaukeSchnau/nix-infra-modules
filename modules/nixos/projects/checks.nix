@@ -36,7 +36,7 @@ let
     mkFleetSystem "projects-01" [
       self.nixosModules.projects
       {
-        vps.services.projects = {
+        fleet.services.projects = {
           defaultOwner = "demo";
           # Only the bundle builder's paths are needed; nothing builds a bundle here.
           devenv = {
@@ -54,7 +54,7 @@ let
             releaseUrlPrefix = "git+https://forge.example.net/";
           };
         };
-        vps.appDeployments.webhook.enable = false;
+        fleet.appDeployments.webhook.enable = false;
         projects.demo = {
           source = {
             outPath = pkgs.emptyDirectory;
@@ -99,8 +99,8 @@ let
   # A default placement its grant doesn't allow fails the evaluation, before placements.py sees it.
   outside = hostWith (lib.recursiveUpdate grant { default.endpoint.hostName = "shop.example.net"; });
   failed = system: map (a: a.message) (lib.filter (a: !a.assertion) system.config.assertions);
-  release = host.config.vps.services.projects.resolvedReleases.demo;
-  app = host.config.vps.services.appDeployments.apps.demo;
+  release = host.config.fleet.services.projects.resolvedReleases.demo;
+  app = host.config.fleet.services.appDeployments.apps.demo;
 in
 {
   project-controller = pkgs.callPackage ./controller/package.nix { };

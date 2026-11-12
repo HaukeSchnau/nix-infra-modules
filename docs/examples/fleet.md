@@ -11,12 +11,12 @@ example.
 enables the app deployment and Caddy modules. From that normal service config,
 the fleet contract generates:
 
-- `vps.generated.services` for inventory and health checks
-- `vps.generated.ingressRoutes` for the host's Caddy routes
+- `fleet.generated.services` for inventory and health checks
+- `fleet.generated.ingressRoutes` for the host's Caddy routes
 
 Useful inspection commands:
 
 ```sh
-nix eval --json .#nixosConfigurations.core-01.config.vps.generated.services
-nix eval --json .#nixosConfigurations.core-01.config.vps.generated.ingressRoutes
+nix eval --json .#nixosConfigurations.core-01.config.fleet.generated.services
+nix eval --json .#nixosConfigurations.core-01.config.fleet.generated.ingressRoutes
 ```

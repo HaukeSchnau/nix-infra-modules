@@ -9,7 +9,7 @@
   ...
 }:
 let
-  cfg = config.vps.services.serviceController;
+  cfg = config.fleet.services.serviceController;
   serviceMetadata = import ../fleet/service-metadata.nix { inherit lib; };
   hasSops = options ? sops;
   usesDatabases = lib.any (grant: grant.databases) (lib.attrValues cfg.grants);
@@ -156,7 +156,7 @@ in
 {
   imports = [ ../fleet/foundation.nix ];
 
-  options.vps.services.serviceController = {
+  options.fleet.services.serviceController = {
     enable = lib.mkEnableOption "the service controller, which runs services repositories declare within their grants";
 
     metadata = serviceMetadata.mkOptions {
@@ -307,32 +307,32 @@ in
     };
   };
 
-  config = lib.mkIf (config.vps.enable && cfg.enable) (
+  config = lib.mkIf (config.fleet.enable && cfg.enable) (
     lib.mkMerge [
       {
         assertions = [
           {
             assertion = cfg.tokenFile != null || cfg.grantKeyFile != null;
-            message = "vps.services.serviceController needs tokenFile or grantKeyFile, or nobody can call it.";
+            message = "fleet.services.serviceController needs tokenFile or grantKeyFile, or nobody can call it.";
           }
           {
             assertion = cfg.ageKeyFile != null;
-            message = "vps.services.serviceController.ageKeyFile must be set; it seals secret values.";
+            message = "fleet.services.serviceController.ageKeyFile must be set; it seals secret values.";
           }
           {
             assertion = cfg.portRange.from <= cfg.portRange.to;
-            message = "vps.services.serviceController.portRange.from must be <= to.";
+            message = "fleet.services.serviceController.portRange.from must be <= to.";
           }
         ]
         ++ map (name: {
           assertion = builtins.match "[a-z]([a-z0-9-]{0,23}[a-z0-9])?" name != null;
-          message = "vps.services.serviceController.grants.${name}: a grant is named like a service: lowercase letters, digits and hyphens, at most 25.";
+          message = "fleet.services.serviceController.grants.${name}: a grant is named like a service: lowercase letters, digits and hyphens, at most 25.";
         }) grantNames
         ++ lib.concatMap (
           name:
           map (other: {
             assertion = !(lib.hasPrefix "${name}-" other);
-            message = "vps.services.serviceController.grants: ${other} starts with ${name}-, so their services' names would overlap.";
+            message = "fleet.services.serviceController.grants: ${other} starts with ${name}-, so their services' names would overlap.";
           }) grantNames
         ) grantNames;
 

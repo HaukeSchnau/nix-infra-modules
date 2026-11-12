@@ -11,7 +11,7 @@ are cloned and kept up to date.
 {
   imports = [ inputs.nix-infra-modules.nixosModules.projects ];
 
-  vps.services.projects = {
+  fleet.services.projects = {
     defaultOwner = "alice";
     devenv = inputs.devenv; # cachix/devenv at 2.3.1
     releaseCacheStore = "https://cache.example.net";
@@ -61,7 +61,7 @@ checkout's tracked files.
 
 Development hostnames are `<project>[-<endpoint>].<developmentLabel>.<baseDomain>`
 for canonical instances and `<instance>[-<endpoint>].…` for ad-hoc ones. The
-module does not publish them itself: `vps.services.projects.routeSources`
+module does not publish them itself: `fleet.services.projects.routeSources`
 lists, per owner, the route file the controller maintains, for an ingress to
 serve.
 
@@ -102,7 +102,7 @@ projects.t3code.release.grant = {
 
 A release without a grant has no hostname and no secrets.
 
-`vps.services.projects.resolvedReleases` and `resolvedDevelopments` summarize
+`fleet.services.projects.resolvedReleases` and `resolvedDevelopments` summarize
 the placements for other modules.
 
 ## nix-darwin
@@ -123,8 +123,8 @@ The options mirror the NixOS ones where they apply. `listen`, `secrets`, `label`
   imports = [ inputs.nix-infra-modules.darwinModules.projects ];
 
   system.primaryUser = "alice";
-  vps.services.projects.releaseCacheStore = "https://cache.example.net";
-  vps.appDeployments.webhook = {
+  fleet.services.projects.releaseCacheStore = "https://cache.example.net";
+  fleet.appDeployments.webhook = {
     host = "100.64.0.10"; # 127.0.0.1 by default; nix-darwin opens no firewall
     port = 18100;
     tokenSecretName = "/etc/app-deployments/webhook-token";

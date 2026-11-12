@@ -12,7 +12,7 @@ lib.nixosSystem {
       networking.hostName = name;
       boot.isContainer = true;
       system.stateVersion = "25.05";
-      vps = {
+      fleet = {
         enable = true;
         baseDomain = "example.net";
         caddy.acmeEmail = "admin@example.net";

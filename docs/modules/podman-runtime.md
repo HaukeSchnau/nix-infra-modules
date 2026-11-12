@@ -5,7 +5,7 @@ fleet services.
 
 ## Public Owns
 
-- `vps.services.podman.enable`
+- `fleet.services.podman.enable`
 - the shared Podman network name, defaulting to `proxy`
 - root Podman, Docker compatibility, and OCI container backend wiring
 - kernel modules and sysctls required by container networking
@@ -21,8 +21,8 @@ fleet services.
 
 ```nix
 {
-  vps.enable = true;
-  vps.services.podman.enable = true;
+  fleet.enable = true;
+  fleet.services.podman.enable = true;
 }
 ```
 

@@ -28,7 +28,7 @@
       health.units = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = healthUnits;
-        description = "Systemd units checked by the generated vps-health-check command.";
+        description = "Systemd units checked by the generated fleet-health-check command.";
       };
     };
 }

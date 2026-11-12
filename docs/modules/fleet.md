@@ -11,10 +11,10 @@ a truthful standalone leaf.
 
 ## Public Owns
 
-- `vps.enable`, `vps.baseDomain`, and `vps.caddy.acmeEmail`
+- `fleet.enable`, `fleet.baseDomain`, and `fleet.caddy.acmeEmail`
 - service-local metadata for inventory rows and health units
 - generated service inventory and ingress routes
-- `vps-services` and `vps-health-check`
+- `fleet-services` and `fleet-health-check`
 
 ## Private Owns
 
@@ -25,6 +25,6 @@ a truthful standalone leaf.
 
 ## Generated Contract
 
-Each host publishes `config.vps.generated.services`, `healthUnits` and
+Each host publishes `config.fleet.generated.services`, `healthUnits` and
 `ingressRoutes`, derived from its own service config, for its inventory,
 health checks and monitoring.

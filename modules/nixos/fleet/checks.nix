@@ -18,9 +18,9 @@ in
 
   fleet-generated-services-example =
     let
-      generatedServices = example.nixosConfigurations.core-01.config.vps.generated.services;
+      generatedServices = example.nixosConfigurations.core-01.config.fleet.generated.services;
       serviceNames = map (service: service.name) generatedServices;
-      healthUnits = example.nixosConfigurations.core-01.config.vps.generated.healthUnits;
+      healthUnits = example.nixosConfigurations.core-01.config.fleet.generated.healthUnits;
     in
     pkgs.runCommand "fleet-generated-services-example" { } ''
       test '${toString (builtins.length generatedServices)}' = '2'
