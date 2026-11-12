@@ -7,6 +7,11 @@
       url = "github:nix-community/home-manager/master";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Only the checks of the nix-darwin modules use it.
+    nix-darwin = {
+      url = "github:nix-darwin/nix-darwin/master";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -14,6 +19,7 @@
       self,
       nixpkgs,
       home-manager,
+      nix-darwin,
     }:
     let
       lib = nixpkgs.lib;
@@ -65,6 +71,7 @@
         wireguardProfiles = ./modules/darwin/wireguard-profiles.nix;
         developerFonts = ./modules/darwin/developer-fonts.nix;
         developerPaths = ./modules/darwin/developer-paths.nix;
+        projects = ./modules/darwin/projects.nix;
       };
 
       homeManagerModules = {
@@ -124,7 +131,13 @@
         }
       );
 
-      checks = lib.genAttrs linuxSystems (
+      checks = {
+        aarch64-darwin = import ./modules/darwin/checks.nix {
+          inherit lib nix-darwin self;
+          pkgs = import nixpkgs { system = "aarch64-darwin"; };
+        };
+      }
+      // lib.genAttrs linuxSystems (
         system:
         let
           pkgs = import nixpkgs { inherit system; };
