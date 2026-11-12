@@ -259,6 +259,33 @@ the previous output for rollback.
 The module does not require private Git credentials unless
 `source.giteaTokenSecretName` is set by the consuming private repo.
 
+## Release hosts
+
+NixOS and nix-darwin hosts ([Projects on nix-darwin](projects.md#nix-darwin)) run the same
+release pipeline, `lib/release-host/scripts.nix`, and the same webhook,
+`lib/release-host/webhook.py`. Each host passes the pipeline its supervisor: how to tell whether
+the service runs, stop, start and restart it, run the activation, and run a pre-deploy task as the
+release user within its timeout. NixOS uses systemd units and `systemd-run`; nix-darwin uses
+`launchctl` on a GUI-session agent and `sudo` with `timeout`. The webhook's apps file gives it
+each app's `updateCommand`, which runs one update and exits once it ends, and
+`updateRunningCommand`, which exits 0 while one runs. Both start the update as its own job,
+`systemctl start` of the update unit on NixOS and `launchctl kickstart` of the update daemon on
+nix-darwin, and wait for its result, so a restart of the webhook doesn't kill an update.
+
+The webhook's API is the same on both:
+
+- `GET /health` answers `{"ok": true, "apps": [...], "system": "<Nix system>"}` without a token.
+- `GET /status/<app>` reports the active, previous and pending revisions.
+- `POST /preflight/<app>` with `{"descriptor": ...}` answers 200 for a compatible descriptor and
+  409 for an incompatible one.
+- `POST /deploy/<app>` with `{"revision", "storePath", "source", "fence"}` queues the release
+  and runs the update. 202 means it was activated, or deferred by a pre-deploy task such as one
+  that waits for idle; the queued request then waits for the periodic update. 409 answers an
+  incompatible release or a stale fence, 503 a failed update and 400 bad input.
+
+Every request but `/health` needs `Authorization: Bearer <token>`, read from the token file on
+each request.
+
 ## Placements
 
 A Project release with `project.grant` can be placed by its repository at runtime, with no

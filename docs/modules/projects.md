@@ -104,3 +104,75 @@ A release without a grant has no hostname and no secrets.
 
 `vps.services.projects.resolvedReleases` and `resolvedDevelopments` summarize
 the placements for other modules.
+
+## nix-darwin
+
+`darwinModules.projects` makes a Mac a release host. CI promotes releases to it through the same
+webhook and the same update pipeline as on NixOS
+([Release hosts](./app-deployments.md#release-hosts)), so a release behaves the same there:
+the candidate is bound against host policy, pre-deploy tasks run in order with their timeout and
+failure mode, `current` and `previous` switch with GC roots, and a failed health check rolls
+back. A release deferred by a task stays queued, and the update daemon retries it every
+`release.autoUpdate.intervalSec`.
+
+The options mirror the NixOS ones where they apply. `listen`, `secrets`, `label` and
+`autoUpdate.intervalSec` are darwin's own:
+
+```nix
+{
+  imports = [ inputs.nix-infra-modules.darwinModules.projects ];
+
+  system.primaryUser = "alice";
+  vps.services.projects.releaseCacheStore = "https://cache.example.net";
+  vps.appDeployments.webhook = {
+    host = "100.64.0.10"; # 127.0.0.1 by default; nix-darwin opens no firewall
+    port = 18100;
+    tokenSecretName = "/etc/app-deployments/webhook-token";
+  };
+
+  projects.shop = {
+    source = inputs.shop;
+    release = {
+      parameters.homeDirectory = "/Users/alice";
+      secrets.apiKey = "/etc/shop/api-key";
+      environment.SHOP_MODE = "release";
+      runtime.workingDirectory = "/Users/alice";
+      listen = {
+        host = "100.64.0.10";
+        port = 3773;
+      };
+    };
+  };
+}
+```
+
+A Mac runs a narrower release:
+
+- The service is a launchd agent of `system.primaryUser` in its GUI session (`release.label`,
+  `org.nixos.app-deployment-<project>` by default), so it can drive the desktop. Releases need that
+  session: turn on automatic login for the user, since without a login the agent can't load and
+  every update fails.
+- Releases arrive by cache delivery only (`release.delivery.cacheStore`) and run as
+  `release.runtime.user` without a sandbox, like a `trusted` release on NixOS. The service, its
+  pre-deploy tasks and its activation share `release.runtime.home`, the user's home by default.
+- Secret bindings are files (`release.secrets`). Activation copies them into
+  `/var/lib/app-deployments/<project>/runtime/secrets`, readable by the release user only, after
+  sops-nix has decrypted its secrets.
+- A switch that changes a release's bindings, such as a secret, parameter or listen address,
+  queues the active release again, as a placement's redeploy does on NixOS: the update binds it
+  anew and restarts the service once its pre-deploy tasks allow. The switch also retries a queued
+  release at once, such as one whose update the reload of the update daemon stopped. A changed
+  secret alone restarts the service.
+- The service listens on `release.listen` itself; the host routes traffic to it. There are no
+  grants or placements, ingress, OCI auxiliaries, maintenance jobs, health recovery or providers,
+  so nix-darwin has none of their options.
+- `source` is a flake whose `lib.project` is the contract.
+
+State lives under `/var/lib/app-deployments/<project>`, as on NixOS, so host tooling finds the
+active release at the same path on both. The webhook and update daemons run as root, because only
+a trusted Nix client may substitute from the release cache, and log to
+`/Library/Logs/app-deployments`. The webhook starts the update daemon and waits for its result,
+so reloading the webhook doesn't kill an update in flight. The host's Nix must trust the cache's signing key.
+
+nix-darwin reloads the agent when its plist changes, which restarts the service outside the
+release flow. The plist changes only with the release's host policy, not with a release.

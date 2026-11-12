@@ -1,6 +1,9 @@
 # nix-darwin Modules
 
-nix-darwin exports are workstation leaves:
+`projects` makes a Mac a release host for Project repositories; see
+`docs/modules/projects.md`.
+
+The other nix-darwin exports are workstation leaves:
 
 - `wireguard-profiles`
 - `developer-fonts`

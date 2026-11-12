@@ -682,6 +682,16 @@ in
         touch $out
       '';
 
+  release-host-webhook =
+    pkgs.runCommand "release-host-webhook" { nativeBuildInputs = [ pkgs.python3 ]; }
+      ''
+        cp ${./placements.py} placements.py
+        cp ${../../../lib/release-host/webhook.py} webhook.py
+        cp ${../../../lib/release-host/test_webhook.py} test_webhook.py
+        python3 -m unittest -v test_webhook
+        touch $out
+      '';
+
   app-deployments-contract = pkgs.runCommand "app-deployments-contract" { } ''
     ${pkgs.bash}/bin/bash -n ${serviceUpdateScript}
     ${pkgs.bash}/bin/bash -n ${staticUpdateScript}
