@@ -125,6 +125,7 @@ in
         assert webhook["EnvironmentVariables"]["APP_DEPLOYMENTS_SYSTEM"] == "aarch64-darwin", webhook
         assert webhook["EnvironmentVariables"]["APP_DEPLOYMENTS_TOKEN_FILE"] == "/etc/app-deployments/webhook-token", webhook
         assert webhook["EnvironmentVariables"]["APP_DEPLOYMENTS_WEBHOOK_HOST"] == "127.0.0.1", webhook
+        assert webhook["EnvironmentVariables"]["PYTHONDONTWRITEBYTECODE"] == "1", webhook
         assert updater["Label"] == "org.nixos.app-deployment-demo-update", updater
         assert updater["StartInterval"] == 600 and updater["ThrottleInterval"] == 1, updater
         EOF

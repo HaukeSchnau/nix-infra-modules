@@ -638,6 +638,8 @@ in
                     (import ../../lib/project-runtime.nix { inherit lib; }).package pkgs
                   );
                   APP_DEPLOYMENTS_SYSTEM = pkgs.stdenv.hostPlatform.system;
+                  # Root can write to a Mac's /nix/store, and bytecode caches there corrupt the paths.
+                  PYTHONDONTWRITEBYTECODE = "1";
                   APP_DEPLOYMENTS_TOKEN_FILE = tokenFile;
                   APP_DEPLOYMENTS_WEBHOOK_HOST = webhookCfg.host;
                   APP_DEPLOYMENTS_WEBHOOK_PORT = toString webhookCfg.port;
