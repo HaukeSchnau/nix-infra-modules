@@ -29,6 +29,9 @@ placement, and any exceptional raw Caddy snippets.
 
 - A managed virtual host sets exactly one of `upstream` or `extraConfig`.
 - Tailnet-only routes restrict source ranges before proxying.
+- Caddy's admin API listens on `/run/caddy/admin.sock`, which only the caddy
+  user and root can open; there is no TCP admin endpoint. `systemctl reload
+  caddy` goes through it.
 
 When a route does not fit the shared model, use `rawSites` in the private
 adapter instead of teaching the public module private service details.

@@ -205,6 +205,13 @@ in
       dataDir = toString cfg.dataDir;
       email = fleet.caddy.acmeEmail;
 
+      # Whoever reaches the admin API can replace every route. On TCP that is
+      # any local user, so it listens in a directory only caddy can enter.
+      # `caddy reload` (the unit's ExecReload) reads the address from here.
+      globalConfig = ''
+        admin unix//run/caddy/admin.sock
+      '';
+
       virtualHosts = lib.mapAttrs (_: route: {
         hostName = route.hostName;
         inherit (cfg) listenAddresses;
@@ -219,6 +226,13 @@ in
         '') cfg.rawSites)
         ++ extraConfigImports
       );
+    };
+
+    # The admin socket's directory: the caddy user can't create it in /run
+    # itself, and 0700 keeps every other user out.
+    systemd.services.caddy.serviceConfig = {
+      RuntimeDirectory = "caddy";
+      RuntimeDirectoryMode = "0700";
     };
 
     systemd.tmpfiles.rules = [
