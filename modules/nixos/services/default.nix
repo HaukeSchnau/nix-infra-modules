@@ -420,7 +420,7 @@ in
       })
 
       (lib.optionalAttrs (options ? server.backup) {
-        server.backup.paths = lib.mkIf usesDatabases (lib.mkAfter [ cfg.backup.directory ]);
+        server.backup.extraPaths = lib.mkIf usesDatabases [ cfg.backup.directory ];
       })
     ]
   );

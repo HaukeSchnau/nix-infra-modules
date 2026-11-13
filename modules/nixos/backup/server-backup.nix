@@ -36,7 +36,13 @@ in
         "/var/lib"
         "/home"
       ];
-      description = "Paths included in host backups.";
+      description = "Paths included in host backups. A host that sets it replaces this default; modules add theirs to `extraPaths`.";
+    };
+
+    extraPaths = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Paths modules add to the backup, such as a database dump directory. They extend `paths`, whether the host keeps its default or sets its own.";
     };
 
     exclude = lib.mkOption {
@@ -116,7 +122,8 @@ in
       repository = cfg.repository;
       passwordFile = cfg.passwordFile;
       environmentFile = cfg.environmentFile;
-      inherit (cfg) paths exclude;
+      paths = cfg.paths ++ cfg.extraPaths;
+      inherit (cfg) exclude;
       extraBackupArgs = [
         "--host"
         config.networking.hostName
