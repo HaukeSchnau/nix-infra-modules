@@ -9,6 +9,8 @@ secret interface.
 - `server.backup.passwordFile`
 - `server.backup.environmentFile`
 - included paths, excludes, retention, and timer settings
+- `server.backup.extraPaths`, where modules add paths of their own, such as a
+  database dump directory
 - the rendered `services.restic.backups.${networking.hostName}` job
 
 ## Private Owns
@@ -29,6 +31,16 @@ secret interface.
     passwordFile = "/run/secrets/restic-password";
     environmentFile = "/run/secrets/restic-env";
   };
+}
+```
+
+`paths` is the host's list: setting it, even with `mkDefault`, replaces the
+default. A module that needs a path backed up adds it to `extraPaths`, which
+extends `paths` either way:
+
+```nix
+{
+  server.backup.extraPaths = [ "/var/backup/postgresql" ];
 }
 ```
 

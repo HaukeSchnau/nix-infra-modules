@@ -1101,7 +1101,7 @@ in
       }
       // lib.optionalAttrs hasSops { sops.secrets = projectSopsSecrets; }
       // lib.optionalAttrs (options ? server.backup) {
-        server.backup.paths = lib.mkIf (postgresUsers != [ ]) (lib.mkAfter [ "/var/backup/postgresql" ]);
+        server.backup.extraPaths = lib.mkIf (postgresUsers != [ ]) [ "/var/backup/postgresql" ];
       }
     ))
     (lib.mkIf (config.fleet.enable && serviceCfg.enable) {
