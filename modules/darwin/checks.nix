@@ -125,7 +125,7 @@ in
         [ ${service} != ${otherService} ]
         grep -Fq "export DEMO_MODE=release" ${service}
         grep -Fq "export HOME=/Users/demo" ${service}
-        grep -Fq 'ln -sfn "$(readlink -f "$0")" /var/lib/app-deployments/demo/runtime/started-service' ${service}
+        grep -Fq '/bin/readlink -f "$0")" /var/lib/app-deployments/demo/runtime/started-service' ${service}
 
         python3 - ${agent} ${webhook} ${updater} <<'EOF'
         import plistlib, sys
@@ -172,6 +172,17 @@ in
         test ${
           lib.boolToString (rejected {
             delivery.cacheStore = null;
+          })
+        } = true
+        # The service script exports the environment: Bash can't set FOO-BAR and keeps UID read-only.
+        test ${
+          lib.boolToString (rejected {
+            environment."FOO-BAR" = "1";
+          })
+        } = true
+        test ${
+          lib.boolToString (rejected {
+            environment.UID = "501";
           })
         } = true
         touch $out

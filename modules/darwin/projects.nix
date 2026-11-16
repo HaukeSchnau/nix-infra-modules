@@ -301,6 +301,9 @@ let
       servicePath = "/etc/app-deployments/${name}/service";
       service = pkgs.writeShellScript "app-deployment-${name}-service" ''
         set -euo pipefail
+        # First, so a switch that retargets the fixed path after bash opened it can only slip in
+        # during the moment until this line runs.
+        ${pkgs.coreutils}/bin/ln -sfn "$(${pkgs.coreutils}/bin/readlink -f "$0")" ${lib.escapeShellArg "${release.runtimeDir}/started-service"}
         ${lib.concatStrings (
           lib.mapAttrsToList (key: value: "export ${key}=${lib.escapeShellArg (toString value)}\n") (
             {
@@ -332,7 +335,6 @@ let
           . "$file"
           set +a
         done
-        ln -sfn "$(readlink -f "$0")" ${lib.escapeShellArg "${release.runtimeDir}/started-service"}
         exec ${release.startScript}
       '';
       secretsDir = "${release.runtimeDir}/secrets";
@@ -579,6 +581,23 @@ in
               {
                 assertion = policy.runtime.user != null && policy.runtime.user == config.system.primaryUser;
                 message = "projects.${name}.release.runtime.user: the release runs as a launchd agent of system.primaryUser; set it to that user.";
+              }
+              {
+                # The service script exports each one, and Bash refuses names that aren't variables or
+                # that it keeps read-only.
+                assertion = lib.all (
+                  key:
+                  builtins.match "[A-Za-z_][A-Za-z0-9_]*" key != null
+                  && !lib.elem key [
+                    "BASHOPTS"
+                    "BASH_VERSINFO"
+                    "EUID"
+                    "PPID"
+                    "SHELLOPTS"
+                    "UID"
+                  ]
+                ) (builtins.attrNames policy.environment);
+                message = "projects.${name}.release.environment: the service script exports each variable, so each name must be one Bash can set.";
               }
               {
                 assertion = release == null || release.ociAuxiliaries == { };
