@@ -175,4 +175,9 @@ a trusted Nix client may substitute from the release cache, and log to
 so reloading the webhook doesn't kill an update in flight. The host's Nix must trust the cache's signing key.
 
 nix-darwin reloads the agent when its plist changes, which restarts the service outside the
-release flow. The plist changes only with the release's host policy, not with a release.
+release flow. The agent therefore starts `/etc/app-deployments/<project>/service`, a script that
+carries the service's environment, PATH and start command, so its plist stays the same across
+switches. A switch that changes any of them leaves the running service alone; it starts on the new
+script at its next start, such as a release or a crash. The script links the definition it started
+from at `runtime/started-service` in the state directory, so the host can see when the running
+service is outdated and restart it at a time that suits it.

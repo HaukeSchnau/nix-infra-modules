@@ -74,6 +74,12 @@ let
   inherit (mac) config;
   update = config.launchd.daemons.app-deployment-demo-update.command;
   agent = config.environment.userLaunchAgents."org.nixos.app-deployment-demo.plist".source;
+  service = config.environment.etc."app-deployments/demo/service".source;
+  # Another environment changes the service script but not the agent's plist.
+  otherEnvironment = (macWith { environment.DEMO_MODE = "other"; }).config;
+  otherAgent =
+    otherEnvironment.environment.userLaunchAgents."org.nixos.app-deployment-demo.plist".source;
+  otherService = otherEnvironment.environment.etc."app-deployments/demo/service".source;
   webhook = config.environment.launchDaemons."org.nixos.app-deployments-webhook.plist".source;
   updater = config.environment.launchDaemons."org.nixos.app-deployment-demo-update.plist".source;
   webhookApps =
@@ -98,7 +104,7 @@ in
         jq -e --arg job "$update_job" '
           .demo.updateCommand == [$job, "run"] and .demo.updateRunningCommand == [$job, "running"]
         ' ${webhookApps} >/dev/null
-        for script in "$update" "$update_job" ${config.launchd.user.agents.app-deployment-demo.command}; do
+        for script in "$update" "$update_job" ${service}; do
           ${pkgs.bash}/bin/bash -n "$script"
         done
         grep -Fq 'job=system/org.nixos.app-deployment-demo-update' "$update_job"
@@ -115,12 +121,19 @@ in
         grep -Fq 'http://100.64.0.10:3773$path' "$update"
         grep -Fq '/nix/var/nix/gcroots/app-deployments/demo' "$update"
 
+        [ ${agent} = ${otherAgent} ]
+        [ ${service} != ${otherService} ]
+        grep -Fq "export DEMO_MODE=release" ${service}
+        grep -Fq "export HOME=/Users/demo" ${service}
+        grep -Fq '/bin/readlink -f "$0")" /var/lib/app-deployments/demo/runtime/started-service' ${service}
+
         python3 - ${agent} ${webhook} ${updater} <<'EOF'
         import plistlib, sys
         agent, webhook, updater = (plistlib.load(open(path, "rb")) for path in sys.argv[1:])
         assert agent["Label"] == "org.nixos.app-deployment-demo", agent
         assert agent["KeepAlive"] and agent["RunAtLoad"], agent
-        assert agent["EnvironmentVariables"] == {"HOME": "/Users/demo", "DEMO_MODE": "release"}, agent
+        assert "EnvironmentVariables" not in agent, agent
+        assert agent["ProgramArguments"][-1].endswith("exec /etc/app-deployments/demo/service"), agent
         assert agent["WorkingDirectory"] == "/Users/demo", agent
         assert webhook["EnvironmentVariables"]["APP_DEPLOYMENTS_SYSTEM"] == "aarch64-darwin", webhook
         assert webhook["EnvironmentVariables"]["APP_DEPLOYMENTS_TOKEN_FILE"] == "/etc/app-deployments/webhook-token", webhook
@@ -159,6 +172,17 @@ in
         test ${
           lib.boolToString (rejected {
             delivery.cacheStore = null;
+          })
+        } = true
+        # The service script exports the environment: Bash can't set FOO-BAR and keeps UID read-only.
+        test ${
+          lib.boolToString (rejected {
+            environment."FOO-BAR" = "1";
+          })
+        } = true
+        test ${
+          lib.boolToString (rejected {
+            environment.UID = "501";
           })
         } = true
         touch $out

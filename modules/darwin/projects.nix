@@ -294,8 +294,24 @@ let
         activate = "as_release_user ${release.activationScript}";
         runPreDeployTask = "run_pre_deploy_task";
       };
+      # The agent starts this through a fixed path in /etc, and the script carries the environment, so
+      # a switch that changes either leaves the agent's plist as it is, and launchd keeps the service
+      # running. The service starts on the new definition at its next start; it records which
+      # definition it started from, so the host can tell when it runs an outdated one.
+      servicePath = "/etc/app-deployments/${name}/service";
       service = pkgs.writeShellScript "app-deployment-${name}-service" ''
         set -euo pipefail
+        # First, so a switch that retargets the fixed path after bash opened it can only slip in
+        # during the moment until this line runs.
+        ${pkgs.coreutils}/bin/ln -sfn "$(${pkgs.coreutils}/bin/readlink -f "$0")" ${lib.escapeShellArg "${release.runtimeDir}/started-service"}
+        ${lib.concatStrings (
+          lib.mapAttrsToList (key: value: "export ${key}=${lib.escapeShellArg (toString value)}\n") (
+            {
+              HOME = release.homeDir;
+            }
+            // release.cfg.environment
+          )
+        )}
         export PATH=${
           lib.escapeShellArg (
             lib.makeBinPath (
@@ -451,6 +467,7 @@ let
         updateJob
         updateLabel
         service
+        servicePath
         user
         ;
     }
@@ -566,6 +583,23 @@ in
                 message = "projects.${name}.release.runtime.user: the release runs as a launchd agent of system.primaryUser; set it to that user.";
               }
               {
+                # The service script exports each one, and Bash refuses names that aren't variables or
+                # that it keeps read-only.
+                assertion = lib.all (
+                  key:
+                  builtins.match "[A-Za-z_][A-Za-z0-9_]*" key != null
+                  && !lib.elem key [
+                    "BASHOPTS"
+                    "BASH_VERSINFO"
+                    "EUID"
+                    "PPID"
+                    "SHELLOPTS"
+                    "UID"
+                  ]
+                ) (builtins.attrNames policy.environment);
+                message = "projects.${name}.release.environment: the service script exports each variable, so each name must be one Bash can set.";
+              }
+              {
                 assertion = release == null || release.ociAuxiliaries == { };
                 message = "projects.${name}: nix-darwin runs no OCI auxiliaries.";
               }
@@ -585,15 +619,9 @@ in
         launchd.user.agents = lib.mapAttrs' (
           name: host:
           lib.nameValuePair "app-deployment-${name}" {
-            command = "${host.service}";
+            command = host.servicePath;
             serviceConfig = {
               Label = host.label;
-              EnvironmentVariables = lib.mapAttrs (_: toString) (
-                {
-                  HOME = host.release.homeDir;
-                }
-                // host.release.cfg.environment
-              );
               WorkingDirectory = host.release.workingDirectory;
               RunAtLoad = true;
               KeepAlive = true;
@@ -606,6 +634,10 @@ in
               StandardErrorPath = "${logDir}/${name}/service.log";
             };
           }
+        ) hosts;
+
+        environment.etc = lib.mapAttrs' (
+          name: host: lib.nameValuePair "app-deployments/${name}/service" { source = host.service; }
         ) hosts;
 
         launchd.daemons =
