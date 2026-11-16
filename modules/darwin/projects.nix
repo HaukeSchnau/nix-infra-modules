@@ -294,8 +294,21 @@ let
         activate = "as_release_user ${release.activationScript}";
         runPreDeployTask = "run_pre_deploy_task";
       };
+      # The agent starts this through a fixed path in /etc, and the script carries the environment, so
+      # a switch that changes either leaves the agent's plist as it is, and launchd keeps the service
+      # running. The service starts on the new definition at its next start; it records which
+      # definition it started from, so the host can tell when it runs an outdated one.
+      servicePath = "/etc/app-deployments/${name}/service";
       service = pkgs.writeShellScript "app-deployment-${name}-service" ''
         set -euo pipefail
+        ${lib.concatStrings (
+          lib.mapAttrsToList (key: value: "export ${key}=${lib.escapeShellArg (toString value)}\n") (
+            {
+              HOME = release.homeDir;
+            }
+            // release.cfg.environment
+          )
+        )}
         export PATH=${
           lib.escapeShellArg (
             lib.makeBinPath (
@@ -319,6 +332,7 @@ let
           . "$file"
           set +a
         done
+        ln -sfn "$(readlink -f "$0")" ${lib.escapeShellArg "${release.runtimeDir}/started-service"}
         exec ${release.startScript}
       '';
       secretsDir = "${release.runtimeDir}/secrets";
@@ -451,6 +465,7 @@ let
         updateJob
         updateLabel
         service
+        servicePath
         user
         ;
     }
@@ -585,15 +600,9 @@ in
         launchd.user.agents = lib.mapAttrs' (
           name: host:
           lib.nameValuePair "app-deployment-${name}" {
-            command = "${host.service}";
+            command = host.servicePath;
             serviceConfig = {
               Label = host.label;
-              EnvironmentVariables = lib.mapAttrs (_: toString) (
-                {
-                  HOME = host.release.homeDir;
-                }
-                // host.release.cfg.environment
-              );
               WorkingDirectory = host.release.workingDirectory;
               RunAtLoad = true;
               KeepAlive = true;
@@ -606,6 +615,10 @@ in
               StandardErrorPath = "${logDir}/${name}/service.log";
             };
           }
+        ) hosts;
+
+        environment.etc = lib.mapAttrs' (
+          name: host: lib.nameValuePair "app-deployments/${name}/service" { source = host.service; }
         ) hosts;
 
         launchd.daemons =
