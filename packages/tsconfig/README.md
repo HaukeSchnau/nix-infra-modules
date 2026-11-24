@@ -1,0 +1,83 @@
+# @schnau/tsconfig
+
+The base tsconfig for TypeScript that Node runs from source and the native compiler (TypeScript 7,
+tsrs) checks. It holds compiler options only. A repository adds its platform: `types`, DOM libs,
+`jsx`, `expo/tsconfig.base`.
+
+```jsonc
+// tsconfig.json
+{
+  "extends": "@schnau/tsconfig",
+  "compilerOptions": { "types": ["node"] }
+}
+```
+
+| Entry point | Adds |
+| --- | --- |
+| `@schnau/tsconfig` | nothing, it is the base |
+| `@schnau/tsconfig/effect` | the `@effect/language-service` plugin entry |
+
+The plugin entry is what turns Effect's diagnostics on in effect-tsgo and the editor. The
+compilers (`tsc`, TypeScript 7, tsrs) ignore plugins, so the entry costs nothing where effect-tsgo
+isn't installed. It still stays out of the base: a repository without Effect shouldn't switch
+Effect's rules on, and `plugins` replaces the inherited list, so a repository with a plugin of its
+own would have to repeat Effect's.
+
+`exactOptionalPropertyTypes` is off on purpose. It forces `...(x === undefined ? {} : { x })`
+spreads into every option object and React prop.
+
+## Platforms
+
+- TypeScript 7 defaults `types` to `[]`, so a repository names the globals it uses: `["node"]`,
+  `["bun"]`, or none in a browser app, which sets `"lib": ["ESNext", "DOM", "DOM.Iterable"]`.
+- An Expo app extends both, Expo last, so Expo's `lib`, `jsx` and `customConditions` win:
+  `"extends": ["@schnau/tsconfig", "expo/tsconfig.base"]`.
+- A library that emits JavaScript turns `noEmit` off and rewrites its `.ts` imports, which
+  `allowImportingTsExtensions` requires once it emits:
+
+  ```jsonc
+  {
+    "extends": "@schnau/tsconfig",
+    "compilerOptions": {
+      "noEmit": false,
+      "declaration": true,
+      "rewriteRelativeImportExtensions": true,
+      "rootDir": "src",
+      "outDir": "dist"
+    }
+  }
+  ```
+
+## Install
+
+The package is published to `https://git.schnau.dev/api/packages/schnau/npm/`, which anyone can
+read:
+
+```ini
+# .npmrc
+@schnau:registry=https://git.schnau.dev/api/packages/schnau/npm/
+```
+
+pnpm 11 and later install a version only a day after its release (`minimumReleaseAge`). Our own
+package can skip the wait:
+
+```yaml
+# pnpm-workspace.yaml
+minimumReleaseAgeExclude:
+  - "@schnau/tsconfig"
+```
+
+```sh
+pnpm add -D @schnau/tsconfig
+```
+
+## Publish
+
+Raise `version` and merge it. Then run `pnpm publish` in this directory of a clean checkout of
+`main`; jj leaves Git's HEAD detached, which pnpm's branch check rejects outside CI, so add
+`--no-git-checks` there. `publishConfig` sends it to the Gitea registry, with a token that may
+write packages in your user `.npmrc`:
+
+```ini
+//git.schnau.dev/api/packages/schnau/npm/:_authToken=<token>
+```
