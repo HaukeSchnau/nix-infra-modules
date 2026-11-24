@@ -119,15 +119,16 @@
         in
         {
           default = pkgs.mkShell {
-            packages = with pkgs; [
-              gitleaks
-              just
-              nixfmt
-              ripgrep
-              # packages/fleet
-              nodejs_24
-              pnpm_11
-            ];
+            packages =
+              with pkgs;
+              [
+                gitleaks
+                just
+                nixfmt
+                ripgrep
+              ]
+              # The TypeScript packages
+              ++ builtins.attrValues (self.lib.toolchain { inherit pkgs; });
           };
         }
       );
