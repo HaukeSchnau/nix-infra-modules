@@ -1,20 +1,24 @@
-import { Flake, Nix } from "@calder-ci/core"
-import { Pnpm, Project } from "@calder-ci/std"
-import { flake } from "./flake.ts"
+import { Flake, Nix } from "@calder-ci/core";
+import { Pnpm, Project } from "@calder-ci/std";
+import { flake } from "./flake.ts";
 
-const shell = flake.devShells.default
+const shell = flake.devShells.default;
 
 /**
  * The NixOS VM tests among the flake's checks. They need a builder with `kvm`, which the fleet has
  * for x86_64-linux only, so they build for that system; every other check builds for the
  * controller's. Add a new VM test here.
  */
-const vmTests = new Set(["service-controller"])
-const checks = Object.fromEntries(Object.entries(flake.checks).filter(([name]) => !vmTests.has(name)))
-const vms = [...vmTests].map((name) => Nix.build(Flake.attr(`checks.x86_64-linux.${name}`), { name }))
+const vmTests = new Set(["service-controller"]);
+const checks = Object.fromEntries(
+  Object.entries(flake.checks).filter(([name]) => !vmTests.has(name)),
+);
+const vms = [...vmTests].map((name) =>
+  Nix.build(Flake.attr(`checks.x86_64-linux.${name}`), { name }),
+);
 
 export default Project.standard({
   flake: { ...flake, checks },
   checks: vms,
   vp: { shell, setup: Pnpm.install({ shell }) },
-})
+});

@@ -7,4 +7,3 @@ pmOnFail: error
 allowBuilds:
   esbuild: true
   workerd: false
-

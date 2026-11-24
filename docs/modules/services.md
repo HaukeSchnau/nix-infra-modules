@@ -88,9 +88,17 @@ and answers `{"deleted": false}`.
   "console": ["{node}/bin/node", "{bundle}/server/main.mjs", "console"],
   "endpoint": { "hostName": "beta.shop.example.net", "visibility": "public" },
   "health": { "path": "/api/health/ready", "timeoutSec": 60 },
-  "database": { "env": "DATABASE_URL", "majorVersion": 18, "dropOnDelete": false, "connections": 40 },
+  "database": {
+    "env": "DATABASE_URL",
+    "majorVersion": 18,
+    "dropOnDelete": false,
+    "connections": 40
+  },
   "env": { "PUBLIC_URL": "https://beta.shop.example.net" },
-  "secrets": { "AUTH_SECRET": { "value": "..." }, "MAIL_URL": { "sops": "projects/shop/mail-url" } },
+  "secrets": {
+    "AUTH_SECRET": { "value": "..." },
+    "MAIL_URL": { "sops": "projects/shop/mail-url" }
+  },
   "memory": { "max": "1G" },
   "owner": { "stack": "Shop", "stage": "beta", "fqn": "Server" },
   "fence": 1793209550123

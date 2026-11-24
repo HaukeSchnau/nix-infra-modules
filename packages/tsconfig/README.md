@@ -8,13 +8,13 @@ tsrs) checks. It holds compiler options only. A repository adds its platform: `t
 // tsconfig.json
 {
   "extends": "@schnau/tsconfig",
-  "compilerOptions": { "types": ["node"] }
+  "compilerOptions": { "types": ["node"] },
 }
 ```
 
-| Entry point | Adds |
-| --- | --- |
-| `@schnau/tsconfig` | nothing, it is the base |
+| Entry point               | Adds                                        |
+| ------------------------- | ------------------------------------------- |
+| `@schnau/tsconfig`        | nothing, it is the base                     |
 | `@schnau/tsconfig/effect` | the `@effect/language-service` plugin entry |
 
 The plugin entry turns on Effect's language service: its quick info, completions and refactors in
@@ -48,8 +48,8 @@ spreads into every option object and React prop.
       "declaration": true,
       "rewriteRelativeImportExtensions": true,
       "rootDir": "src",
-      "outDir": "dist"
-    }
+      "outDir": "dist",
+    },
   }
   ```
 

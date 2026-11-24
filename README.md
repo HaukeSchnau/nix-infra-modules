@@ -37,29 +37,29 @@ nix-infra-modules ../nix-infra-modules` for fast local iteration.
 }
 ```
 
-| Export | Platform | Purpose | Docs / coverage |
-| --- | --- | --- | --- |
-| `lib.projectFlake`, `lib.projectDefinition`, `projectModules.default` | Nix | Project authoring (`project.nix`) and release flake outputs | [Project definition](docs/modules/project-definition.md), `project-definition` |
-| `devenvModules.project` | devenv | Native process and task annotations and contract export | [Project devenv](docs/modules/project-devenv.md), `project-definition` |
-| `lib.projectRuntime` | Nix | Release artifacts, runtime context and release planning | [Project runtime](docs/modules/project-runtime.md), `project-runtime` |
-| `lib.toolchain` | Nix, devenv | The Node and pnpm every TypeScript project shares | [Toolchain](docs/modules/toolchain.md) |
-| `nixosModules.projects` | NixOS | Development instances and releases of Project repositories on a host | [Projects](docs/modules/projects.md), `projects-module`, `project-controller` |
-| `nixosModules.fleet` | NixOS | Complete small-fleet interface and metadata contract | [fleet](docs/modules/fleet.md), `core-example` |
-| `nixosModules.generatedContract` | NixOS | Generated services, health units and ingress routes | [fleet](docs/modules/fleet.md), `fleet-generated-services-example` |
-| `nixosModules.fleetTooling` | NixOS | `fleet-services` and `fleet-health-check` commands | [fleet](docs/modules/fleet.md) |
-| `nixosModules.podmanRuntime` | NixOS | Shared root Podman runtime, proxy network, and host capabilities | [podman runtime](docs/modules/podman-runtime.md), `podman-runtime-example` |
-| `nixosModules.serverBackup` | NixOS | Restic backup policy with file-path secret interface | [server backup](docs/modules/server-backup.md), `server-backup-example` |
-| `nixosModules.gitMirrors` | NixOS | Periodic Gitea-to-GitHub repository mirrors | [git mirrors](docs/modules/git-mirrors.md), `git-mirrors-example` |
-| `nixosModules.githubRunner` | NixOS | GitHub Actions runner leaf module | [runners](docs/modules/runners.md), `github-runner-example` |
-| `nixosModules.caddyIngress` | NixOS | Tailnet-first Caddy virtual hosts | [ingress](docs/modules/ingress.md) |
-| `nixosModules.appDeployments` | NixOS | Tailnet webhook and shared app deployment plumbing | [app deployments](docs/modules/app-deployments.md) |
-| `nixosModules.services` | NixOS | Services repositories declare at runtime through `Fleet.Service`, within a grant | [services](docs/modules/services.md), `service-controller` |
-| `darwinModules.projects` | nix-darwin | Project releases on a Mac, promoted like NixOS releases | [Projects](docs/modules/projects.md#nix-darwin), `projects-darwin` |
-| `darwinModules.wireguardProfiles` | nix-darwin | WireGuard profile activation helpers | [workstation](docs/modules/workstation.md) |
-| `darwinModules.developerFonts` | nix-darwin | Developer font defaults | [workstation](docs/modules/workstation.md) |
-| `darwinModules.developerPaths` | nix-darwin | Developer path defaults | [workstation](docs/modules/workstation.md) |
-| `homeManagerModules.colors` | Home Manager | Terminal/editor color scheme leaves | [workstation](docs/modules/workstation.md) |
-| `homeManagerModules.workspaceRepos` | Home Manager | Workspace repository reconciliation | [workspace repos](docs/workspace-repos.md), `workspace-repos-home` |
+| Export                                                                | Platform     | Purpose                                                                          | Docs / coverage                                                                |
+| --------------------------------------------------------------------- | ------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `lib.projectFlake`, `lib.projectDefinition`, `projectModules.default` | Nix          | Project authoring (`project.nix`) and release flake outputs                      | [Project definition](docs/modules/project-definition.md), `project-definition` |
+| `devenvModules.project`                                               | devenv       | Native process and task annotations and contract export                          | [Project devenv](docs/modules/project-devenv.md), `project-definition`         |
+| `lib.projectRuntime`                                                  | Nix          | Release artifacts, runtime context and release planning                          | [Project runtime](docs/modules/project-runtime.md), `project-runtime`          |
+| `lib.toolchain`                                                       | Nix, devenv  | The Node and pnpm every TypeScript project shares                                | [Toolchain](docs/modules/toolchain.md)                                         |
+| `nixosModules.projects`                                               | NixOS        | Development instances and releases of Project repositories on a host             | [Projects](docs/modules/projects.md), `projects-module`, `project-controller`  |
+| `nixosModules.fleet`                                                  | NixOS        | Complete small-fleet interface and metadata contract                             | [fleet](docs/modules/fleet.md), `core-example`                                 |
+| `nixosModules.generatedContract`                                      | NixOS        | Generated services, health units and ingress routes                              | [fleet](docs/modules/fleet.md), `fleet-generated-services-example`             |
+| `nixosModules.fleetTooling`                                           | NixOS        | `fleet-services` and `fleet-health-check` commands                               | [fleet](docs/modules/fleet.md)                                                 |
+| `nixosModules.podmanRuntime`                                          | NixOS        | Shared root Podman runtime, proxy network, and host capabilities                 | [podman runtime](docs/modules/podman-runtime.md), `podman-runtime-example`     |
+| `nixosModules.serverBackup`                                           | NixOS        | Restic backup policy with file-path secret interface                             | [server backup](docs/modules/server-backup.md), `server-backup-example`        |
+| `nixosModules.gitMirrors`                                             | NixOS        | Periodic Gitea-to-GitHub repository mirrors                                      | [git mirrors](docs/modules/git-mirrors.md), `git-mirrors-example`              |
+| `nixosModules.githubRunner`                                           | NixOS        | GitHub Actions runner leaf module                                                | [runners](docs/modules/runners.md), `github-runner-example`                    |
+| `nixosModules.caddyIngress`                                           | NixOS        | Tailnet-first Caddy virtual hosts                                                | [ingress](docs/modules/ingress.md)                                             |
+| `nixosModules.appDeployments`                                         | NixOS        | Tailnet webhook and shared app deployment plumbing                               | [app deployments](docs/modules/app-deployments.md)                             |
+| `nixosModules.services`                                               | NixOS        | Services repositories declare at runtime through `Fleet.Service`, within a grant | [services](docs/modules/services.md), `service-controller`                     |
+| `darwinModules.projects`                                              | nix-darwin   | Project releases on a Mac, promoted like NixOS releases                          | [Projects](docs/modules/projects.md#nix-darwin), `projects-darwin`             |
+| `darwinModules.wireguardProfiles`                                     | nix-darwin   | WireGuard profile activation helpers                                             | [workstation](docs/modules/workstation.md)                                     |
+| `darwinModules.developerFonts`                                        | nix-darwin   | Developer font defaults                                                          | [workstation](docs/modules/workstation.md)                                     |
+| `darwinModules.developerPaths`                                        | nix-darwin   | Developer path defaults                                                          | [workstation](docs/modules/workstation.md)                                     |
+| `homeManagerModules.colors`                                           | Home Manager | Terminal/editor color scheme leaves                                              | [workstation](docs/modules/workstation.md)                                     |
+| `homeManagerModules.workspaceRepos`                                   | Home Manager | Workspace repository reconciliation                                              | [workspace repos](docs/workspace-repos.md), `workspace-repos-home`             |
 
 Available helpers:
 
