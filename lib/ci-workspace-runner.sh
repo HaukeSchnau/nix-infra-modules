@@ -41,9 +41,9 @@ supervise_command() {
   }
 
   # Sends the cancel signal to the command's session and descendants, then
-  # kills whatever still runs after CI_CANCEL_GRACE_SECONDS. Some tools keep
-  # working after TERM: TypeScript 7's native tsc finishes its whole check
-  # first, so a cancelled job could otherwise leave work behind for hours.
+  # kills whatever still runs after CI_CANCEL_GRACE_SECONDS. A tool that
+  # catches TERM and finishes its work first would otherwise keep a cancelled
+  # job running for hours.
   # shellcheck disable=SC2329 # Called indirectly by the signal traps below.
   forward_signal() {
     [[ -n "$child_pid" && -z "$cancelling" ]] || return 0

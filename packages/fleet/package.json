@@ -16,9 +16,9 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepublishOnly": "tsc -p tsconfig.json"
+    "build": "tsrs -p tsconfig.json",
+    "typecheck": "tsrs -p tsconfig.json --noEmit",
+    "prepublishOnly": "tsrs -p tsconfig.json"
   },
   "peerDependencies": {
     "alchemy": ">=2.0.0-beta.83",
@@ -29,6 +29,6 @@
     "@types/node": "^24.0.0",
     "alchemy": "2.0.0-beta.83",
     "effect": "4.0.5",
-    "typescript": "^7.0.2"
+    "tsrs": "^7.1.0-beta.tsrs5"
   }
 }
