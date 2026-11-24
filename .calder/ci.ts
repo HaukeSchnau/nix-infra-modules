@@ -1,5 +1,5 @@
 import { Flake, Nix } from "@calder-ci/core";
-import { Pnpm, Project } from "@calder-ci/std";
+import { Pnpm, Project, Vp } from "@calder-ci/std";
 import { flake } from "./flake.ts";
 
 const shell = flake.devShells.default;
@@ -19,6 +19,5 @@ const vms = [...vmTests].map((name) =>
 
 export default Project.standard({
   flake: { ...flake, checks },
-  checks: vms,
-  vp: { shell, setup: Pnpm.install({ shell }) },
+  checks: [...vms, ...Vp.tasks({ shell, setup: Pnpm.install({ shell }) })],
 });
