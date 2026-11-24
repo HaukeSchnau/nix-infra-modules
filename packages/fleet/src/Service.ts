@@ -5,10 +5,10 @@ import * as Provider from "alchemy/Provider";
 import { Stack } from "alchemy/Stack";
 import { Stage } from "alchemy/Stage";
 import * as Config from "effect/Config";
-import * as Data from "effect/Data";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -57,7 +57,7 @@ export interface ServiceProps {
    * Secrets by variable name: a SOPS key of the host's secrets, or a `Redacted` value the host
    * seals with its age key. The process reads each from the file `<NAME>_FILE` names.
    */
-  readonly secrets?: Readonly<Record<string, SopsKey | Redacted.Redacted<string>>>;
+  readonly secrets?: Readonly<Record<string, SopsKey | Redacted.Redacted>>;
   /** systemd memory limits, within the grant's share. The service never swaps. */
   readonly memory?: { readonly max: string; readonly high?: string };
 }
@@ -92,21 +92,27 @@ export type Service = Resource<"Fleet.Service", ServiceProps, ServiceAttributes,
  */
 export const Service = Resource<Service>("Fleet.Service");
 
-export class ServiceRefused extends Data.TaggedError("ServiceRefused")<{
-  readonly service: string;
-  readonly reasons: ReadonlyArray<string>;
-}> {
+export class ServiceRefused extends Schema.TaggedError<
+  ServiceRefused,
+  { readonly brand: unique symbol }
+>()("ServiceRefused", {
+  service: Schema.String,
+  reasons: Schema.Array(Schema.String),
+}) {
   override get message() {
     return `${this.service} was refused: ${this.reasons.join("; ")}`;
   }
 }
 
-export class DeployFailed extends Data.TaggedError("DeployFailed")<{
-  readonly service: string;
-  readonly revision: string;
-  readonly outcome: "failed" | "rolled-back" | "broken" | "no verdict";
-  readonly reason: string;
-}> {
+export class DeployFailed extends Schema.TaggedError<
+  DeployFailed,
+  { readonly brand: unique symbol }
+>()("DeployFailed", {
+  service: Schema.String,
+  revision: Schema.String,
+  outcome: Schema.Literals(["failed", "rolled-back", "broken", "no verdict"]),
+  reason: Schema.String,
+}) {
   override get message() {
     const what = {
       failed: "failed, and the old revision keeps running",
@@ -114,11 +120,14 @@ export class DeployFailed extends Data.TaggedError("DeployFailed")<{
       broken: "failed, and restoring the old revision failed too, so the service is down",
       "no verdict": "got no verdict from the host",
     }[this.outcome];
+
     return `${this.service}: ${this.revision} ${what}: ${this.reason}`;
   }
 }
 
-class Busy extends Data.TaggedError("Busy")<{ readonly service: string }> {}
+class Busy extends Schema.TaggedError<Busy, { readonly brand: unique symbol }>()("Busy", {
+  service: Schema.String,
+}) {}
 
 /**
  * How long a deploy or deletion waits for the host, while another deploy of the service runs and
@@ -131,12 +140,15 @@ const deadline: Duration.Input = "40 minutes";
 const lookup: Duration.Input = "1 minute";
 
 const Owner = Schema.Struct({ stack: Schema.String, stage: Schema.String, fqn: Schema.String });
+
 type Owner = typeof Owner.Type;
+
 const Deploy = Schema.Struct({
-  generation: Schema.Number,
+  generation: Schema.Int,
   outcome: Schema.Literals(["deploying", "active", "failed", "rolled-back", "broken"]),
   reason: Schema.NullOr(Schema.String),
 });
+
 const Status = Schema.Struct({
   owner: Schema.NullOr(Owner),
   revision: Schema.NullOr(Schema.String),
@@ -147,11 +159,13 @@ const Status = Schema.Struct({
   }),
   deploys: Schema.Array(Deploy),
 });
+
 /** A 404 for a name whose database a deleted service left, with that service's owner. */
 const Missing = Schema.Struct({
   kept: Schema.optional(Schema.Struct({ owner: Schema.NullOr(Owner) })),
 });
-const Accepted = Schema.Struct({ generation: Schema.Number });
+
+const Accepted = Schema.Struct({ generation: Schema.Int });
 const Plan = Schema.Struct({ changes: Schema.Array(Schema.String) });
 
 /** The service controller's API: `http://<host>:18110`, unless `FLEET_SERVICES_URL` says otherwise. */
@@ -163,14 +177,15 @@ const url = (props: Pick<ServiceProps, "host" | "name">, path = "") =>
 
 const fence = Config.option(Config.Int("FLEET_FENCE")).pipe(Effect.map(Option.getOrUndefined));
 
+// JSON leaves out the properties that are undefined.
 const body = (props: ServiceProps) => ({
   release: props.release,
   command: props.command,
-  ...(props.prepare === undefined ? {} : { prepare: props.prepare }),
-  ...(props.console === undefined ? {} : { console: props.console }),
-  ...(props.endpoint === undefined ? {} : { endpoint: props.endpoint }),
+  prepare: props.prepare,
+  console: props.console,
+  endpoint: props.endpoint,
   health: props.health,
-  ...(props.database === undefined ? {} : { database: props.database }),
+  database: props.database,
   env: props.env ?? {},
   secrets: Object.fromEntries(
     Object.entries(props.secrets ?? {}).map(([name, secret]) => [
@@ -182,9 +197,8 @@ const body = (props: ServiceProps) => ({
 });
 
 const refused = (props: ServiceProps) => (response: HttpClientResponse.HttpClientResponse) =>
-  Effect.flatMap(
-    HttpClientResponse.schemaBodyJson(Refusal)(response),
-    (refusal) => new ServiceRefused({ service: props.name, reasons: refusal.reasons }),
+  Effect.flatMap(HttpClientResponse.schemaBodyJson(Refusal)(response), (refusal) =>
+    ServiceRefused.make({ service: props.name, reasons: refusal.reasons }),
   );
 
 /**
@@ -200,19 +214,22 @@ const sendWaiting = (
     request.pipe(
       Effect.filterOrFail(
         (response) => response.status !== 423,
-        () => new Busy({ service: props.name }),
+        () => Busy.make({ service: props.name }),
       ),
     ),
     window,
-    (error) => error._tag === "Busy",
+    Predicate.isTagged("Busy"),
   );
 
 /** What the host knows of the name: the service that runs, or the owner of a database a deleted one left. */
 const lookUp = (props: Pick<ServiceProps, "host" | "name">, window: Duration.Input = deadline) =>
   Effect.gen(function* () {
-    const response = yield* sendWaiting(props, send("GET", yield* url(props)), window);
+    const target = yield* url(props);
+    const response = yield* sendWaiting(props, send("GET", target), window);
+
     if (response.status !== 404)
       return { running: yield* HttpClientResponse.schemaBodyJson(Status)(response) };
+
     return { kept: (yield* HttpClientResponse.schemaBodyJson(Missing)(response)).kept };
   });
 
@@ -237,15 +254,22 @@ const sameOwner = (a: Owner | null, b: Owner) =>
 const deploy = (props: ServiceProps, owner: Owner, adopt: boolean) =>
   Effect.gen(function* () {
     const payload = { ...body(props), owner, adopt, fence: yield* fence };
+
+    const target = yield* url(props);
+
     const response = yield* sendWaiting(
       props,
-      send("PUT", yield* url(props), { payload, handled: [422, 423] }),
+      send("PUT", target, { payload, handled: [422, 423] }),
     );
+
     if (response.status === 422) return yield* refused(props)(response);
+
     if (response.status === 202) {
       const { generation } = yield* HttpClientResponse.schemaBodyJson(Accepted)(response);
+
       const outcome = (running: typeof Status.Type | undefined) =>
         running?.deploys.find((entry) => entry.generation === generation);
+
       const settled = yield* status(props).pipe(
         Effect.repeat({
           schedule: Schedule.spaced("250 millis"),
@@ -255,7 +279,7 @@ const deploy = (props: ServiceProps, owner: Owner, adopt: boolean) =>
           duration: deadline,
           orElse: () =>
             Effect.fail(
-              new DeployFailed({
+              DeployFailed.make({
                 service: props.name,
                 revision: props.release.revision,
                 outcome: "no verdict",
@@ -264,12 +288,15 @@ const deploy = (props: ServiceProps, owner: Owner, adopt: boolean) =>
             ),
         }),
       );
+
       const entry = outcome(settled);
+
       if (entry === undefined || entry.outcome === "deploying") {
         return yield* Effect.die(`the host lost ${props.name}'s generation ${generation}`);
       }
+
       if (entry.outcome !== "active") {
-        return yield* new DeployFailed({
+        return yield* DeployFailed.make({
           service: props.name,
           revision: props.release.revision,
           outcome: entry.outcome,
@@ -277,8 +304,11 @@ const deploy = (props: ServiceProps, owner: Owner, adopt: boolean) =>
         });
       }
     }
+
     const running = yield* status(props);
+
     if (running === undefined) return yield* Effect.die(`the host lost ${props.name}`);
+
     return attributes(props, running);
   });
 
@@ -289,33 +319,45 @@ export const ServiceProvider = () =>
       const stack = yield* Stack;
       const stage = yield* Stage;
       const ownerOf = (fqn: string): Owner => ({ stack: stack.name, stage, fqn });
+
       return Service.Provider.of({
         list: () => Effect.succeed([]),
         diff: Effect.fn(function* ({ news, olds }) {
           if (!isResolved(news)) return undefined;
+
           if (news.name !== olds.name || news.host !== olds.host)
             return { action: "replace" } as const;
+
           // The host compares the spec with what it runs, so an unchanged service needs no deploy and
           // a refusal shows in a dry run.
-          const request = send("POST", yield* url(news, "/plan"), {
+          const target = yield* url(news, "/plan");
+
+          const request = send("POST", target, {
             payload: body(news),
             handled: [422],
           });
+
           const response = yield* sendWaiting(news, request, lookup);
+
           if (response.status === 422) return yield* refused(news)(response);
           const plan = yield* HttpClientResponse.schemaBodyJson(Plan)(response);
+
           return { action: plan.changes.length === 0 ? "noop" : "update" } as const;
         }),
         read: Effect.fn(function* ({ fqn, olds }) {
           if (olds === undefined) return undefined;
           const found = yield* lookUp(olds, lookup);
+
           // A service another stack, stage or logical ID put is not this resource's to change, and
           // neither is the database such a service left behind when it was deleted.
           if (found.running !== undefined) {
             const attrs = attributes(olds, found.running);
+
             return sameOwner(found.running.owner, ownerOf(fqn)) ? attrs : Unowned(attrs);
           }
+
           if (found.kept === undefined) return undefined;
+
           const attrs = {
             host: olds.host,
             name: olds.name,
@@ -323,6 +365,7 @@ export const ServiceProvider = () =>
             url: undefined,
             address: { ipv4: undefined, ipv6: undefined },
           };
+
           return sameOwner(found.kept.owner, ownerOf(fqn)) ? attrs : Unowned(attrs);
         }),
         reconcile: Effect.fn(function* ({ fqn, news, olds, output }) {
@@ -335,7 +378,8 @@ export const ServiceProvider = () =>
         }),
         delete: Effect.fn(function* ({ fqn, olds }) {
           const payload = { owner: ownerOf(fqn), fence: yield* fence };
-          yield* sendWaiting(olds, send("DELETE", yield* url(olds), { payload, handled: [423] }));
+          const target = yield* url(olds);
+          yield* sendWaiting(olds, send("DELETE", target, { payload, handled: [423] }));
         }),
       });
     }),
