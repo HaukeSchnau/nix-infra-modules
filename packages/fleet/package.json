@@ -5,7 +5,6 @@
   "license": "MIT",
   "type": "module",
   "repository": "https://github.com/HaukeSchnau/nix-infra-modules/tree/main/packages/fleet",
-  "packageManager": "pnpm@11.27.0",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -17,7 +16,6 @@
   ],
   "scripts": {
     "build": "tsrs -p tsconfig.json",
-    "typecheck": "tsrs -p tsconfig.json --noEmit",
     "prepublishOnly": "tsrs -p tsconfig.json"
   },
   "peerDependencies": {
@@ -26,9 +24,10 @@
   },
   "devDependencies": {
     "@effect/platform-node": "4.0.5",
+    "@schnau/tsconfig": "workspace:*",
     "@types/node": "^24.0.0",
     "alchemy": "2.0.0-beta.83",
     "effect": "4.0.5",
-    "tsrs": "^7.1.0-beta.tsrs5"
+    "tsrs": "7.1.0-beta.tsrs4"
   }
 }

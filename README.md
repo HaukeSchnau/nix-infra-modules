@@ -85,5 +85,13 @@ just preflight
 nix flake check --all-systems
 ```
 
+The TypeScript packages under `packages/` form one pnpm workspace with Vite+ at the root.
+`pnpm check` runs `vp check`: oxfmt, oxlint and the tsrs type check.
+
+```sh
+nix develop -c pnpm install
+nix develop -c pnpm check
+```
+
 See `docs/private-repo-integration.md` for the intended private-repo
 consumption pattern.

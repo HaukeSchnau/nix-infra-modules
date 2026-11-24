@@ -1,0 +1,10 @@
+packages:
+  - packages/*
+
+# pnpm refuses to run when packageManager in package.json names another pnpm than the toolchain's.
+pmOnFail: error
+
+allowBuilds:
+  esbuild: true
+  workerd: false
+

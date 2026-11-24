@@ -1,0 +1,5 @@
+{
+  "extends": "@schnau/tsconfig",
+  "compilerOptions": { "types": ["node"] },
+  "include": ["vite.config.ts"]
+}

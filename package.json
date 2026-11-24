@@ -1,0 +1,22 @@
+{
+  "name": "nix-infra-modules",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "effect-tsgo patch --oxlint --tsrs --no-typescript",
+    "check": "vp check",
+    "test": "vp test run"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "^0.73.4",
+    "@oxlint/plugins": "1.94.0",
+    "@schnau/tsconfig": "workspace:*",
+    "@types/node": "^24.0.0",
+    "tsrs": "7.1.0-beta.tsrs4",
+    "vite-plus": "^1.8.0"
+  },
+  "engines": {
+    "node": ">=26"
+  },
+  "packageManager": "pnpm@12.9.0"
+}
