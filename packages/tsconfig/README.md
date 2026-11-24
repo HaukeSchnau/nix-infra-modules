@@ -17,11 +17,16 @@ tsrs) checks. It holds compiler options only. A repository adds its platform: `t
 | `@schnau/tsconfig` | nothing, it is the base |
 | `@schnau/tsconfig/effect` | the `@effect/language-service` plugin entry |
 
-The plugin entry is what turns Effect's diagnostics on in effect-tsgo and the editor. The
-compilers (`tsc`, TypeScript 7, tsrs) ignore plugins, so the entry costs nothing where effect-tsgo
-isn't installed. It still stays out of the base: a repository without Effect shouldn't switch
-Effect's rules on, and `plugins` replaces the inherited list, so a repository with a plugin of its
-own would have to repeat Effect's.
+The plugin entry turns on Effect's language service: its quick info, completions and refactors in
+the editor. Its `diagnostics` are off, because oxlint's `effecttsgo` rules report the same
+diagnostics, and a repository picks their severities in `vite.config.ts`. With them on, the tsrs
+that `effect-tsgo patch --tsrs` patches reports each one a second time as a type error, in
+`vp check` and in every `tsrs -p` build, where an Effect warning fails the build.
+
+The stock compilers (`tsc`, TypeScript 7, tsrs) ignore plugins, so the entry costs nothing where
+effect-tsgo isn't installed. It still stays out of the base: a repository without Effect shouldn't
+switch Effect's rules on, and `plugins` replaces the inherited list, so a repository with a plugin
+of its own would have to repeat Effect's.
 
 `exactOptionalPropertyTypes` is off on purpose. It forces `...(x === undefined ? {} : { x })`
 spreads into every option object and React prop.
