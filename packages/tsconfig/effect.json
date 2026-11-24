@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Turns on Effect's diagnostics in effect-tsgo and the editor.
+    "plugins": [{ "name": "@effect/language-service" }]
+  }
+}
