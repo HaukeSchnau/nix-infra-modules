@@ -82,7 +82,9 @@ The Gitea registry is published by hand from a clean checkout of `main`, with a 
 packages in your user `.npmrc` (`//git.schnau.dev/api/packages/schnau/npm/:_authToken=<token>`):
 
 ```sh
-pnpm publish --no-git-checks --registry https://git.schnau.dev/api/packages/schnau/npm/
+pnpm publish --no-git-checks --config.@schnau:registry=https://git.schnau.dev/api/packages/schnau/npm/
 ```
 
 jj leaves Git's HEAD detached, which pnpm's branch check rejects outside CI, hence `--no-git-checks`.
+The registry goes in as the scope's setting because an `@schnau:registry` in your `.npmrc` would win over
+`--registry`.
