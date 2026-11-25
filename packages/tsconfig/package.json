@@ -11,8 +11,5 @@
   "exports": {
     ".": "./tsconfig.json",
     "./effect": "./effect.json"
-  },
-  "publishConfig": {
-    "registry": "https://git.schnau.dev/api/packages/schnau/npm/"
   }
 }
