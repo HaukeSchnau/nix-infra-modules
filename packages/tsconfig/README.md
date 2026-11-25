@@ -55,13 +55,14 @@ spreads into every option object and React prop.
 
 ## Install
 
-The package is published to `https://git.schnau.dev/api/packages/schnau/npm/`, which anyone can
-read:
+The package is on npm:
 
-```ini
-# .npmrc
-@schnau:registry=https://git.schnau.dev/api/packages/schnau/npm/
+```sh
+pnpm add -D @schnau/tsconfig
 ```
+
+A `deploy/` package that maps the `@schnau` scope to the Gitea registry for `@schnau/fleet` gets the
+same versions from there (`https://git.schnau.dev/api/packages/schnau/npm/`).
 
 pnpm 11 and later install a version only a day after its release (`minimumReleaseAge`). Our own
 package can skip the wait:
@@ -72,17 +73,18 @@ minimumReleaseAgeExclude:
   - "@schnau/tsconfig"
 ```
 
-```sh
-pnpm add -D @schnau/tsconfig
-```
-
 ## Publish
 
-Raise `version` and merge it. Then run `pnpm publish` in this directory of a clean checkout of
-`main`; jj leaves Git's HEAD detached, which pnpm's branch check rejects outside CI, so add
-`--no-git-checks` there. `publishConfig` sends it to the Gitea registry, with a token that may
-write packages in your user `.npmrc`:
+Raise `version` and merge it. Calder's `publish-tsconfig` step then stages the release on npm, and a
+maintainer approves it with 2FA (`npm stage approve <stage>`; the step's log names the stage).
 
-```ini
-//git.schnau.dev/api/packages/schnau/npm/:_authToken=<token>
+The Gitea registry is published by hand from a clean checkout of `main`, with a token that may write
+packages in your user `.npmrc` (`//git.schnau.dev/api/packages/schnau/npm/:_authToken=<token>`):
+
+```sh
+pnpm publish --no-git-checks --config.@schnau:registry=https://git.schnau.dev/api/packages/schnau/npm/
 ```
+
+jj leaves Git's HEAD detached, which pnpm's branch check rejects outside CI, hence `--no-git-checks`.
+The registry goes in as the scope's setting because an `@schnau:registry` in your `.npmrc` would win over
+`--registry`.
