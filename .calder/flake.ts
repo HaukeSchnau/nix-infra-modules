@@ -31,5 +31,5 @@ export const flake = Flake.make({
     "workspace-repos-typed-repositories",
     "workspace-repos-working-copy",
   ],
-  devShells: ["default"],
+  devShells: ["default", "release"],
 });
