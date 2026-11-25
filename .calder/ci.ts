@@ -26,7 +26,7 @@ const standard = Project.standard({ flake: { ...flake, checks }, checks: gate })
  * only from GitHub, GitLab.com and CircleCI, so a maintainer approves each staged release with 2FA.
  */
 const tsconfig = Npm.publish({
-  shell,
+  shell: flake.devShells.release,
   setup: install,
   token: "npm",
   dir: "packages/tsconfig",

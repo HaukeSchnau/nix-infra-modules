@@ -130,6 +130,13 @@
               # The TypeScript packages
               ++ builtins.attrValues (self.lib.toolchain { inherit pkgs; });
           };
+          # Calder's npm release: `npm stage` needs the full Node's npm, which nodejs-slim leaves out.
+          release = pkgs.mkShell {
+            packages = [
+              pkgs.nodejs_26
+              (self.lib.toolchain { inherit pkgs; }).pnpm
+            ];
+          };
         }
       );
 
