@@ -11,8 +11,9 @@ repository a grant; the repository's stack declares what runs within it.
 
 ## Fleet.Service
 
+<!-- prettier-ignore -->
 ```ts
-import * as Fleet from "@schnau/fleet"
+import * as Fleet from "@schnau/fleet";
 
 const service = yield* Fleet.Service("Server", {
   host: "core-01",
@@ -27,10 +28,10 @@ const service = yield* Fleet.Service("Server", {
   env: { PUBLIC_URL: "https://beta.shop.example.net" },
   secrets: { MAIL_URL: { sops: "projects/shop/mail-url" }, AUTH_SECRET: authSecret.value },
   memory: { max: "1G" },
-})
+});
 
-service.url // https://beta.shop.example.net
-service.address.ipv4 // the host's public address, for a DNS record
+service.url; // https://beta.shop.example.net
+service.address.ipv4; // the host's public address, for a DNS record
 ```
 
 - `diff` asks the host what the spec would change (`POST /services/<name>/plan`). An unchanged
@@ -59,6 +60,7 @@ than it has seen.
 
 ## Fleet.Placement
 
+<!-- prettier-ignore -->
 ```ts
 const placement = yield* Fleet.Placement("Release", {
   project: "shop",
@@ -66,7 +68,7 @@ const placement = yield* Fleet.Placement("Release", {
   endpoint: { hostName: "shop.example.net", visibility: "public" },
   secrets: { apiKey: "projects/shop/api-key" },
   jobs: { backup: { calendar: "*-*-* 04:00" } },
-})
+});
 ```
 
 The provider talks to `http://<host>:18100` (`FLEET_URL` overrides it). A placement the grant

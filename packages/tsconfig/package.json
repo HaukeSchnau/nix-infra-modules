@@ -1,17 +1,17 @@
 {
   "name": "@schnau/tsconfig",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Base tsconfig for TypeScript that Node runs from source and the native compiler checks",
   "license": "MIT",
   "repository": "https://github.com/HaukeSchnau/nix-infra-modules/tree/main/packages/tsconfig",
-  "exports": {
-    ".": "./tsconfig.json",
-    "./effect": "./effect.json"
-  },
   "files": [
     "tsconfig.json",
     "effect.json"
   ],
+  "exports": {
+    ".": "./tsconfig.json",
+    "./effect": "./effect.json"
+  },
   "publishConfig": {
     "registry": "https://git.schnau.dev/api/packages/schnau/npm/"
   }

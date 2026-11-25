@@ -3,32 +3,31 @@
   "version": "0.3.0",
   "description": "Alchemy provider for services and placements on a nix-infra-modules host within its grant",
   "license": "MIT",
-  "type": "module",
   "repository": "https://github.com/HaukeSchnau/nix-infra-modules/tree/main/packages/fleet",
-  "packageManager": "pnpm@11.27.0",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
   },
-  "files": [
-    "dist"
-  ],
   "scripts": {
     "build": "tsrs -p tsconfig.json",
-    "typecheck": "tsrs -p tsconfig.json --noEmit",
     "prepublishOnly": "tsrs -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "4.0.5",
+    "@schnau/tsconfig": "workspace:*",
+    "@types/node": "^24.0.0",
+    "alchemy": "2.0.0-beta.83",
+    "effect": "4.0.5",
+    "tsrs": "7.1.0-beta.tsrs4"
   },
   "peerDependencies": {
     "alchemy": ">=2.0.0-beta.83",
     "effect": "^4.0.5"
-  },
-  "devDependencies": {
-    "@effect/platform-node": "4.0.5",
-    "@types/node": "^24.0.0",
-    "alchemy": "2.0.0-beta.83",
-    "effect": "4.0.5",
-    "tsrs": "^7.1.0-beta.tsrs5"
   }
 }
