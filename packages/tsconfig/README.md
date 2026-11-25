@@ -82,6 +82,7 @@ The Gitea registry is published by hand from a clean checkout of `main`, with a 
 packages in your user `.npmrc` (`//git.schnau.dev/api/packages/schnau/npm/:_authToken=<token>`):
 
 ```sh
+cd packages/tsconfig
 pnpm publish --no-git-checks --config.@schnau:registry=https://git.schnau.dev/api/packages/schnau/npm/
 ```
 
