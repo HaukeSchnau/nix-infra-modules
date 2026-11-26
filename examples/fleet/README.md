@@ -4,15 +4,15 @@ This example is one synthetic host shaped like a small self-hosted deployment.
 It is intentionally fake: domains, repositories, host names, ports, and secret
 names are placeholders.
 
-`core-01` runs a flake-deployed app and serves its own routes with Caddy. Its
+`core-01` runs the shared Podman runtime and serves two routes with Caddy. Its
 routes are declared in normal service modules; the generated contract turns
-them into inventory, health units and ingress routes.
+them into inventory, health units and ingress routes. Apps run on such a host
+through projects-sdk, whose host modules publish their routes to this Caddy.
 
 ## What It Demonstrates
 
 - generated service inventory and `fleet-health-check` command wiring
 - tailnet-only and public Caddy routes
-- flake-based app deployment plumbing
 
 ## Try It
 

@@ -2,7 +2,6 @@
   nixpkgs,
   system,
   modules,
-  nixosLib,
 }:
 let
   lib = nixpkgs.lib;
@@ -11,9 +10,6 @@ let
     name: extraModules:
     lib.nixosSystem {
       inherit system;
-      specialArgs = {
-        inherit nixosLib;
-      };
       modules = [
         modules.fleet
         ./hosts/common.nix

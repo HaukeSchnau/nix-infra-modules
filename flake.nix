@@ -7,11 +7,6 @@
       url = "github:nix-community/home-manager/master";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # Only the checks of the nix-darwin modules use it.
-    nix-darwin = {
-      url = "github:nix-darwin/nix-darwin/master";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
@@ -19,7 +14,6 @@
       self,
       nixpkgs,
       home-manager,
-      nix-darwin,
     }:
     let
       lib = nixpkgs.lib;
@@ -35,19 +29,7 @@
       forAllSystems = lib.genAttrs systems;
     in
     {
-      lib.projectDefinition = import ./lib/project-definition.nix { inherit lib; };
-      lib.projectFlake = import ./lib/project-flake.nix { inherit lib; };
-      lib.projectSource = import ./lib/project-source.nix { inherit lib; };
-      projectModules.default = ./modules/project;
-
-      lib.projectDescriptor = import ./lib/project-descriptor.nix { inherit lib; };
-      lib.projectRuntime = import ./lib/project-runtime.nix { inherit lib; };
-      lib.toolchain = import ./lib/toolchain.nix;
-
-      devenvModules.project = ./modules/devenv/project.nix;
-
       lib.nixos = {
-        nixFlakeService = import ./modules/nixos/deploy/nix-flake-service.nix;
         generatedInventory = import ./modules/nixos/inventory/generated-inventory.nix;
         generatedTypes = import ./modules/nixos/inventory/generated-types.nix;
         serviceMetadata = import ./modules/nixos/fleet/service-metadata.nix { inherit lib; };
@@ -63,33 +45,18 @@
         gitMirrors = ./modules/nixos/developer/git-mirrors.nix;
         githubRunner = ./modules/nixos/ci/github-runner.nix;
         caddyIngress = ./modules/nixos/ingress/caddy.nix;
-        appDeployments = ./modules/nixos/deploy/app-deployments.nix;
-        projects = ./modules/nixos/projects;
-        services = ./modules/nixos/services;
       };
 
       darwinModules = {
         wireguardProfiles = ./modules/darwin/wireguard-profiles.nix;
         developerFonts = ./modules/darwin/developer-fonts.nix;
         developerPaths = ./modules/darwin/developer-paths.nix;
-        projects = ./modules/darwin/projects.nix;
       };
 
       homeManagerModules = {
         colors = ./modules/home-manager/colors;
         workspaceRepos = ./modules/home-manager/workspace-repos;
       };
-
-      packages = forAllSystems (
-        system:
-        let
-          pkgs = import nixpkgs { inherit system; };
-        in
-        {
-          # The `project` controller as a Python package, for host tooling built on its registry.
-          project-controller = pkgs.callPackage ./modules/nixos/projects/controller/package.nix { };
-        }
-      );
 
       formatter = forAllSystems (
         system:
@@ -116,6 +83,9 @@
         system:
         let
           pkgs = import nixpkgs { inherit system; };
+          # The same Node and pnpm as projects-sdk's lib.toolchain.
+          nodejs = pkgs.nodejs-slim_26;
+          pnpm = pkgs.pnpm_12.override { nodejs-slim = nodejs; };
         in
         {
           default = pkgs.mkShell {
@@ -128,25 +98,22 @@
                 ripgrep
               ]
               # The TypeScript packages
-              ++ builtins.attrValues (self.lib.toolchain { inherit pkgs; });
+              ++ [
+                nodejs
+                pnpm
+              ];
           };
           # Calder's npm release: `npm stage` needs the full Node's npm, which nodejs-slim leaves out.
           release = pkgs.mkShell {
             packages = [
               pkgs.nodejs_26
-              (self.lib.toolchain { inherit pkgs; }).pnpm
+              pnpm
             ];
           };
         }
       );
 
-      checks = {
-        aarch64-darwin = import ./modules/darwin/checks.nix {
-          inherit lib nix-darwin self;
-          pkgs = import nixpkgs { system = "aarch64-darwin"; };
-        };
-      }
-      // lib.genAttrs linuxSystems (
+      checks = lib.genAttrs linuxSystems (
         system:
         let
           pkgs = import nixpkgs { inherit system; };
@@ -163,17 +130,12 @@
           domainChecks = lib.mergeAttrsList (
             map (path: import path checkArgs) [
               ./modules/nixos/fleet/checks.nix
-              ./modules/nixos/deploy/checks.nix
               ./modules/nixos/runtime/checks.nix
               ./modules/nixos/ci/checks.nix
               ./modules/nixos/developer/checks.nix
               ./modules/nixos/backup/checks.nix
               ./modules/home-manager/workspace-repos/checks.nix
               ./modules/home-manager/colors/checks.nix
-              ./modules/project/checks.nix
-              ./modules/nixos/projects/checks.nix
-              ./modules/nixos/services/checks.nix
-              ./lib/project-runtime/checks.nix
             ]
           );
         in

@@ -1,5 +1,5 @@
 {
-  description = "Synthetic two-host fleet using nix-infra-modules";
+  description = "Synthetic one-host fleet using nix-infra-modules";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -16,6 +16,5 @@
       inherit nixpkgs;
       system = "x86_64-linux";
       modules = nix-infra-modules.nixosModules;
-      nixosLib = nix-infra-modules.lib.nixos;
     };
 }
