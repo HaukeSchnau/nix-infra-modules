@@ -57,7 +57,7 @@ class WebhookTests(unittest.TestCase):
         cls.server.shutdown()
 
     def setUp(self):
-        for name in ("updated.json", "fail", "running", "shop/compatibility.json", "shop/requested-release.json", "shop/fence"):
+        for name in ("updated.json", "fail", "running", "shop/compatibility.json", "shop/requested-release.json", "shop/fence", "shop/deferred.json"):
             (STATE / name).unlink(missing_ok=True)
 
     def request(self, method, path, body=None, token="secret"):
@@ -104,6 +104,18 @@ class WebhookTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/deploy/shop", {}, token="wrong")[0], 403)
         self.assertEqual(self.deploy(storePath="/tmp/x")[0], 400)
         self.assertEqual(self.request("POST", "/deploy/shop", {"revision": "abcdef1"})[0], 400)
+
+    def test_status_says_why_the_pending_release_waits(self):
+        self.deploy()
+        deferred = {"schemaVersion": 1, "revision": "abcdef1", "task": "wait-for-idle", "output": "busy with 1 thread"}
+        (STATE / "shop" / "deferred.json").write_text(json.dumps(deferred))
+        status, body = self.request("GET", "/status/shop")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["pending"], "abcdef1")
+        self.assertEqual({key: body["deferred"][key] for key in ("task", "output")}, {"task": "wait-for-idle", "output": "busy with 1 thread"})
+        # Once another release is pending, the record is about one that no longer waits.
+        self.deploy(revision="1234567")
+        self.assertIsNone(self.request("GET", "/status/shop")[1]["deferred"])
 
 
 if __name__ == "__main__":

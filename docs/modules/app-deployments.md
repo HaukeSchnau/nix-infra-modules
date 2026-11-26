@@ -158,6 +158,9 @@ receives only its declared systemd credentials. A failed task leaves the active
 artifact, Runtime Context, and service untouched. Tasks with
 `failureMode = "defer"` also leave the requested Release queued and report a
 successful reconciliation, so the update timer can retry a safe cutover later.
+What the deferring task printed is kept in `deferred.json` as the reason the
+Release waits, which `GET /status/<app>` and `project-release-status` report
+while that Release is still the pending one.
 
 Descriptor v3 service Releases may declare interactive commands. The module
 installs the root-only `project-release-command <project> <command>
@@ -275,7 +278,8 @@ nix-darwin, and wait for its result, so a restart of the webhook doesn't kill an
 The webhook's API is the same on both:
 
 - `GET /health` answers `{"ok": true, "apps": [...], "system": "<Nix system>"}` without a token.
-- `GET /status/<app>` reports the active, previous and pending revisions.
+- `GET /status/<app>` reports the active, previous and pending revisions, and with `deferred`
+  the pre-deploy task that last deferred the pending one and what it printed.
 - `POST /preflight/<app>` with `{"descriptor": ...}` answers 200 for a compatible descriptor and
   409 for an incompatible one.
 - `POST /deploy/<app>` with `{"revision", "storePath", "source", "fence"}` queues the release

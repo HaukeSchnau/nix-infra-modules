@@ -96,7 +96,23 @@ def app_status(app):
         "pending": pending,
         "since": since,
         "healthy": None if compatibility is None else bool(compatibility.get("compatible", True)),
+        "deferred": deferred_status(state_dir, pending),
     }
+
+
+def deferred_status(state_dir, pending):
+    """Why the pending release waits: the output of the pre-deploy task that deferred it last."""
+    path = os.path.join(state_dir, "deferred.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            deferred = json.load(handle)
+            checked_at = int(os.fstat(handle.fileno()).st_mtime * 1000)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    # A record for another revision is about a release that landed or was replaced.
+    if not isinstance(deferred, dict) or pending is None or deferred.get("revision") != pending:
+        return None
+    return {"task": deferred.get("task"), "output": deferred.get("output"), "checkedAt": checked_at}
 
 
 class Handler(BaseHTTPRequestHandler):
