@@ -405,6 +405,7 @@ let
     candidate_runtime_manifest="$state_dir/candidate-project-runtime.json"
     candidate_release_plan="$state_dir/candidate-release-plan.json"
     candidate_gcroot="$gcroots_dir/candidate"
+    deferred_file="$state_dir/deferred.json"
     git_config_file=""
 
     cleanup_candidate() {
@@ -677,17 +678,39 @@ let
           mv -Tf "$candidate_gcroot.next" "$candidate_gcroot"
           for task in "''${pre_deploy_tasks[@]}"; do
             timeout="$(jq -er --arg task "$task" '.preDeployTasks[$task].timeoutSec' "$candidate_release_plan")"
-            if ! ${supervisor.runPreDeployTask} "$task" "$timeout"; then
-              failure_mode="$(jq -er --arg task "$task" '.preDeployTasks[$task].failureMode' "$candidate_release_plan")"
-              if [ "$failure_mode" = defer ]; then
-                echo "app-deployment/${name}: pre-deploy task $task deferred activation"
-                exit 0
+            failure_mode="$(jq -er --arg task "$task" '.preDeployTasks[$task].failureMode' "$candidate_release_plan")"
+            if [ "$failure_mode" != defer ]; then
+              if ! ${supervisor.runPreDeployTask} "$task" "$timeout"; then
+                rm -f "$deferred_file"
+                exit 1
               fi
-              exit 1
+              continue
+            fi
+            task_succeeded=true
+            task_output="$(${supervisor.runPreDeployTask} "$task" "$timeout")" || task_succeeded=false
+            if [ -n "$task_output" ]; then
+              printf '%s\n' "$task_output"
+            fi
+            if [ "$task_succeeded" = false ]; then
+              # What the task printed is why the release waits: the status endpoint reports it
+              # while this revision is still the pending one. It can name the user's work, so only
+              # root reads it.
+              if ! (
+                umask 077
+                printf '%s' "''${task_output:0:4096}" \
+                  | jq -Rs --arg revision "$resolved_revision" --arg task "$task" \
+                    '{schemaVersion: 1, revision: $revision, task: $task, output: .}' \
+                  > "$deferred_file.next"
+              ) || ! mv -f "$deferred_file.next" "$deferred_file"; then
+                echo "app-deployment/${name}: could not record why the release waits" >&2
+              fi
+              echo "app-deployment/${name}: pre-deploy task $task deferred activation"
+              exit 0
             fi
           done
         fi
       fi
+      rm -f "$deferred_file"
     ''}
 
     if [ -n "$old_store_path" ]; then

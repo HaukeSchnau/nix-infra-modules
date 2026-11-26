@@ -878,6 +878,7 @@ let
       runtime = read_json(state / "project-runtime.json")
       plan = read_json(state / "release-plan.json")
       remote = remote_revision(app)
+      deferred = read_json(state / "deferred.json")
       result = {
         "project": name,
         "branch": app["branch"],
@@ -886,6 +887,10 @@ let
         "previousRevision": previous,
         "pendingRevision": (pending or {}).get("revision"),
         "promotionPending": pending is not None,
+        # Why the pending release waits; a record for another revision is about an older one.
+        "deferred": deferred
+        if pending is not None and (deferred or {}).get("revision") == pending.get("revision")
+        else None,
         "upToDate": remote is not None and current == remote and pending is None,
         "compatibility": compatibility,
         "service": {
@@ -911,6 +916,11 @@ let
       print(f"  remote {value['branch']}: {short(value['remoteRevision'])}")
       print(f"  active / previous: {short(value['activeRevision'])} / {short(value['previousRevision'])}")
       print(f"  pending promotion: {short(value['pendingRevision'])}")
+      deferred = value.get("deferred")
+      if deferred:
+        print(f"  deferred by {deferred.get('task')}:")
+        for line in (deferred.get("output") or "").splitlines():
+          print(f"    {line}")
       service = value.get("service")
       if service:
         print(f"  service: {service['activeState']}/{service['subState']}, {service['restarts']} restarts")
