@@ -110,6 +110,81 @@ in
         touch $out
       '';
 
+  workspace-repos-killed-fetch =
+    pkgs.runCommand "workspace-repos-killed-fetch"
+      {
+        nativeBuildInputs = [
+          pkgs.git
+          pkgs.jq
+          pkgs.jujutsu
+          pkgs.python3
+        ];
+      }
+      ''
+        export HOME="$PWD/home"
+        export XDG_CONFIG_HOME="$PWD/config"
+        mkdir -p "$HOME" "$XDG_CONFIG_HOME" bin
+
+        git init -q -b main seed
+        git -C seed config user.email test@example.com
+        git -C seed config user.name Test
+        echo initial > seed/file
+        git -C seed add file
+        git -C seed commit -qm initial
+        git clone -q --bare seed remote.git
+        jj git clone --colocate --branch main "$PWD/remote.git" "$HOME/Code/example"
+
+        # A jj that hangs like a fetch or clone from a slow remote, with a
+        # child that keeps writing a temporary pack until something kills it.
+        cat > bin/jj <<'EOF'
+        #!${pkgs.runtimeShell}
+        case " $* " in
+          *" git fetch "*)
+            touch "$2/.git/objects/pack/tmp_pack_partial"
+            sleep 300 &
+            echo $! > "$CHILD_PID"
+            wait
+            ;;
+          *" git clone "*)
+            for dest; do :; done
+            mkdir -p "$dest/.git" "$dest/.jj"
+            sleep 300
+            ;;
+        esac
+        exec "$REAL_JJ" "$@"
+        EOF
+        chmod +x bin/jj
+
+        jq -n --arg url "$PWD/remote.git" '{
+          version: 1,
+          writable_inventory_path: "unused.json",
+          inventory: {
+            version: 1,
+            roots: [],
+            gitlab_groups: [],
+            repositories: [
+              { path: "Code/example", url: $url, bookmark: "main" },
+              { path: "Code/missing", url: $url, bookmark: "main" }
+            ]
+          }
+        }' > config.json
+
+        if REAL_JJ="$(command -v jj)" CHILD_PID="$PWD/child.pid" PATH="$PWD/bin:$PATH" \
+          python3 ${workspaceReposScript} --config config.json sync --timeout 2 2> error.log
+        then
+          echo "sync with hanging fetches unexpectedly succeeded" >&2
+          exit 1
+        fi
+        grep -q 'timed out after 2s' error.log
+        if kill -0 "$(cat child.pid)" 2> /dev/null; then
+          echo "the fetch's child outlived the timeout" >&2
+          exit 1
+        fi
+        test ! -e "$HOME/Code/example/.git/objects/pack/tmp_pack_partial"
+        test ! -e "$HOME/Code/missing"
+        touch $out
+      '';
+
   workspace-repos-discovery-failure =
     pkgs.runCommand "workspace-repos-discovery-failure" { nativeBuildInputs = [ pkgs.python3 ]; }
       ''

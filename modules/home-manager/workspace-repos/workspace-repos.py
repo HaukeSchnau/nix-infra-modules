@@ -4,8 +4,10 @@ import fcntl
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -114,22 +116,49 @@ def run(
         location = f" [{cwd}]" if cwd else ""
         print("$ " + " ".join(args) + location)
 
+    # A new session lets a timeout kill the whole process group: jj runs git
+    # as a child, and killing only jj left git downloading in the background.
+    process = subprocess.Popen(
+        args,
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
     try:
-        result = subprocess.run(
-            args,
-            cwd=cwd,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-        )
+        stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as error:
+        kill_process_group(process)
         duration = f" after {timeout}s" if timeout is not None else ""
         raise RuntimeError(f"{' '.join(args)} timed out{duration}") from error
+    except BaseException:
+        kill_process_group(process)
+        raise
+    result = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
     if check and result.returncode != 0:
         message = result.stderr.strip() or result.stdout.strip()
         raise RuntimeError(f"{' '.join(args)} failed: {message}")
     return result
+
+
+def kill_process_group(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.communicate()
+
+
+def remove_partial_packs(path: Path, since: float) -> None:
+    """Delete the temporary pack files a killed fetch left. Git never reuses
+    them, and a fetch that keeps timing out leaves one per attempt."""
+    for entry in (path / ".git" / "objects" / "pack").glob("tmp_*"):
+        try:
+            if entry.stat().st_mtime >= since:
+                entry.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -355,7 +384,22 @@ def clone_repo(repo: Repo, destination: Path, timeout: int | None) -> None:
     if repo.bookmark:
         args.extend(["--branch", repo.bookmark])
     args.extend([repo.url, str(destination)])
-    run(args, timeout=timeout)
+    existed = destination.exists()
+    try:
+        run(args, timeout=timeout)
+    except RuntimeError:
+        # A clone that failed partway leaves a repository without its packs.
+        # The next run would take it for a clone and fetch from scratch, again
+        # and again, so start over from an empty destination instead.
+        if existed:
+            for entry in destination.iterdir():
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+        else:
+            shutil.rmtree(destination, ignore_errors=True)
+        raise
 
 
 def effective_working_copy_policy(repo: Repo, path: Path) -> WorkingCopyPolicy | None:
@@ -534,10 +578,15 @@ def reconcile_repo(
 
     if fetch:
         print(f"fetch {repo.path}")
-        run(
-            ["jj", "-R", str(destination), "git", "fetch", "--remote", "origin"],
-            timeout=timeout,
-        )
+        started = time.time()
+        try:
+            run(
+                ["jj", "-R", str(destination), "git", "fetch", "--remote", "origin"],
+                timeout=timeout,
+            )
+        except RuntimeError:
+            remove_partial_packs(destination, started)
+            raise
 
     working_copy = effective_working_copy_policy(repo, destination)
     if working_copy:
