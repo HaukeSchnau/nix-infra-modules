@@ -147,18 +147,31 @@ def kill_process_group(process: subprocess.Popen[str]) -> None:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    process.communicate()
+    # Discard the output: decoding a pipe cut mid-character would raise here.
+    for pipe in (process.stdout, process.stderr):
+        if pipe:
+            pipe.close()
+    process.wait()
 
 
-def remove_partial_packs(path: Path, since: float) -> None:
-    """Delete the temporary pack files a killed fetch left. Git never reuses
-    them, and a fetch that keeps timing out leaves one per attempt."""
-    for entry in (path / ".git" / "objects" / "pack").glob("tmp_*"):
-        try:
-            if entry.stat().st_mtime >= since:
-                entry.unlink()
-        except FileNotFoundError:
-            pass
+def fetch_origin(path: Path, timeout: int | None) -> None:
+    pack_dir = path / ".git" / "objects" / "pack"
+    before = set(pack_dir.glob("tmp_*"))
+    try:
+        run(["jj", "-R", str(path), "git", "fetch", "--remote", "origin"], timeout=timeout)
+    except RuntimeError:
+        # Git never reuses the temporary packs a killed fetch leaves, and a fetch
+        # that keeps timing out leaves one per attempt. Remove those this fetch
+        # started; one that keeps changing belongs to another live git process.
+        stopped = time.time()
+        time.sleep(1)
+        for entry in set(pack_dir.glob("tmp_*")) - before:
+            try:
+                if entry.stat().st_mtime <= stopped:
+                    entry.unlink()
+            except FileNotFoundError:
+                pass
+        raise
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -380,25 +393,21 @@ def ensure_origin(path: Path, url: str) -> None:
 
 def clone_repo(repo: Repo, destination: Path, timeout: int | None) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    # Clone beside the destination and move it into place. A clone that fails
+    # partway leaves a repository without its packs, which the next run would
+    # take for a clone and fetch from scratch, again and again.
+    staging = destination.parent / f".{destination.name}.cloning"
+    shutil.rmtree(staging, ignore_errors=True)
     args = ["jj", "git", "clone", "--colocate"]
     if repo.bookmark:
         args.extend(["--branch", repo.bookmark])
-    args.extend([repo.url, str(destination)])
-    existed = destination.exists()
+    args.extend([repo.url, str(staging)])
     try:
         run(args, timeout=timeout)
-    except RuntimeError:
-        # A clone that failed partway leaves a repository without its packs.
-        # The next run would take it for a clone and fetch from scratch, again
-        # and again, so start over from an empty destination instead.
-        if existed:
-            for entry in destination.iterdir():
-                if entry.is_dir() and not entry.is_symlink():
-                    shutil.rmtree(entry)
-                else:
-                    entry.unlink()
-        else:
-            shutil.rmtree(destination, ignore_errors=True)
+        # Replaces an empty destination directory, refuses anything else.
+        staging.rename(destination)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
         raise
 
 
@@ -578,15 +587,7 @@ def reconcile_repo(
 
     if fetch:
         print(f"fetch {repo.path}")
-        started = time.time()
-        try:
-            run(
-                ["jj", "-R", str(destination), "git", "fetch", "--remote", "origin"],
-                timeout=timeout,
-            )
-        except RuntimeError:
-            remove_partial_packs(destination, started)
-            raise
+        fetch_origin(destination, timeout)
 
     working_copy = effective_working_copy_policy(repo, destination)
     if working_copy:
@@ -861,10 +862,7 @@ def command_fetch(args: argparse.Namespace, config: dict[str, Any]) -> int:
             continue
         try:
             print(f"fetch {repo.path}")
-            run(
-                ["jj", "-R", str(destination), "git", "fetch", "--remote", "origin"],
-                timeout=args.timeout,
-            )
+            fetch_origin(destination, args.timeout)
         except Exception as error:
             failures += 1
             eprint(f"workspace-repos: {repo.path}: {error}")

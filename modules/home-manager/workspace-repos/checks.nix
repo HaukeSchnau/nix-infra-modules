@@ -176,12 +176,14 @@ in
           exit 1
         fi
         grep -q 'timed out after 2s' error.log
+        test -s child.pid
         if kill -0 "$(cat child.pid)" 2> /dev/null; then
           echo "the fetch's child outlived the timeout" >&2
           exit 1
         fi
         test ! -e "$HOME/Code/example/.git/objects/pack/tmp_pack_partial"
         test ! -e "$HOME/Code/missing"
+        test ! -e "$HOME/Code/.missing.cloning"
         touch $out
       '';
 
