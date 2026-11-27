@@ -195,12 +195,12 @@ def fetch_origin(path: Path, timeout: int | None) -> None:
         root = run(["jj", "-R", str(path), "git", "root"], check=False, quiet=True)
         if root.returncode == 0:
             result = run(
-                ["git", "--git-dir", root.stdout.strip(), "rev-parse", "--path-format=absolute", "--git-path", "objects/pack"],
+                ["git", "--git-dir", root.stdout.removesuffix("\n"), "rev-parse", "--path-format=absolute", "--git-path", "objects/pack"],
                 check=False,
                 quiet=True,
             )
             if result.returncode == 0:
-                pack_dir = Path(result.stdout.strip()).resolve()
+                pack_dir = Path(result.stdout.removesuffix("\n")).resolve()
         for entry in error.open_files:
             if pack_dir and entry.name.startswith("tmp_") and entry.parent == pack_dir:
                 try:
@@ -432,12 +432,12 @@ def clone_repo(repo: Repo, destination: Path, timeout: int | None) -> None:
     # Clone beside the destination and move it into place. A clone that fails
     # partway leaves a repository without its packs, which the next run would
     # take for a clone and fetch from scratch, again and again.
-    staging = Path(tempfile.mkdtemp(prefix=".clone-", dir=destination.parent))
     args = ["jj", "git", "clone", "--colocate"]
     if repo.bookmark:
         args.extend(["--branch", repo.bookmark])
-    args.extend([repo.url, str(staging)])
+    staging = Path(tempfile.mkdtemp(prefix=".clone-", dir=destination.parent))
     try:
+        args.extend([repo.url, str(staging)])
         if destination.exists():
             # Files take a setgid directory's group when they're created, so the
             # still-private staging directory takes the destination's group and
