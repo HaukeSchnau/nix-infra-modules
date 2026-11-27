@@ -184,7 +184,7 @@ in
         fi
         test ! -e "$HOME/Code/example/.git/objects/pack/tmp_pack_partial"
         test ! -e "$HOME/Code/missing"
-        test -z "$(find "$HOME/Code" -maxdepth 1 -name '.missing.cloning-*')"
+        test -z "$(find "$HOME/Code" -maxdepth 1 -name '.clone-*')"
         touch $out
       '';
 

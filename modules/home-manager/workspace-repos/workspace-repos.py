@@ -420,20 +420,21 @@ def clone_repo(repo: Repo, destination: Path, timeout: int | None) -> None:
     # Clone beside the destination and move it into place. A clone that fails
     # partway leaves a repository without its packs, which the next run would
     # take for a clone and fetch from scratch, again and again.
-    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.cloning-", dir=destination.parent))
+    staging = Path(tempfile.mkdtemp(prefix=".clone-", dir=destination.parent))
     args = ["jj", "git", "clone", "--colocate"]
     if repo.bookmark:
         args.extend(["--branch", repo.bookmark])
     args.extend([repo.url, str(staging)])
     try:
         run(args, timeout=timeout)
-        # mkdtemp makes the directory 0700; keep the mode the clone used to get.
+        # mkdtemp makes the directory 0700; keep the mode the clone used to get,
+        # and the setgid bit it inherited from a setgid parent.
         if destination.exists():
             mode = stat.S_IMODE(destination.stat().st_mode)
         else:
             umask = os.umask(0)
             os.umask(umask)
-            mode = 0o777 & ~umask
+            mode = 0o777 & ~umask | staging.stat().st_mode & stat.S_ISGID
         os.chmod(staging, mode)
         # Replaces an empty destination directory, refuses anything else.
         staging.rename(destination)
