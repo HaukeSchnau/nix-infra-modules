@@ -131,8 +131,10 @@ def run(
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as error:
-        open_files = group_open_files(process.pid)
-        kill_process_group(process)
+        try:
+            open_files = group_open_files(process.pid)
+        finally:
+            kill_process_group(process)
         duration = f" after {timeout}s" if timeout is not None else ""
         raise CommandTimeout(f"{' '.join(args)} timed out{duration}", open_files) from error
     except BaseException:
@@ -188,9 +190,19 @@ def fetch_origin(path: Path, timeout: int | None) -> None:
     except CommandTimeout as error:
         # Git never reuses the temporary pack a killed fetch was writing, and a
         # fetch that keeps timing out leaves one per attempt. Remove those the
-        # killed processes held open.
+        # killed processes held open in this repository's pack directory.
+        pack_dir = None
+        root = run(["jj", "-R", str(path), "git", "root"], check=False, quiet=True)
+        if root.returncode == 0:
+            result = run(
+                ["git", "--git-dir", root.stdout.strip(), "rev-parse", "--path-format=absolute", "--git-path", "objects/pack"],
+                check=False,
+                quiet=True,
+            )
+            if result.returncode == 0:
+                pack_dir = Path(result.stdout.strip()).resolve()
         for entry in error.open_files:
-            if entry.name.startswith("tmp_") and entry.parent.name == "pack":
+            if pack_dir and entry.name.startswith("tmp_") and entry.parent == pack_dir:
                 try:
                     entry.unlink()
                 except FileNotFoundError:
@@ -426,6 +438,16 @@ def clone_repo(repo: Repo, destination: Path, timeout: int | None) -> None:
         args.extend(["--branch", repo.bookmark])
     args.extend([repo.url, str(staging)])
     try:
+        if destination.exists():
+            # Files take a setgid directory's group when they're created, so the
+            # still-private staging directory takes the destination's group and
+            # setgid bit before the clone. The full mode follows when it moves.
+            existing = destination.stat()
+            try:
+                os.chown(staging, -1, existing.st_gid)
+            except PermissionError:
+                pass
+            os.chmod(staging, 0o700 | existing.st_mode & stat.S_ISGID)
         run(args, timeout=timeout)
         # mkdtemp makes the directory 0700; keep the mode the clone used to get,
         # and the setgid bit it inherited from a setgid parent.
