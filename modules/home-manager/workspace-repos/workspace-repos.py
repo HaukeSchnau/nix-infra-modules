@@ -4,8 +4,12 @@ import fcntl
 import json
 import os
 import shutil
+import signal
+import stat
 import subprocess
 import sys
+import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -114,22 +118,96 @@ def run(
         location = f" [{cwd}]" if cwd else ""
         print("$ " + " ".join(args) + location)
 
+    # A new session lets a timeout kill the whole process group: jj runs git
+    # as a child, and killing only jj left git downloading in the background.
+    process = subprocess.Popen(
+        args,
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
     try:
-        result = subprocess.run(
-            args,
-            cwd=cwd,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-        )
+        stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as error:
+        try:
+            open_files = group_open_files(process.pid)
+        finally:
+            kill_process_group(process)
         duration = f" after {timeout}s" if timeout is not None else ""
-        raise RuntimeError(f"{' '.join(args)} timed out{duration}") from error
+        raise CommandTimeout(f"{' '.join(args)} timed out{duration}", open_files) from error
+    except BaseException:
+        kill_process_group(process)
+        raise
+    result = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
     if check and result.returncode != 0:
         message = result.stderr.strip() or result.stdout.strip()
         raise RuntimeError(f"{' '.join(args)} failed: {message}")
     return result
+
+
+class CommandTimeout(RuntimeError):
+    def __init__(self, message: str, open_files: set[Path]) -> None:
+        super().__init__(message)
+        self.open_files = open_files
+
+
+def group_open_files(pgid: int) -> set[Path]:
+    """Files the process group has open, read from /proc where it exists."""
+    found: set[Path] = set()
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return found
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if os.getpgid(int(entry.name)) != pgid:
+                continue
+            for fd in (entry / "fd").iterdir():
+                found.add(Path(os.readlink(fd)))
+        except OSError:
+            continue
+    return found
+
+
+def kill_process_group(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    # Discard the output: decoding a pipe cut mid-character would raise here.
+    for pipe in (process.stdout, process.stderr):
+        if pipe:
+            pipe.close()
+    process.wait()
+
+
+def fetch_origin(path: Path, timeout: int | None) -> None:
+    try:
+        run(["jj", "-R", str(path), "git", "fetch", "--remote", "origin"], timeout=timeout)
+    except CommandTimeout as error:
+        # Git never reuses the temporary pack a killed fetch was writing, and a
+        # fetch that keeps timing out leaves one per attempt. Remove those the
+        # killed processes held open in this repository's pack directory.
+        pack_dir = None
+        root = run(["jj", "-R", str(path), "git", "root"], check=False, quiet=True)
+        if root.returncode == 0:
+            result = run(
+                ["git", "--git-dir", root.stdout.removesuffix("\n"), "rev-parse", "--path-format=absolute", "--git-path", "objects/pack"],
+                check=False,
+                quiet=True,
+            )
+            if result.returncode == 0:
+                pack_dir = Path(result.stdout.removesuffix("\n")).resolve()
+        for entry in error.open_files:
+            if pack_dir and entry.name.startswith("tmp_") and entry.parent == pack_dir:
+                try:
+                    entry.unlink()
+                except FileNotFoundError:
+                    pass
+        raise
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -351,11 +429,40 @@ def ensure_origin(path: Path, url: str) -> None:
 
 def clone_repo(repo: Repo, destination: Path, timeout: int | None) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    # Clone beside the destination and move it into place. A clone that fails
+    # partway leaves a repository without its packs, which the next run would
+    # take for a clone and fetch from scratch, again and again.
     args = ["jj", "git", "clone", "--colocate"]
     if repo.bookmark:
         args.extend(["--branch", repo.bookmark])
-    args.extend([repo.url, str(destination)])
-    run(args, timeout=timeout)
+    staging = Path(tempfile.mkdtemp(prefix=".clone-", dir=destination.parent))
+    try:
+        args.extend([repo.url, str(staging)])
+        if destination.exists():
+            # Files take a setgid directory's group when they're created, so the
+            # still-private staging directory takes the destination's group and
+            # setgid bit before the clone. The full mode follows when it moves.
+            existing = destination.stat()
+            try:
+                os.chown(staging, -1, existing.st_gid)
+            except PermissionError:
+                pass
+            os.chmod(staging, 0o700 | existing.st_mode & stat.S_ISGID)
+        run(args, timeout=timeout)
+        # mkdtemp makes the directory 0700; keep the mode the clone used to get,
+        # and the setgid bit it inherited from a setgid parent.
+        if destination.exists():
+            mode = stat.S_IMODE(destination.stat().st_mode)
+        else:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o777 & ~umask | staging.stat().st_mode & stat.S_ISGID
+        os.chmod(staging, mode)
+        # Replaces an empty destination directory, refuses anything else.
+        staging.rename(destination)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def effective_working_copy_policy(repo: Repo, path: Path) -> WorkingCopyPolicy | None:
@@ -534,10 +641,7 @@ def reconcile_repo(
 
     if fetch:
         print(f"fetch {repo.path}")
-        run(
-            ["jj", "-R", str(destination), "git", "fetch", "--remote", "origin"],
-            timeout=timeout,
-        )
+        fetch_origin(destination, timeout)
 
     working_copy = effective_working_copy_policy(repo, destination)
     if working_copy:
@@ -812,10 +916,7 @@ def command_fetch(args: argparse.Namespace, config: dict[str, Any]) -> int:
             continue
         try:
             print(f"fetch {repo.path}")
-            run(
-                ["jj", "-R", str(destination), "git", "fetch", "--remote", "origin"],
-                timeout=args.timeout,
-            )
+            fetch_origin(destination, args.timeout)
         except Exception as error:
             failures += 1
             eprint(f"workspace-repos: {repo.path}: {error}")
