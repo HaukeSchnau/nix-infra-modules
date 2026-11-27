@@ -2,10 +2,8 @@
 import { Flake } from "@calder-ci/core";
 
 export const flake = Flake.make({
-  packages: ["project-controller"],
+  packages: [],
   checks: [
-    "app-deployments-contract",
-    "app-deployments-placements",
     "colors-contract",
     "core-example",
     "fleet-generated-services-example",
@@ -14,15 +12,7 @@ export const flake = Flake.make({
     "git-mirrors-sync",
     "github-runner-example",
     "podman-runtime-example",
-    "project-controller",
-    "project-definition",
-    "project-descriptor-contract",
-    "project-runtime",
-    "projects-devenv-yaml",
-    "projects-module",
     "server-backup-example",
-    "service-controller",
-    "service-controller-unit",
     "workspace-repos-discovery-failure",
     "workspace-repos-gitlab-discovery",
     "workspace-repos-home",

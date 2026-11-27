@@ -10,7 +10,6 @@ let
   example = import ../../../examples/fleet {
     inherit nixpkgs system;
     modules = self.nixosModules;
-    nixosLib = self.lib.nixos;
   };
 in
 {
@@ -24,9 +23,9 @@ in
     in
     pkgs.runCommand "fleet-generated-services-example" { } ''
       test '${toString (builtins.length generatedServices)}' = '2'
-      test '${if builtins.elem "appDeployments" serviceNames then "yes" else "no"}' = 'yes'
+      test '${if builtins.elem "podman" serviceNames then "yes" else "no"}' = 'yes'
       test '${if builtins.elem "caddy" serviceNames then "yes" else "no"}' = 'yes'
-      test '${if builtins.elem "app-deployment-demo.service" healthUnits then "yes" else "no"}' = 'yes'
+      test '${if builtins.elem "podman.socket" healthUnits then "yes" else "no"}' = 'yes'
       test '${if builtins.elem "caddy.service" healthUnits then "yes" else "no"}' = 'yes'
       touch $out
     '';

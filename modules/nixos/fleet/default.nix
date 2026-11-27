@@ -7,7 +7,5 @@
     ../developer/git-mirrors.nix
     ../ci/github-runner.nix
     ../ingress/caddy.nix
-    ../deploy/app-deployments.nix
-    ../services
   ];
 }

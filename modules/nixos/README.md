@@ -7,11 +7,9 @@ The other exports are leaf modules grouped by responsibility:
 - `backup/`: restic backup policy
 - `ci/`: GitHub and Gitea runner leaves
 - `developer/`: developer service leaves such as Git mirrors
-- `deploy/`: app deployment and flake-service helpers
 - `fleet/`: shared metadata, generated contracts, and tooling
 - `ingress/`: Caddy ingress
 - `runtime/`: Podman runtime and host capabilities
-- `services/`: the service controller, which runs services repositories declare at runtime
 
 Leaf modules can be imported directly when a private repo wants a smaller
 surface, but the full `nixosModules.fleet` export is the normal starting point.
