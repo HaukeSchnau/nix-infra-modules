@@ -5,8 +5,10 @@ import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -129,9 +131,10 @@ def run(
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as error:
+        open_files = group_open_files(process.pid)
         kill_process_group(process)
         duration = f" after {timeout}s" if timeout is not None else ""
-        raise RuntimeError(f"{' '.join(args)} timed out{duration}") from error
+        raise CommandTimeout(f"{' '.join(args)} timed out{duration}", open_files) from error
     except BaseException:
         kill_process_group(process)
         raise
@@ -140,6 +143,31 @@ def run(
         message = result.stderr.strip() or result.stdout.strip()
         raise RuntimeError(f"{' '.join(args)} failed: {message}")
     return result
+
+
+class CommandTimeout(RuntimeError):
+    def __init__(self, message: str, open_files: set[Path]) -> None:
+        super().__init__(message)
+        self.open_files = open_files
+
+
+def group_open_files(pgid: int) -> set[Path]:
+    """Files the process group has open, read from /proc where it exists."""
+    found: set[Path] = set()
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return found
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if os.getpgid(int(entry.name)) != pgid:
+                continue
+            for fd in (entry / "fd").iterdir():
+                found.add(Path(os.readlink(fd)))
+        except OSError:
+            continue
+    return found
 
 
 def kill_process_group(process: subprocess.Popen[str]) -> None:
@@ -155,22 +183,18 @@ def kill_process_group(process: subprocess.Popen[str]) -> None:
 
 
 def fetch_origin(path: Path, timeout: int | None) -> None:
-    pack_dir = path / ".git" / "objects" / "pack"
-    before = set(pack_dir.glob("tmp_*"))
     try:
         run(["jj", "-R", str(path), "git", "fetch", "--remote", "origin"], timeout=timeout)
-    except RuntimeError:
-        # Git never reuses the temporary packs a killed fetch leaves, and a fetch
-        # that keeps timing out leaves one per attempt. Remove those this fetch
-        # started; one that keeps changing belongs to another live git process.
-        stopped = time.time()
-        time.sleep(1)
-        for entry in set(pack_dir.glob("tmp_*")) - before:
-            try:
-                if entry.stat().st_mtime <= stopped:
+    except CommandTimeout as error:
+        # Git never reuses the temporary pack a killed fetch was writing, and a
+        # fetch that keeps timing out leaves one per attempt. Remove those the
+        # killed processes held open.
+        for entry in error.open_files:
+            if entry.name.startswith("tmp_") and entry.parent.name == "pack":
+                try:
                     entry.unlink()
-            except FileNotFoundError:
-                pass
+                except FileNotFoundError:
+                    pass
         raise
 
 
@@ -396,14 +420,21 @@ def clone_repo(repo: Repo, destination: Path, timeout: int | None) -> None:
     # Clone beside the destination and move it into place. A clone that fails
     # partway leaves a repository without its packs, which the next run would
     # take for a clone and fetch from scratch, again and again.
-    staging = destination.parent / f".{destination.name}.cloning"
-    shutil.rmtree(staging, ignore_errors=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.cloning-", dir=destination.parent))
     args = ["jj", "git", "clone", "--colocate"]
     if repo.bookmark:
         args.extend(["--branch", repo.bookmark])
     args.extend([repo.url, str(staging)])
     try:
         run(args, timeout=timeout)
+        # mkdtemp makes the directory 0700; keep the mode the clone used to get.
+        if destination.exists():
+            mode = stat.S_IMODE(destination.stat().st_mode)
+        else:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o777 & ~umask
+        os.chmod(staging, mode)
         # Replaces an empty destination directory, refuses anything else.
         staging.rename(destination)
     except BaseException:

@@ -140,7 +140,8 @@ in
         #!${pkgs.runtimeShell}
         case " $* " in
           *" git fetch "*)
-            touch "$2/.git/objects/pack/tmp_pack_partial"
+            # Held open, the way git index-pack writes it.
+            exec 3> "$2/.git/objects/pack/tmp_pack_partial"
             sleep 300 &
             echo $! > "$CHILD_PID"
             wait
@@ -183,7 +184,7 @@ in
         fi
         test ! -e "$HOME/Code/example/.git/objects/pack/tmp_pack_partial"
         test ! -e "$HOME/Code/missing"
-        test ! -e "$HOME/Code/.missing.cloning"
+        test -z "$(find "$HOME/Code" -maxdepth 1 -name '.missing.cloning-*')"
         touch $out
       '';
 
